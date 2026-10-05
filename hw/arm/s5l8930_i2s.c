@@ -53,6 +53,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930I2SState, S5L8930_I2S)
 struct S5L8930I2SState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    MemoryRegion fifo;          /* MMIO 1: the TX FIFO alone (the S5L8920 DMAs to 0x84500000) */
 
     uint32_t regs[I2S_REGS_SIZE / 4];
     bool audio_out;                 /* property: this port reaches the host (out and in) */
@@ -243,6 +244,24 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
     }
 }
 
+static uint64_t i2s_fifo_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0;
+}
+
+static void i2s_fifo_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    i2s_write(opaque, I2S_TXFIFO, value, size);
+}
+
+static const MemoryRegionOps i2s_fifo_ops = {
+    .read = i2s_fifo_read,
+    .write = i2s_fifo_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
 static const MemoryRegionOps i2s_ops = {
     .read = i2s_read,
     .write = i2s_write,
@@ -291,6 +310,8 @@ static void s5l8930_i2s_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &i2s_ops, s, TYPE_S5L8930_I2S,
                           I2S_REGS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+    memory_region_init_io(&s->fifo, obj, &i2s_fifo_ops, s, "s5l8930.i2s-fifo", 4);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->fifo);
 }
 
 static int s5l8930_i2s_post_load(void *opaque, int version_id)

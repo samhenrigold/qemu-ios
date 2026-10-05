@@ -72,11 +72,14 @@ const MTSensorProfile mt_profile_k48 = {
 };
 
 /*
- * iPod touch 4G (N81): an N1 sensor (AppleMultitouchN1SPI, multi-touch,n18),
- * family 0x55: the driver loads Common.mtprops' "N1F55,1" firmware, whose
- * version 0x0079 is the bcdVersion. Rows/columns/surface are the iPod's
+ * iPod touch 4G (N81) and 3G (N18): an N1 sensor (AppleMultitouchN1SPI,
+ * multi-touch,n18), family 0x55: the driver loads Common.mtprops' "N1F55,1"
+ * firmware, whose version 0x0079 is the bcdVersion. Rows/columns/surface are the iPod's
  * (3.5" 640x960 at 326 ppi is 49.9 x 74.9 mm, the iPod's 5000 x 7500).
- * ponytail: not measured on a unit; recalibrate frame_* as the K48's were.
+ * frame_* measured as the K48's were (N90 8C148, 2026-10-05): a Safari page
+ * marks each touch at its pageX/pageY; twelve taps over the panel, a line fit
+ * per axis (the iPod's frame put taps 9 px right at the left edge and 21-27 px
+ * high), solved for x = -69 + 4748u, y = -215 + 7360v (the sensor's y runs bottom-up).
  */
 const MTSensorProfile mt_profile_n81 = {
     .family_id = 0x55,
@@ -86,8 +89,8 @@ const MTSensorProfile mt_profile_n81 = {
     .surface_height = MT_SENSOR_SURFACE_HEIGHT,
     .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
     .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
-    .frame_width = MT_INTERNAL_SENSOR_SURFACE_WIDTH,
-    .frame_height = MT_INTERNAL_SENSOR_SURFACE_HEIGHT,
+    .frame_x0 = -69, .frame_width = 4748,
+    .frame_y0 = -215, .frame_height = 7360,
 };
 
 static void prepare_interface_version_response(IPodTouchMultitouchState *s) {
@@ -237,6 +240,63 @@ static void prepare_short_control_response(IPodTouchMultitouchState *s, uint8_t 
     s->out_buffer[15] = (checksum >> 8) & 0xFF;
 }
 
+/*
+ * N1 frame read (AppleMultitouchN1SPI, 8C148 0x80584bb0 and 0x80583fe0). The
+ * driver clocks 0xEE twice: a 16-byte length query (tx[2] = 0), answered
+ * {0xEA, len lo, len hi, 0..., sum of bytes 0-13 as u16 LE}; then a read of
+ * exactly that many bytes (tx[2] = 1), answered with the frame packet the Z2
+ * read returns after its length packet: {0xEA, -, data_len, sum-to-zero pad},
+ * header, fingers, then the u16 sum of header+fingers in the last two bytes.
+ * Both answers start {0xEA, len lo} before tx[2] says which it is; the frame
+ * packet's pad byte absorbs that second byte (mt_n1_select).
+ */
+static void mt_n1_read(IPodTouchMultitouchState *s)
+{
+    uint32_t len;
+    uint16_t sum = 0;
+
+    if (!s->n1_frame) {
+        if (s->next_frame) {
+            s->n1_frame = (uint8_t *) s->next_frame;
+            len = s->next_frame_len;
+            s->next_frame = NULL;
+            s->next_frame_len = 0;
+        } else {
+            s->n1_frame = (uint8_t *) mt_build_frame(s, NULL, &len);
+        }
+        s->n1_frame_len = len - sizeof(MTFrameLengthPacket);
+    }
+    s->out_buffer[0] = MT_CMD_FRAME_READ;
+    s->out_buffer[1] = s->n1_frame_len & 0xff;
+    s->out_buffer[2] = s->n1_frame_len >> 8;
+    for (int i = 0; i < 14; i++) {
+        sum += s->out_buffer[i];
+    }
+    s->out_buffer[14] = sum & 0xff;
+    s->out_buffer[15] = sum >> 8;
+    s->buf_size = 16;
+}
+
+/* tx[2] has arrived: 1 = read the announced frame, 0 = it was the query. */
+static void mt_n1_select(IPodTouchMultitouchState *s, uint8_t what)
+{
+    uint8_t *p;
+
+    MTT("N1 %s: %u", what ? "frame read" : "length query", s->n1_frame_len);
+    if (!what || !s->n1_frame) {
+        return;
+    }
+    p = s->n1_frame + sizeof(MTFrameLengthPacket);
+    p[1] = s->out_buffer[1];                   /* already clocked out */
+    p[4] = -(p[0] + p[1] + p[2] + p[3]);       /* the first five bytes sum to 0 */
+    g_free(s->out_buffer);
+    s->out_buffer = g_malloc0(MT_FRAME_ALLOC);
+    memcpy(s->out_buffer, p, s->n1_frame_len);
+    s->buf_size = s->n1_frame_len;
+    g_free(s->n1_frame);
+    s->n1_frame = NULL;
+}
+
 static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t value)
 {
     IPodTouchMultitouchState *s = IPOD_TOUCH_MULTITOUCH(dev);
@@ -334,12 +394,6 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
             s->buf_size = 2;
             memset(s->out_buffer, 0, 2);
         }
-        else if(value == 0xEE) {
-            /* N1 driver, after EXECUTE and on every power-up: ee ee, then it
-             * polls the interface version. A single-byte strobe. */
-            s->buf_size = 1;
-            s->out_buffer[0] = 0;
-        }
         else if(value == 0x47) { // unknown command, probably used to clear the interrupt
             s->buf_size = 2;
         }
@@ -359,6 +413,9 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         }
         else if(value == MT_CMD_SHORT_CONTROL_READ) {
             s->buf_size = 16;
+        }
+        else if(value == MT_CMD_N1_READ) {
+            mt_n1_read(s);
         }
         else if(value == MT_CMD_FRAME_READ || value == MT_CMD_FRAME_READ_V2) {
             /*
@@ -540,6 +597,9 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         s->out_buffer = g_malloc0(data_len);
         s->buf_size = data_len;
         s->buf_ind = 0;
+    }
+    else if(s->cur_cmd == MT_CMD_N1_READ && s->in_buffer_ind == 3) {
+        mt_n1_select(s, s->in_buffer[2]);
     }
     else if(s->cur_cmd == MT_CMD_GET_REPORT_INFO && s->in_buffer_ind == 2) {
         MTT("report info 0x%02x", s->in_buffer[1]);
@@ -1177,6 +1237,8 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     g_free(s->next_frame);
     s->next_frame = NULL;
     s->next_frame_len = 0;
+    g_free(s->n1_frame);
+    s->n1_frame = NULL;
     s->frame_counter = 0;
     memset(s->fingers, 0, sizeof(s->fingers));
     s->touch_down = false;

@@ -78,6 +78,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 #define CTRL_CONFIG_MASK    0xFFF8u         /* bits the guest owns */
 #define CTRL_AES_CTX(ctrl)  (((ctrl) >> 8) & 0xFF)
 #define ST_RUNNING          (1u << 16)
+#define ST_HELD             (1u << 17)      /* a running channel parked by CTRL_HOLD */
 #define ST_ERROR            (1u << 18)
 #define ST_DONE             (1u << 19)
 #define ST_FLAG             (1u << 20)
@@ -146,6 +147,8 @@ struct S5L8930CDMAState {
     qemu_irq irq[CDMA_CHANNELS];
 
     uint32_t enabled[2];
+    uint8_t version;        /* DT cdma-version: 1 (S5L8920) has no channel-enable registers */
+    uint32_t paced_base, paced_ports;
     CDMAChannel ch[CDMA_CHANNELS];
     AESContext aes[AES_CONTEXTS];
     /* engine output queue: filled by the feeding channel, drained by ch2 */
@@ -174,8 +177,10 @@ struct S5L8930CDMAState {
 };
 
 /* i2s0-2 TX/RX FIFOs; stereo S16 at the port's rate (see s5l8930_i2s.c). */
-#define CDMA_PACED_LO       S5L8930_I2S_BASE(0)
-#define CDMA_PACED_HI       (S5L8930_I2S_BASE(2) + 0x1000)
+/* The I2S FIFOs, one 4 KiB slot per port ("paced-base"/"paced-ports"): the
+ * A4's at 0x84500400, the S5L8920's i2s0 FIFO at 0x84500000. */
+#define CDMA_PACED_LO       (s->paced_base)
+#define CDMA_PACED_HI       (s->paced_base + s->paced_ports * 0x1000)
 
 /* ---- AES filter ---- */
 
@@ -877,6 +882,16 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
         }
         c->ctrl = (c->ctrl & ~(CTRL_CONFIG_MASK | (v & ST_W1C))) |
                   (v & CTRL_CONFIG_MASK);
+        /*
+         * Hold on a running channel parks it: the S5L8920 kernel's CDMA
+         * driver stops a channel by setting HOLD and polling until the state
+         * (bits 16-17) is no longer plain "running" (0x80509918 on 8C148a:
+         * BTServer stopping uart3's RX). Unheld, the bit goes again.
+         */
+        c->ctrl &= ~ST_HELD;
+        if ((c->ctrl & CTRL_HOLD) && (c->ctrl & ST_RUNNING)) {
+            c->ctrl |= ST_HELD;
+        }
         if (v & CTRL_ABORT) {
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_ABORTED;
             c->in_seg = false;
@@ -1021,7 +1036,8 @@ static void s5l8930_cdma_reset(DeviceState *dev)
 {
     S5L8930CDMAState *s = S5L8930_CDMA(dev);
 
-    memset(s->enabled, 0, sizeof(s->enabled));
+    /* Version 1 has no enable block: its drivers never write one, every channel is live. */
+    memset(s->enabled, s->version == 1 ? 0xff : 0, sizeof(s->enabled));
     memset(s->ch, 0, sizeof(s->ch));
     memset(s->aes, 0, sizeof(s->aes));
     g_free(s->fifo);
@@ -1174,6 +1190,9 @@ static void s5l8930_cdma_finalize(Object *obj)
 static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
     DEFINE_PROP_UINT64("dram-size", S5L8930CDMAState, dram_size, S5L8930_DRAM_SIZE),   /* the board's */
+    DEFINE_PROP_UINT8("version", S5L8930CDMAState, version, 2),
+    DEFINE_PROP_UINT32("paced-base", S5L8930CDMAState, paced_base, S5L8930_I2S_BASE(0)),
+    DEFINE_PROP_UINT32("paced-ports", S5L8930CDMAState, paced_ports, 3),
 };
 
 static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)

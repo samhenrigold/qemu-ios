@@ -216,6 +216,7 @@ struct S5L8930IOPState {
 
     QEMUTimer *irq_timer;
     bool running;
+    bool fw_size_mask;      /* S5L8920 (v1): 0x114 holds (-size) & 0x3ffff000 */
     uint32_t fw_base;
     uint32_t fw_size;
     uint32_t self_addr;
@@ -1247,7 +1248,7 @@ static uint64_t iop_ctrl_read(void *opaque, hwaddr offset, unsigned size)
     case IOP_FW_BASE:
         return s->fw_base;
     case IOP_FW_SIZE:
-        return s->fw_size;
+        return s->fw_size_mask ? -s->fw_size & 0x3ffff000 : s->fw_size;
     case IOP_SELF:
         return s->self_addr;
     case 0x00 ... 0x3c:
@@ -1294,7 +1295,7 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
         s->fw_config = 0;
         break;
     case IOP_FW_SIZE:
-        s->fw_size = value;
+        s->fw_size = s->fw_size_mask ? -value & 0x3ffff000 : value;
         break;
     case IOP_SELF:
         s->self_addr = value;
@@ -1807,6 +1808,7 @@ static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_STRING("nand-overlay", S5L8930IOPState, overlay_dir),
     DEFINE_PROP_LINK("sdio", S5L8930IOPState, sdio, TYPE_DEVICE, DeviceState *),
     DEFINE_PROP_LINK("core", S5L8930IOPState, core, TYPE_DEVICE, DeviceState *),
+    DEFINE_PROP_BOOL("fw-size-mask", S5L8930IOPState, fw_size_mask, false),
 };
 
 static void s5l8930_iop_class_init(ObjectClass *klass, void *data)

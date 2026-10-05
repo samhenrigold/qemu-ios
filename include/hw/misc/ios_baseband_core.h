@@ -240,4 +240,7 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
 /* A MISO frame the AP set up but never clocked out: its payload goes back to the head of the queue. */
 void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso);
 
+/* The radio nvram image iBoot reads (+xdrv=9,1,<block>): 0x600 bytes into nv. */
+void ios_bb_radio_nvram(uint8_t *nv);
+
 #endif

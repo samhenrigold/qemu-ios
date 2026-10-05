@@ -172,10 +172,11 @@ static uint8_t m_fcs(uint8_t fcs, const uint8_t *p, unsigned n)
 
 static void mux_frame(uint8_t addr, uint8_t ctrl, const uint8_t *data, unsigned len)
 {
-    uint8_t f[5 + 1600];
+    uint8_t f[5 + 1600 + 2];
     unsigned n = 0, hdr;
     uint8_t fcs;
 
+    f[n++] = 0xf9;                                   /* 1.0's CommCenter flags its frames inside H5 */
     f[n++] = addr;
     f[n++] = ctrl;
     if (len < 128) {
@@ -188,11 +189,12 @@ static void mux_frame(uint8_t addr, uint8_t ctrl, const uint8_t *data, unsigned 
     memcpy(f + n, data, len);
     n += len;
     /* 27.010: UIH covers address+control+length only. */
-    fcs = m_fcs(0xff, f, hdr);
+    fcs = m_fcs(0xff, f + 1, hdr - 1);
     if ((ctrl & ~0x10) != 0xef) {
         fcs = m_fcs(fcs, data, len);
     }
     f[n++] = 0xff - fcs;
+    f[n++] = 0xf9;
     c_data(f, n);
 }
 
@@ -218,6 +220,10 @@ static void mux_payload(const uint8_t *p, unsigned n)
     unsigned pos = 0;
 
     while (pos + 3 < n) {
+        if (p[pos] == 0xf9) {                        /* each frame between flags */
+            pos++;
+            continue;
+        }
         uint8_t addr = p[pos];
         uint8_t ctrl = p[pos + 1];
         unsigned len = p[pos + 2] >> 1;
@@ -305,6 +311,7 @@ static void h5_rx_pkt(const uint8_t *p, unsigned n)
         return;
     }
     if (test_mux_on) {
+        CHECK(len >= 2 && info[0] == 0xf9 && info[len - 1] == 0xf9);   /* flagged, as 1.0 wants */
         mux_payload(info, len);
     } else {
         ev_add(EV_RAW, 0, 0, info, len);
@@ -510,10 +517,11 @@ static void test_boot(void)
     pump();
     expect_raw("\r\nOK\r\n");
 
-    /* The kernel snoops this and starts H5; the command still gets an OK. */
+    /* The kernel snoops this and is in H5 from the write on: the OK must not come
+     * back raw (the kernel would drop it as line noise), it is the first H5 data. */
     feed_raw("at+xtransportmode\r");
     pump();
-    expect_raw("\r\nOK\r\n");
+    expect_none();
 
     /* -- H5 link establishment: SYNC then CONFIG with cfg 0x17 */
     c_link((const uint8_t[]){ 0x01, 0x7e }, 2);
@@ -523,6 +531,7 @@ static void test_boot(void)
     c_link((const uint8_t[]){ 0x03, 0xfc, 0x17 }, 3);
     pump();
     expect_link((const uint8_t[]){ 0x04, 0x7b, 0x17 }, 3);
+    expect_raw("\r\nOK\r\n");                    /* +xtransportmode's */
 
     /* Reliable data now flows; the kernel re-delivers what was queued. */
     c_data_str("ate0\r");
@@ -921,6 +930,9 @@ static void test_power_and_mux_close(void)
 
     c_mux(0, psc, sizeof(psc));
     pump();
+    while (ev_i < nev && evs[ev_i].kind == EV_FLAGS) {
+        ev_i++;           /* the frame's own opening flag extends the wake-up run */
+    }
     expect_frame(0, "\x21\x01");
 
     /* CLD: acked, then the modem is back to plain AT on channel 0 */
@@ -1123,11 +1135,136 @@ static void test_chain(void)
     test_power_and_mux_close();
 }
 
+/*
+ * 1.0's own kernel (the boot kernelcache's AppleReliableSerialLayer) links up
+ * differently from the restore kernel the notes were read from: its CONFIG has
+ * no configuration field, it takes its send window from the CONFIG RESP (none =
+ * window 0, "Waiting for remote window to open" forever), and CommCenter's
+ * +xtransportmode OK has to come over H5 once the link is Active.
+ */
+static void test_h5_link_1_0(void)
+{
+    memset(&bb, 0, sizeof(bb));
+    snprintf(bb.imei, sizeof(bb.imei), "000000001234569");
+    ios_bb_init(&bb, core_out, NULL);
+    tnow = 1000;
+    outlen = 0;
+    nev = ev_i = 0;
+    c_tx_seq = c_rx_next = c_acked = 0;
+    autoack = true;
+    test_mux_on = false;
+
+    feed_raw("at+xtransportmode\r");
+    pump();
+    expect_none();
+    c_link((const uint8_t[]){ 0x01, 0x7e }, 2);
+    pump();
+    expect_link((const uint8_t[]){ 0x02, 0x7d }, 2);
+    c_link((const uint8_t[]){ 0x03, 0xfc }, 2);
+    pump();
+    expect_link((const uint8_t[]){ 0x04, 0x7b, IOS_BB_H5_WINDOW }, 3);
+    expect_raw("\r\nOK\r\n");
+    c_data_str("ate0\r");
+    pump();
+    expect_raw("\r\nOK\r\n");
+
+    /* Its data CRC comes low byte first. */
+    {
+        uint8_t pkt[4 + 8 + 2] = { 0x80 | 0x40 | (c_rx_next << 3) | c_tx_seq, 14 | (8 << 4), 0 };
+        uint8_t wire[2 * sizeof(pkt) + 2], *o = wire;
+        uint16_t c;
+
+        pkt[3] = ~(pkt[0] + pkt[1] + pkt[2]);
+        memcpy(pkt + 4, "at+cgsn\r", 8);
+        c = ios_bb_h5_crc(pkt, 12);
+        pkt[12] = c;
+        pkt[13] = c >> 8;
+        *o++ = 0xc0;
+        for (unsigned i = 0; i < sizeof(pkt); i++) {
+            if (pkt[i] == 0xc0 || pkt[i] == 0xdb) {
+                *o++ = 0xdb;
+                *o++ = pkt[i] == 0xc0 ? 0xdc : 0xdd;
+            } else {
+                *o++ = pkt[i];
+            }
+        }
+        *o++ = 0xc0;
+        c_tx_seq = (c_tx_seq + 1) & 7;
+        bb.now_ms = tnow;
+        ios_bb_input(&bb, wire, o - wire);
+        pump();
+        expect_raw("\r\n000000001234569\r\n");
+        expect_raw("\r\nOK\r\n");
+    }
+}
+
+/*
+ * iBoot-159's radio nvram read: AT+XDRV=9,1,<block>; (its trailing ';') until 0x600
+ * bytes; the type-1 entry is the Wi-Fi calibration it copies into the DT, and
+ * AppleMRVL868x wants its first 128 bytes neither all 0x00 nor all 0xFF.
+ */
+static void test_radio_nvram(void)
+{
+    uint8_t nv[0x600];
+    unsigned got = 0;
+
+    memset(&bb, 0, sizeof(bb));
+    snprintf(bb.imei, sizeof(bb.imei), "000000001234569");
+    ios_bb_init(&bb, core_out, NULL);
+    outlen = 0;
+    nev = ev_i = 0;
+    for (int block = 0; block < 4; block++) {
+        char cmd[32], *line, *hex;
+        int status, b;
+
+        snprintf(cmd, sizeof(cmd), "at+xdrv=9,1,%d;\r", block);
+        outlen = 0;
+        bb.now_ms = tnow;
+        ios_bb_input(&bb, (const uint8_t *)cmd, strlen(cmd));   /* not pumped: read outbuf */
+        outbuf[outlen] = 0;
+        line = strstr((char *)outbuf, "+XDRV: 9,1,");
+        CHECK(line && strstr((char *)outbuf, "\r\nOK\r\n"));
+        if (!line || sscanf(line, "+XDRV: 9,1,%d,%d,", &status, &b) != 2) {
+            CHECK(!"no +XDRV reply");
+            return;
+        }
+        CHECK(b == block);
+        if (block == 3) {
+            CHECK(status != 0);                      /* past the image: iBoot stops */
+            break;
+        }
+        CHECK(status == 0);
+        hex = strchr(strchr(strchr(strchr(line, ',') + 1, ',') + 1, ',') + 1, ',') + 1;
+        for (unsigned i = 0; i < 512; i++, got++) {
+            unsigned v;
+            CHECK(sscanf(hex + 2 * i, "%2X", &v) == 1);
+            nv[got] = v;
+        }
+    }
+    CHECK(got == 0x600);
+    CHECK(nv[0] == 0 && nv[1] == 1 && ((nv[2] << 8) | nv[3]) * 2 - 4 == 1024);
+    bool zero = true, ones = true;
+    for (int i = 0; i < 128; i++) {
+        zero &= nv[4 + i] == 0;
+        ones &= nv[4 + i] == 0xff;
+    }
+    CHECK(!zero && !ones);
+    CHECK(((nv[4 + 1024 + 2] << 8) | nv[4 + 1024 + 3]) == 0);   /* the list ends */
+
+    /* and the ';' iBoot puts on "+cgsn;" */
+    outlen = 0;
+    ios_bb_input(&bb, (const uint8_t *)"at+cgsn;\r", 9);
+    outbuf[outlen] = 0;
+    CHECK(strstr((char *)outbuf, "000000001234569") != NULL);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/baseband/chain", test_chain);
     g_test_add_func("/baseband/ifx", test_ifx);
+    g_test_add_func("/baseband/h5-link-1.0", test_h5_link_1_0);
+    g_test_add_func("/baseband/radio-nvram", test_radio_nvram);
     g_test_run();
     if (failures) {
         fprintf(stderr, "test-ios-baseband: %d failure(s)\n", failures);

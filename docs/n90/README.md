@@ -33,6 +33,11 @@ with persistence all work.
 Verified 2026-10-04: `tests/ipad1/regress.py --machine iPhone-4 --device DEV --checks
 boot,persist,usbmux,afc,wifi`, all PASS.
 
+App install, 2026-10-04 (FirmwareKit kboot `n90ap-8C148` device, guest package with gles-public 81c8124a35 as an
+offer): `regress.py --machine iPhone-4 --checks app --guest-package OFFER` PASS. AppSync installs the harness through
+installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
+with no refusals.
+
 ## How to boot
 
 The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
@@ -62,16 +67,25 @@ As N81, plus:
 
 ## Debts
 
+0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina
+   boards a legacy 1x app's QuartzCore scales its EAGL surface with the M2 scaler: it queues
+   `IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap` and releases it by accelerator ID through
+   `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
+   signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
+   (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   bridge refuses nothing.
+
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and
    the device shows "No Service".
 2. **Absent parts**:
-   - The gyro (ap3gdl/mpu3100 at 0x68). Its driver frees itself.
+   - ~~The gyro~~: the L3G4200D model, as on N81 (its debt 5).
    - The ALS/prox ct700 (i2c0 0x29). It is probed for and skipped.
    - The Highland Park audio processor (i2c0 0x3e, uart6, i2s2).
    - The GPS (bcm4750 on uart4).
-   - The cameras and ISP (AppleH3CamIn mailbox timeouts, as on N81).
+   - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
-4. **Accelerometer mounting** is unverified. Its DT orientation `00000100 000000ff 00ff0000` differs from
-   N81's and K48's.
-5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID, uncalibrated
-   touch edges.
+4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
+   Safari turns with `accel-orientation` 1/3/4 as on hardware.
+5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
+   calibrated (N81's debt 7, the shared `mt_profile_n81`).

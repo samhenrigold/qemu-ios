@@ -18,12 +18,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8900ADMState, S5L8900_ADM)
 #define ADM_RESULT 0x30          /* four result words, see adm_run_command */
 #define ADM_STATUS_CLEAN 0xFE    /* result[2] of a read that found an erased page */
 
-/* Command block the driver writes into its data2 section. */
-#define ADM_CMD_OFFSET       (0x1104 + 0x24)
-#define ADM_CMD_NPAGES       (0x1104 + 0x28)   /* uint16, big-endian */
-#define ADM_CMD_CE           (0x1104 + 0x34)   /* uint8: chip enable (bank) of an erase */
-#define ADM_CMD_BANKS        (0x1104 + 0x44)   /* uint8 per page */
-#define ADM_CMD_PAGES        (0x1104 + 0x244)  /* uint32 big-endian per page */
+/*
+ * The transfer block ("TF", the firmware's own name) the driver writes into its
+ * data2 section, offsets from its start. It begins with the three data section
+ * addresses (big-endian, +4/+8/+0xC), which is how the model finds it: 0x1104
+ * into data2 for CalmADMFMCFirmware-17 (1.1-1.1.5), 0x824 for -14 (1.0).
+ */
+#define ADM_TF_V17           0x1104
+#define ADM_TF_V14           0x824
+#define ADM_CMD_OFFSET       0x24
+#define ADM_CMD_NPAGES       0x28   /* uint16, big-endian */
+#define ADM_CMD_CE           0x34   /* uint8: chip enable (bank) of an erase */
+#define ADM_CMD_BANKS        0x44   /* uint8 per page */
+#define ADM_CMD_PAGES        0x244  /* uint32 big-endian per page (firmware-17; see adm_pages_off) */
 
 #define ADM_CMD_READ_SEQ   0x200   /* n pages, same page on every bank */
 #define ADM_CMD_READ       0x300   /* one page, or a scattered list */
@@ -41,6 +48,7 @@ typedef struct S5L8900ADMState {
     uint32_t data2_sec_addr;
     uint32_t data3_sec_addr;
     uint32_t result[4];
+    uint32_t tf;            /* the transfer block's offset in data2, 0 = not found yet */
 
     MemoryRegion *downstream;
     AddressSpace downstream_as;

@@ -34,6 +34,41 @@ void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s,
     sysic_update_gpio_irq(s, group);
 }
 
+/*
+ * The pad-driven sources of `group` that match their programmed polarity. An
+ * edge source fires on a 0 -> 1 transition of this (a polarity flip that makes
+ * it match counts: the hardware compares pad and polarity); a level source stays
+ * pending while it holds.
+ */
+static uint32_t sysic_pad_match(IPodTouchSYSICState *s, unsigned group)
+{
+    return ~(s->gpio_pad_level[group] ^ s->gpio_int_level[group]) & s->gpio_pad_driven[group];
+}
+
+static void sysic_pad_eval(IPodTouchSYSICState *s, unsigned group, uint32_t was)
+{
+    uint32_t match = sysic_pad_match(s, group), level = s->gpio_int_type[group];
+    uint32_t driven = s->gpio_pad_driven[group];
+
+    s->gpio_level_pending[group] = (s->gpio_level_pending[group] & ~(driven & level)) | (match & level);
+    s->gpio_int_status[group] |= (match & ~was & ~level) | (match & level & s->gpio_int_enabled[group]);
+    sysic_update_gpio_irq(s, group);
+}
+
+void ipod_touch_sysic_set_pad(IPodTouchSYSICState *s, unsigned irq, bool level)
+{
+    unsigned group = irq / 32;
+    uint32_t bit = 1u << (irq % 32), was;
+
+    if (group >= GPIO_NUMINTGROUPS) {
+        return;
+    }
+    was = sysic_pad_match(s, group);
+    s->gpio_pad_driven[group] |= bit;
+    s->gpio_pad_level[group] = (s->gpio_pad_level[group] & ~bit) | (level ? bit : 0);
+    sysic_pad_eval(s, group, was);
+}
+
 /* Inputs carry logical interrupt requests, rather than raw pad polarity.
  * Edge-latched button and digitizer requests continue to use gpio_int_status.
  * A nested controller's level stays pending until that device clears it. */
@@ -146,6 +181,17 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
             break;
         case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
         {
+            /* The polarity, read back as written (1.x's drivers flip it after each
+             * button interrupt to catch the other edge). */
+            uint8_t group = (addr - GPIO_INTLEVEL) / 4;
+            if (group < GPIO_NUMINTGROUPS) {
+                uint32_t was = sysic_pad_match(s, group);
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] LEVEL group %u <- %08x\n", group, (uint32_t)val);
+                }
+                s->gpio_int_level[group] = val;
+                sysic_pad_eval(s, group, was);
+            }
             break;
         }
         case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
@@ -207,7 +253,12 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
         {
             uint8_t group = (addr - GPIO_INTTYPE) / 4;
             if (group < GPIO_NUMINTGROUPS) {
+                uint32_t was = sysic_pad_match(s, group);
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] TYPE  group %u <- %08x\n", group, (uint32_t)val);
+                }
                 s->gpio_int_type[group] = val;
+                sysic_pad_eval(s, group, was);
             }
             break;
         }
@@ -261,6 +312,8 @@ static void ipod_touch_sysic_reset(DeviceState *dev)
         s->gpio_int_enabled[grp] = 0;
         s->gpio_int_type[grp] = 0;
         s->gpio_level_pending[grp] = 0;
+        s->gpio_pad_level[grp] = 0;
+        s->gpio_pad_driven[grp] = 0;
         if (s->gpio_irqs[grp]) {
             qemu_irq_lower(s->gpio_irqs[grp]);
         }

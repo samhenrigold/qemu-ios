@@ -50,6 +50,8 @@ enum {
 extern int access(const char *, int);
 extern int syscall(int, ...);
 extern void *memset(void *, int, unsigned long);
+extern int memcmp(const void *, const void *, unsigned long);
+extern int strcmp(const char *, const char *);
 
 /* ------------------------------------------------------------ the command buffer --- */
 
@@ -919,6 +921,117 @@ static int fe_swap_signal(GuestGC *gc, void *fb, unsigned txn, unsigned layer)
     return p_fbSignal(fb, txn, layer) == 0;
 }
 
+/* ------------------------------------------- the scaler's GPU-conditioned transfers --- */
+
+/*
+ * 4.x CoreAnimation scales a layer through the M2 scaler (IOSurfaceAccelerator) after drawing its source with GL: on
+ * the iPod 4's 2x panel, every 1x app's CAEAGLLayer (8C148 QuartzCore). With an ES2 render server
+ * (EAGLServer::supports_iosurface_accelerator_tokens) it queues IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap,
+ * which returns a token and leaves the transfer waiting in AppleM2ScalerCSCDriver's copy_surface for a condition, then
+ * hands the token to GL: CAEAGLContextScalarNotification -> [ctx sendNotification:IOSurfaceAcceleratorGetID(accel)
+ * forTransaction:token onLayer:0]. The stock engine forwards that to the SGX, whose kernel driver releases the transfer
+ * once the frame is drawn. No SGX runs here and no user client releases a condition (the scaler's has none), so the
+ * transfer never ran and the layer stayed black. The GL here is done when the notification arrives, so the front end
+ * takes the condition's place: the conditional call is recorded instead of queued, and the notification issues it as
+ * the unconditional IOSurfaceAcceleratorTransferSurfaceWithSwap, which takes the same ten arguments (the conditional one
+ * adds only the token out). Bound by name in each image that imports it (its lazy/non-lazy symbol pointers), so nothing
+ * is per build; processes that do not import it are untouched.
+ */
+#define FE_XFER_NAME "_IOSurfaceAcceleratorConditionalTransferSurfaceWithSwap"
+static unsigned fe_u32(const unsigned char *p);
+#define FE_XFERS 8
+typedef int (*fe_xfer_fn)(void *, void *, void *, void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
+static struct fe_xfer { void *acc, *src, *dst, *props; unsigned arg[6], token; } fe_xfers[FE_XFERS];
+static unsigned fe_xfer_next;
+static fe_xfer_fn p_xferSwap;
+static int (*p_accGetID)(void *, unsigned *);
+static pthread_mutex_t fe_xfer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int fe_cond_xfer(void *acc, void *src, void *dst, void *props, unsigned a5, unsigned a6, unsigned a7,
+                        unsigned a8, unsigned a9, unsigned a10, unsigned *token)
+{
+    struct fe_xfer *x, old;
+    fe_cf();
+    if (!p_CFRetain || !src || !dst) return 0xE00002BC;            /* kIOReturnError */
+    pthread_mutex_lock(&fe_xfer_lock);
+    if (!++fe_xfer_next) fe_xfer_next = 1;                          /* 0 is no token */
+    x = &fe_xfers[fe_xfer_next % FE_XFERS];
+    old = *x;
+    x->acc = acc; x->src = p_CFRetain(src); x->dst = p_CFRetain(dst); x->props = props ? p_CFRetain(props) : 0;
+    x->arg[0] = a5; x->arg[1] = a6; x->arg[2] = a7; x->arg[3] = a8; x->arg[4] = a9; x->arg[5] = a10;
+    x->token = fe_xfer_next;
+    if (token) *token = fe_xfer_next;
+    pthread_mutex_unlock(&fe_xfer_lock);
+    if (old.token) {                     /* never notified: dropped, as a transfer whose condition never comes */
+        refused("scaler:", "token-dropped", ~0u);
+        p_CFRelease(old.src); p_CFRelease(old.dst); if (old.props) p_CFRelease(old.props);
+    }
+    return 0;
+}
+
+/* The recorded transfer the notification (accelerator ID, token) releases, issued now; 0 if it names none. */
+static int fe_release_xfer(unsigned id, unsigned token)
+{
+    struct fe_xfer x = {0};
+    unsigned i, acc_id;
+    pthread_mutex_lock(&fe_xfer_lock);
+    for (i = 0; i < FE_XFERS; i++)
+        if (fe_xfers[i].token == token && token && p_accGetID && p_accGetID(fe_xfers[i].acc, &acc_id) == 0 && acc_id == id) {
+            x = fe_xfers[i];
+            fe_xfers[i].token = 0;
+            break;
+        }
+    pthread_mutex_unlock(&fe_xfer_lock);
+    if (!x.token) return 0;
+    if (p_xferSwap(x.acc, x.src, x.dst, x.props, x.arg[0], x.arg[1], x.arg[2], x.arg[3], x.arg[4], x.arg[5]) != 0)
+        refused("scaler:", "transfer", ~0u);
+    p_CFRelease(x.src); p_CFRelease(x.dst); if (x.props) p_CFRelease(x.props);
+    return 1;
+}
+
+/* Point every loaded image's symbol pointers for FE_XFER_NAME at fe_cond_xfer (32-bit Mach-O, shared cache or not). */
+unsigned _dyld_image_count(void);
+const void *_dyld_get_image_header(unsigned);
+long _dyld_get_image_vmaddr_slide(unsigned);
+
+__attribute__((constructor)) static void fe_bind_xfer(void)
+{
+    unsigned n = _dyld_image_count(), i;
+    p_xferSwap = (fe_xfer_fn)dlsym(RTLD_DEFAULT, "IOSurfaceAcceleratorTransferSurfaceWithSwap");
+    p_accGetID = dlsym(RTLD_DEFAULT, "IOSurfaceAcceleratorGetID");
+    if (!p_xferSwap || !p_accGetID) return;
+    for (i = 0; i < n; i++) {
+        const unsigned char *h = _dyld_get_image_header(i), *lc;
+        unsigned long slide = (unsigned long)_dyld_get_image_vmaddr_slide(i), le = 0, k, c;
+        const unsigned *symtab = 0, *dysym = 0;
+        if (!h || fe_u32(h) != 0xFEEDFACE) continue;
+        for (lc = h + 28, k = 0; k < fe_u32(h + 16); k++, lc += fe_u32(lc + 4)) {
+            if (fe_u32(lc) == 1 && !memcmp(lc + 8, "__LINKEDIT", 11))       /* vmaddr - fileoff */
+                le = fe_u32(lc + 24) + slide - fe_u32(lc + 32);
+            else if (fe_u32(lc) == 2) symtab = (const unsigned *)lc;
+            else if (fe_u32(lc) == 11) dysym = (const unsigned *)lc;
+        }
+        if (!le || !symtab || !dysym) continue;
+        const unsigned char *syms = (const unsigned char *)(le + symtab[2]), *strs = (const unsigned char *)(le + symtab[4]);
+        const unsigned *ind = (const unsigned *)(le + dysym[14]);
+        for (lc = h + 28, k = 0; k < fe_u32(h + 16); k++, lc += fe_u32(lc + 4)) {
+            if (fe_u32(lc) != 1) continue;
+            for (c = 0; c < fe_u32(lc + 48); c++) {
+                const unsigned char *sec = lc + 56 + 68 * c;
+                unsigned type = fe_u32(sec + 56) & 0xff, j;
+                void **ptrs = (void **)(fe_u32(sec + 32) + slide);
+                if (type != 6 && type != 7) continue;                   /* S_NON_LAZY / S_LAZY_SYMBOL_POINTERS */
+                for (j = 0; j < fe_u32(sec + 36) / 4; j++) {
+                    unsigned si = ind[fe_u32(sec + 60) + j];      /* reserved1: its first indirect entry */
+                    if (si & 0xC0000000u) continue;                     /* INDIRECT_SYMBOL_LOCAL / ABS */
+                    if (!strcmp((const char *)strs + fe_u32(syms + 12 * si), FE_XFER_NAME))
+                        ptrs[j] = (void *)fe_cond_xfer;
+                }
+            }
+        }
+    }
+}
+
 /* ------------------------------------------------------ the 5.x macro context --- */
 
 /* The stock OpenGLES image as the shared cache maps it into every process (the file this one replaces is not
@@ -1199,13 +1312,16 @@ __attribute__((visibility("default")))
     fe_swap_signal(_private->gc, fb, transaction, layer);
 }
 
-/* 3.2+: the same notification with the framebuffer's ID (IOMobileFramebufferGetID) instead of the framebuffer. The
- * one framebuffer a process can name is the main display's; any other ID is a counted refusal. */
+/* 3.2+: the same notification with the framebuffer's ID (IOMobileFramebufferGetID) instead of the framebuffer, or (4.x)
+ * an IOSurfaceAccelerator's ID and a token fe_cond_xfer handed out. The one framebuffer a process can name is the main
+ * display's; any other ID is a counted refusal. */
 - (void)sendNotification:(unsigned)fbid forTransaction:(unsigned)transaction onLayer:(unsigned)layer
 {
     void *fb = 0;
     unsigned id = 0;
     fe_ca_path("sendNotification:");
+    qc(GLES_ID_glFinish, _private->gc, 0, A(0));       /* the frame is drawn: a scaler transfer may read it */
+    if (fe_release_xfer(fbid, transaction)) return;
     if (fe_iomfb() && p_fbGetMain && p_fbGetID) {
         p_fbGetMain(&fb);
         if (fb && (p_fbGetID(fb, &id) != 0 || id != fbid)) fb = 0;

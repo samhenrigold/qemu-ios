@@ -36,6 +36,12 @@ link6 -execute "$OUT/it_heading" "$OUT/it_heading.o"
 rm -f "$OUT/it_heading.o"
 "${LDID:-ldid}" -S "$OUT/it_heading"
 file "$OUT/it_heading"
+# it_gyro: the gyro probe (contrib/it-gyro), not baked; run it through the agent's spawn on N81/N90.
+cc6 "$HERE/../it-gyro/it_gyro.c" "$OUT/it_gyro.o" -D_FORTIFY_SOURCE=0
+link6 -execute "$OUT/it_gyro" "$OUT/it_gyro.o"
+rm -f "$OUT/it_gyro.o"
+"${LDID:-ldid}" -S "$OUT/it_gyro"
+file "$OUT/it_gyro"
 # it_cctest: CommonCrypto known answers on the guest CPU (contrib/it-cctest), not baked by default.
 cc6 "$HERE/../it-cctest/it_cctest.c" "$OUT/it_cctest.o"
 link6 -execute "$OUT/it_cctest" "$OUT/it_cctest.o"
