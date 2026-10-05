@@ -1039,11 +1039,11 @@ static void test_ifx(void)
     ios_bb_init(&c, ios_bb_ifx_queue, &x);
     CHECK(!ios_bb_ifx_pending(&x));             /* credits ride the AP's first frame */
     ifx_frame(&x, &c, "", miso, 0x800, got);
-    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 8);
+    CHECK((miso[2] | (miso[3] & 0xf) << 8) == 16);
     for (int i = 0; i < 5; i++) {
         ifx_frame(&x, &c, "at\r", miso, 0x800, got);
     }
-    CHECK(x.credits_out >= 4 && x.credits_out <= 8);
+    CHECK(x.credits_out == 16);                 /* topped up on every frame */
 }
 
 /* ------------------------------------------------------------- packet data */
@@ -1109,6 +1109,7 @@ static void test_packet_data(void)
     c_mux_str(5, "at+cgact=0,1\r");
     pump();
     expect_frame(5, "\r\nOK\r\n");
+    expect_frame(6, "\r\nNO CARRIER\r\n");
     CHECK(!ios_bb_data_input(&bb, ip, 40));
     bb.data_out = NULL;
 }
