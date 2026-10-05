@@ -1264,8 +1264,9 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     bool active = false;
 
     emit_xcallstat(bb, c->id, IOS_BB_CALL_INCOMING);
+    /* Type 145 carries the digits alone: the phone adds the '+' itself (4.2.1 showed "++1..."). */
     chan_printf(bb, bb->call_ch, "\r\n+CLIP: \"%s\",%d,,,\"\",0\r\n",
-                c->number, at_type_of(c->number));
+                c->number + (c->number[0] == '+'), at_type_of(c->number));
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
         IosBbCall *o = &bb->calls[i];
 
@@ -1278,7 +1279,7 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     if (active) {
         /* Waiting call: +CCWA carries the same number/type, class 1 (voice). */
         chan_printf(bb, bb->call_ch, "\r\n+CCWA: \"%s\",%d,1\r\n",
-                    c->number, at_type_of(c->number));
+                    c->number + (c->number[0] == '+'), at_type_of(c->number));
     }
     chan_printf(bb, bb->call_ch, "\r\nRING\r\n");
     c->rings = 1;
@@ -1292,6 +1293,16 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 
     if (!bb->ch[bb->call_ch].open || !radio_ok(bb) || !number[0]) {
         return false;
+    }
+    /*
+     * A bare 11+ digit number is international (country code first, as the SMS path
+     * already sends it): keep it as +<digits>, which +CLIP sends as type 145.
+     */
+    char intl[34];
+
+    if (number[0] != '+' && strlen(number) >= 11 && strspn(number, "0123456789") == strlen(number)) {
+        snprintf(intl, sizeof(intl), "+%s", number);
+        number = intl;
     }
     c = call_new(bb, true, number, IOS_BB_CALL_INCOMING);
     if (!c) {
@@ -2334,7 +2345,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 
 #define IFX_MORE      0x10         /* header byte 1 */
 #define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
-#define IFX_V1_CTS    0x40         /* header byte 3 */
+
 #define IFX_V2_GRANT  16           /* the AP's credit level we keep it at (tx-buffer-count) */
 
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
@@ -2431,7 +2442,7 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         miso[3] = grant >> 8;
     } else {
         miso[2] = x->max_data;                 /* next_data_size: what we can take */
-        miso[3] = ((x->max_data >> 8) & 0xf) | IFX_V1_CTS;
+        miso[3] = (x->max_data >> 8) & 0xf;    /* bit 6 left clear: the N88 kernel re-polls while it is set */
     }
     memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
     memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
