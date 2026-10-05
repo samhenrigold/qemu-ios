@@ -39,6 +39,9 @@ def row_of(n, have):
             return n[:-len(suffix)]
     if n.endswith("APPLE"):
         return row_of(n[:-len("APPLE")] + "EXT", have)
+    for suffix in ("APPLE", "EXT", "OES"):   # 7.x's ES 3.0 core names: the extension's row (glFenceSync -> ...APPLE)
+        if not n.endswith(("APPLE", "EXT", "OES")) and n + suffix in have:
+            return n + suffix
     return None
 
 
