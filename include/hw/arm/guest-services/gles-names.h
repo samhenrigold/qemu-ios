@@ -22,8 +22,8 @@
  * --check.
  */
 #ifndef GLES_NAMES_VERSION
-#define GLES_NAMES_VERSION 0x4897c448
-#define GLES_ID_MAX 918              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
+#define GLES_NAMES_VERSION 0xc174872c
+#define GLES_ID_MAX 920              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
 #define GLES_F_BATCH 1
 #define GLES_F_EXPORT 2
 #endif
@@ -947,4 +947,7 @@ GLES_FN(glClientWaitSyncAPPLE,                 client_wait_sync_APPLE,          
 GLES_FN(glWaitSyncAPPLE,                       wait_sync_APPLE,                               916, NA, GLES_F_EXPORT)
 GLES_FN(glGetInteger64vAPPLE,                  get_integer64v_APPLE,                          917, NA, GLES_F_EXPORT)
 GLES_FN(glGetSyncivAPPLE,                      get_synciv_APPLE,                              918, 5,  GLES_F_EXPORT)
+/* iOS 6.0 (10A403) exports: texture storage, texture-level copy. Not forwarded yet: stubbed by name. */
+GLES_FN(glTexStorage2DEXT,                     tex_storage2D_EXT,                             919, NA, GLES_F_EXPORT)
+GLES_FN(glCopyTextureLevelsAPPLE,              copy_texture_levels_APPLE,                     920, NA, GLES_F_EXPORT)
 #endif
