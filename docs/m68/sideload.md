@@ -27,8 +27,8 @@ metadata in `uikit1.h` (class-dump headers, in effect), and a `UIApplication` su
   the samples. The ball is green when the phone is level. On the emulator, tilt it from the host with
   QMP: `qom-set /machine accel-pose flat`, then `accel-roll` and `accel-pitch` in degrees.
   Measured: flat reads x 0.00 y 0.00 with the ball centred and green; roll 12 and pitch -15 move it
-  off-centre and orange. Flat reads z -0.50, not about -1 g, which may be the LIS302DL model's scale;
-  this was not checked against a real phone.
+  off-centre and orange. Flat reads z -0.43: 1.0's own driver scale (1/128 g per
+  count) on the LIS302DL's 18 mg counts, what a real phone on 1.0 reads (README, notes for guest software).
 
 | Step | What | Why |
 |---|---|---|

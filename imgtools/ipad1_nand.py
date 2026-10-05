@@ -101,6 +101,32 @@ def sig_flags():
     return SIG_FLAGS if WHITENING else SIG_FLAGS & ~0x10000
 
 
+def nand_epoch(kernelcache):
+    """PE_nand_epoch as the kernel answers it: 1 up to IOFlashStorage 410.3 (iOS 4.3.0), 2 from 410.4 (4.3.5); the FIL
+    compares nSig's low byte with '0' + it and, on a mismatch, waits for a SecureRoot epoch roll (a restore). Found by
+    the call's shape, as FirmwareKit's K48NAND.signatureEpoch: ldr rN, [pc]; blx rN; adds r0, #0x30; uxtb r2, r0;
+    pop {r7, pc}, the callee starting movs r0, #N. 1 when absent."""
+    d = open(kernelcache, "rb").read()
+    segs, off = [], 28
+    for _ in range(struct.unpack_from("<I", d, 16)[0]):
+        cmd, size = struct.unpack_from("<II", d, off)
+        if cmd == 1:
+            vmaddr, vmsize, fileoff = struct.unpack_from("<III", d, off + 24)
+            segs.append((vmaddr, vmsize, fileoff))
+        off += size
+    i = d.find(b"\x30\x30\xc0\xb2\x80\xbd")
+    while i >= 4:
+        if d[i - 3] & 0xF8 == 0x48 and d[i - 2] == 0x80 | (d[i - 3] & 7) << 3 and d[i - 1] == 0x47:
+            pool = ((i - 4) & ~3) + 4 + d[i - 4] * 4
+            target = struct.unpack_from("<I", d, pool)[0] & ~1
+            for vmaddr, vmsize, fileoff in segs:
+                o = fileoff + target - vmaddr
+                if vmaddr <= target < vmaddr + vmsize and o + 2 <= len(d) and d[o + 1] == 0x20:   # movs r0, #N
+                    return d[o]
+        i = d.find(b"\x30\x30\xc0\xb2\x80\xbd", i + 1)
+    return 1
+
+
 def kernel_version(kernelcache):
     """The "Darwin Kernel Version ..." string (7B500: 0xc0214690) out of a decrypted kernelcache."""
     data = open(kernelcache, "rb").read()
@@ -348,7 +374,7 @@ def vfl_checksum(c):
     return bytes(c)
 
 
-def write_metadata(st, geo, kernel_ver):
+def write_metadata(st, geo, kernel_ver, nsig=None):
     for cs in range(geo.num_cs):
         cands = geo.cand[cs]
         pg = special_page(geo, b"DEVICEINFOBBT", 4, cands, bbt_bitmap(geo, cs))
@@ -359,7 +385,7 @@ def write_metadata(st, geo, kernel_ver):
         meta = struct.pack("<I", 0xFFFFFFFF) + b"\xff" * 4 + b"\x00\x80\xff\xff"   # c07fc85a..c07fc874
         for p in range(8):                                   # 8 identical copies, block 1 pages 0-7
             st.write(cs, geo.ppage(geo.vfl_blocks[0], p), ctx.ljust(geo.page_size, b"\0"), meta)
-    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", nsig(), sig_flags()) + kernel_ver.ljust(0x100, b"\0"))
+    sig = special_page(geo, b"NANDDRIVERSIGN", 0, [0] * 8, struct.pack("<II", nsig or globals()["nsig"](), sig_flags()) + kernel_ver.ljust(0x100, b"\0"))
     for p in range(geo.pages_per_block):
         st.write(0, geo.ppage(geo.cand[0][4], p), *sig, raw=True)
 
@@ -589,7 +615,8 @@ def build(a):
         raise SystemExit("partition 2 ends at %d > exported %d sectors" % (p2[1] + p2[2], geo.exported_pages))
 
     st = Store(out, geo, create=True)
-    write_metadata(st, geo, kernel_version(a.kernelcache) if a.kernelcache else a.kernel_version)
+    write_metadata(st, geo, kernel_version(a.kernelcache) if a.kernelcache else a.kernel_version,
+                   nsig() if getattr(a, "epoch", None) or not a.kernelcache else 0x43313130 + nand_epoch(a.kernelcache))   # --epoch wins, else the kernel's
     ftl = FTLWriter(st, geo)
     # LPN == 4 KiB LBA. Segments in ascending LBA order:
     segs = [(0, min(p1[1], len(head) // ps), lambda n: bytes(head[n * ps:(n + 1) * ps]))]
@@ -668,8 +695,9 @@ def check(path, mbr=None, system=None, geometry=None):
     ok(d is not None and d[:16] == b"NANDDRIVERSIGN".ljust(16, b"\0"), "NANDDRIVERSIGN at cs0 block 0x%x (BBT hdr+0x24)" % (sig_block or 0))
     if d:
         nsig, flags = struct.unpack_from("<II", d, 0x38)
-        ok(nsig == globals()["nsig"]() and flags == sig_flags(),
-           "signature nSig=%08x flags=%08x (VSVFL, epoch %d, whitening %s)" % (nsig, flags, EPOCH, "on" if WHITENING else "off"))
+        ok(nsig & ~0xff == 0x43313100 and 0x31 <= nsig & 0xff <= 0x39 and flags == sig_flags(),
+           "signature nSig=%08x flags=%08x (VSVFL, epoch %d, whitening %s)" % (nsig, flags, (nsig & 0xff) - 0x30,
+                                                                            "on" if WHITENING else "off"))
 
     # VFL contexts
     for cs in range(geo.num_cs):
@@ -829,7 +857,7 @@ def main():
     b.add_argument("--out", required=True)
     b.add_argument("--force", action="store_true")
     b.add_argument("--no-whitening", action="store_true", help="plain meta, signature flags 0x5 (DT without metadata-whitening)")
-    b.add_argument("--epoch", type=int, default=1, help="NAND epoch, the IPSW's Restore.plist DeviceMap SCEP (default 1)")
+    b.add_argument("--epoch", type=int, default=None, help="NAND epoch, the IPSW's Restore.plist DeviceMap SCEP (default: the kernel's PE_nand_epoch)")
     b.add_argument("--sig-flags", type=lambda v: int(v, 0), default=None,
                    help="NANDDRIVERSIGN flags as the build's driver formats them (3.1.x: 4; default 0x10005/0x5)")
     m = sub.add_parser("mbr")
@@ -845,7 +873,7 @@ def main():
     global WHITENING, EPOCH, SIG_FLAGS_OVERRIDE
     WHITENING = not getattr(a, "no_whitening", False)
     SIG_FLAGS_OVERRIDE = getattr(a, "sig_flags", None)
-    EPOCH = getattr(a, "epoch", 1)
+    EPOCH = getattr(a, "epoch", None) or 1
     if a.selfcheck:
         sys.exit(0 if selfcheck() else 1)
     if a.cmd == "build":

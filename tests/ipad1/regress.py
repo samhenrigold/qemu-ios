@@ -502,8 +502,13 @@ def ocr(ppm):
             finally:
                 if os.path.exists(staged): os.unlink(staged)
     found = {}
-    lines = [l.split(" ", 4) for l in subprocess.run([OCR_BIN, ppm], capture_output=True, text=True,
-                                                      check=True).stdout.splitlines()]
+    for attempt in range(6):   # Vision's recognizer sometimes fails to build its compute plan on a loaded host
+        run = subprocess.run([OCR_BIN, ppm], capture_output=True, text=True)
+        if run.returncode == 0 or attempt == 5:
+            run.check_returncode()
+            break
+        time.sleep(3 * (attempt + 1))
+    lines = [l.split(" ", 4) for l in run.stdout.splitlines()]
     for x0, y0, x1, y1, text in sorted(lines, key=lambda l: int(l[1]), reverse=True):
         # upright portrait -> panel: the portrait top is the panel's left edge, the portrait left its bottom
         found[text.strip()] = ((int(y0) + int(y1)) // 2, 767 - (int(x0) + int(x1)) // 2)

@@ -1264,8 +1264,9 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     bool active = false;
 
     emit_xcallstat(bb, c->id, IOS_BB_CALL_INCOMING);
+    /* Type 145 carries the digits alone: the phone adds the '+' itself (4.2.1 showed "++1..."). */
     chan_printf(bb, bb->call_ch, "\r\n+CLIP: \"%s\",%d,,,\"\",0\r\n",
-                c->number, at_type_of(c->number));
+                c->number + (c->number[0] == '+'), at_type_of(c->number));
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
         IosBbCall *o = &bb->calls[i];
 
@@ -1278,7 +1279,7 @@ static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
     if (active) {
         /* Waiting call: +CCWA carries the same number/type, class 1 (voice). */
         chan_printf(bb, bb->call_ch, "\r\n+CCWA: \"%s\",%d,1\r\n",
-                    c->number, at_type_of(c->number));
+                    c->number + (c->number[0] == '+'), at_type_of(c->number));
     }
     chan_printf(bb, bb->call_ch, "\r\nRING\r\n");
     c->rings = 1;
@@ -1293,6 +1294,16 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
     if (!bb->ch[bb->call_ch].open || !radio_ok(bb) || !number[0]) {
         return false;
     }
+    /*
+     * A bare 11+ digit number is international (country code first, as the SMS path
+     * already sends it): keep it as +<digits>, which +CLIP sends as type 145.
+     */
+    char intl[34];
+
+    if (number[0] != '+' && strlen(number) >= 11 && strspn(number, "0123456789") == strlen(number)) {
+        snprintf(intl, sizeof(intl), "+%s", number);
+        number = intl;
+    }
     c = call_new(bb, true, number, IOS_BB_CALL_INCOMING);
     if (!c) {
         return false;
@@ -1303,6 +1314,13 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 
 static void call_progress(IosBbCore *bb, IosBbCall *c, int stat)
 {
+    /* The connected line: 1.0 shows the number of an answered outgoing call
+     * only from +COLP (handler 0x1e08e), never from +CLCC. */
+    if (stat == IOS_BB_CALL_ACTIVE && !c->mt && !bb->colp_off &&
+        (c->stat == IOS_BB_CALL_DIALING || c->stat == IOS_BB_CALL_ALERTING)) {
+        chan_printf(bb, bb->call_ch, "\r\n+COLP: \"%s\",%d\r\n",
+                    c->number, at_type_of(c->number));
+    }
     c->stat = stat;
     c->next_stat = -1;
     c->due_ms = 0;
@@ -1819,6 +1837,40 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         }
     }
 
+    if ((arg = arg_after(cmd, "xdrv=5,16,", NULL))) {
+        /*
+         * Temperature notifications (3GS: +xdrv=5,16,20). CommCenter arms a watchdog of
+         * period + 20 s and resets the baseband ("modem reset: temperature update
+         * timeout") unless +XDRVI: 5,17 keeps arriving. The iPhone 4 sends 5,16,0 (off).
+         */
+        int n = atoi(arg);
+
+        bb->temp_period_ms = n > 0 ? n * 1000 : 0;
+        bb->temp_ch = ch;
+        bb->temp_due_ms = n > 0 ? bb->now_ms + 1000 : 0;
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "crsm=", NULL))) {
+        /*
+         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]). The fake SIM has
+         * EF_AD (6FAD: normal operation, MNC length 2, so 001/01 is unambiguous);
+         * every other file answers 94 04 (file not found) rather than a bare OK.
+         */
+        int op = 0, fid = 0;
+
+        sscanf(arg, "%d,%d", &op, &fid);
+        if (fid == 0x6fad && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"00000002\"\r\n");
+        } else if (fid == 0x6fad && op == 192) {
+            /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+CRSM: 148,4\r\n");
+        }
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "xsio?") == 0) {
         /* 1.0 wants field 1 after its first char ("*0") to equal 0. */
         chan_printf(bb, ch, "\r\n+XSIO: 0,*0\r\n");
@@ -2119,6 +2171,16 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         }
         return;
     }
+    if ((arg = arg_after(cmd, "colp=", NULL))) {
+        bb->colp_off = atoi(arg) == 0;
+        at_ok(bb, ch);
+        return;
+    }
+    if (strcmp(cmd, "colp?") == 0) {
+        chan_printf(bb, ch, "\r\n+COLP: %d,1\r\n", !bb->colp_off);   /* provisioned */
+        at_ok(bb, ch);
+        return;
+    }
     if ((arg = arg_after(cmd, "cscs=", NULL))) {
         bb->hex_cs = strstr(arg, "hex") != NULL;
         at_ok(bb, ch);
@@ -2317,7 +2379,7 @@ static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 
 #define IFX_MORE      0x10         /* header byte 1 */
 #define IFX_V2_CREDIT_REQ 0x40     /* header byte 1: the sender holds no credits */
-#define IFX_V1_CTS    0x40         /* header byte 3 */
+
 #define IFX_V2_GRANT  16           /* the AP's credit level we keep it at (tx-buffer-count) */
 
 void ios_bb_ifx_init(IosBbIfx *x, int version, unsigned max_data)
@@ -2414,7 +2476,7 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         miso[3] = grant >> 8;
     } else {
         miso[2] = x->max_data;                 /* next_data_size: what we can take */
-        miso[3] = ((x->max_data >> 8) & 0xf) | IFX_V1_CTS;
+        miso[3] = (x->max_data >> 8) & 0xf;    /* bit 6 left clear: the N88 kernel re-polls while it is set */
     }
     memcpy(miso + IOS_BB_IFX_HDR, x->txq, out_len);
     memmove(x->txq, x->txq + out_len, x->txq_len - out_len);
@@ -2475,6 +2537,13 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
     if (bb->reg_step && now_ms >= bb->reg_due_ms) {
         reg_tick(bb);
     }
+    if (bb->temp_due_ms && now_ms >= bb->temp_due_ms) {
+        /* 5,17: temperature; then readings in degrees C (the parser takes them as ints). */
+        if (bb->ch[bb->temp_ch].open || bb->temp_ch == 0) {
+            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,25,25,25,25,25\r\n");
+        }
+        bb->temp_due_ms = now_ms + bb->temp_period_ms;
+    }
     if (bb->xsim_due_ms && now_ms >= bb->xsim_due_ms) {
         bb->xsim_due_ms = 0;
         if (bb->ch[bb->xsim_ch].open) {
@@ -2528,6 +2597,9 @@ int64_t ios_bb_next_due(const IosBbCore *bb)
 
     if (bb->reg_step) {
         due = bb->reg_due_ms;
+    }
+    if (bb->temp_due_ms && (!due || bb->temp_due_ms < due)) {
+        due = bb->temp_due_ms;
     }
     if (bb->xsim_due_ms && (!due || bb->xsim_due_ms < due)) {
         due = bb->xsim_due_ms;

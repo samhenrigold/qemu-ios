@@ -256,6 +256,7 @@ hwaddr s5l8930_dart2_xlate(void *display, uint32_t va, unsigned sid);
 void ipod_scaler_set_iommu(DeviceState *scaler,
                            hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
                            void *opaque, unsigned sid);
+void ipod_scaler_set_version(DeviceState *scaler, uint32_t version);
 
 void s5l8930_cdma_set_source(DeviceState *dev, hwaddr base, hwaddr size,
                              uint32_t (*avail)(void *opaque, hwaddr addr, bool to_device),
@@ -292,5 +293,18 @@ static inline unsigned s5l8930_i2s_rate(unsigned port)
  * No interrupt line: the kext completes on the CDMA channel, not IRQ 0x25.
  */
 #define TYPE_S5L8930_SHA1 "s5l8930.sha1"
+
+/*
+ * A kboot bundle's DT property edit (hw/arm/ipad1.c, also used by the S5L8920
+ * boards): the node named `name` gets `prop` overwritten in place (same slot,
+ * zero-padded) when the slot holds `vlen` bytes.
+ */
+typedef struct A4DTEdit {
+    const char *name, *prop;
+    const void *value;
+    uint32_t vlen;
+} A4DTEdit;
+void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                uint32_t bootargs_pa, const A4DTEdit *e);
 
 #endif

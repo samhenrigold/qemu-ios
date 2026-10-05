@@ -6,10 +6,23 @@
 #include "hw/arm/ipod-attitude.h"
 #include "hw/qdev-properties.h"
 
-/* 1 g in LIS302DL output counts. The part is ±2 g full-scale over a signed
- * 8-bit register (18 mg/digit), so 1 g ~= 0x38. Any value with the right sign
- * and roughly full-scale magnitude is enough for the OS orientation logic. */
-#define ACCEL_1G 0x40
+/*
+ * The host-facing vector (attitude, QOM x/y/z, shake) is in 1/64 g. That is
+ * the LIS331DLH's high byte at ±2 g (1 mg/digit, 12 bits left-justified), so it
+ * passes through unchanged. The LIS302DL is 8-bit at 18 mg/digit (±2 g, FS=0)
+ * or 72 mg/digit (±8 g, FS=1): 1 g reads 55.6 or 13.9 counts. 3.1.3's driver
+ * converts with 18 mg (1187/65536 g per count), 1.0's with 1/128 g, so a part
+ * lying flat reads -1.00 g on 3.x and -0.43 g on 1.0, as on a real device.
+ * A state with no part identity (whoami 0, unit tests) passes through too.
+ */
+
+static int lis302dl_counts(const LIS302DLState *s, int v)
+{
+    if (s->whoami != ACCEL_WHOAMI_VALUE) {
+        return v;
+    }
+    return lround(v * 1000.0 / (64 * (s->ctrl_reg1 & ACCEL_CTRL_REG1_FS ? 72 : 18)));
+}
 
 static bool lis302dl_debug(void)
 {
@@ -79,10 +92,11 @@ static void lis302dl_sample(LIS302DLState *s, int64_t now)
     if (s->last_sample_ns >= 0 && now >= s->last_sample_ns &&
         now - s->last_sample_ns < period) return;
     s->last_sample_ns = now;
-    int values[3] = { s->base_x, s->base_y, s->base_z };
+    int values[3] = { lis302dl_counts(s, s->base_x), lis302dl_counts(s, s->base_y),
+                      lis302dl_counts(s, s->base_z) };
     int64_t elapsed = now - s->shake_start_ns;
     if (s->shake_start_ns >= 0 && elapsed >= 0 && elapsed < 200000000) {
-        int impulse = (elapsed / 20000000) & 1 ? -127 : 127;
+        int impulse = lis302dl_counts(s, (elapsed / 20000000) & 1 ? -127 : 127);
         values[0] = impulse;
         values[1] = -impulse;
         values[2] = impulse / 2;

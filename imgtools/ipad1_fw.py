@@ -173,11 +173,15 @@ def main(ipsw, keysfile, out):
         if c in comp:
             fname = comp[c]
             img = z.read(fname)
-            if "KBAG" in img3_tags(img):
-                data = img3_decrypt(img, *key(fname), plain_tail=plain_tail)
-            else:   # 4.3.4/4.3.5 ship their ramdisks unencrypted (the keys page lists key 0)
+            if "KBAG" not in img3_tags(img):   # N18 4.3.4/4.3.5 ship their ramdisks unencrypted (keys page: key 0)
                 off, dlen = img3_tags(img)["DATA"]
                 data = img[off + 12:off + 12 + dlen]
+            elif os.path.basename(fname) not in keys:
+                # 4.3.1-4.3.5: no published ramdisk keys; the keybag one-shot boots a sibling build's ramdisk
+                print("skip", c, fname, "(no key)")
+                continue
+            else:
+                data = img3_decrypt(img, *key(fname), plain_tail=plain_tail)
             open(f"{out}/{fname[:-4]}-ramdisk.dmg", "wb").write(data)
             print("ok", c, fname)
     osimg = comp["OS"]

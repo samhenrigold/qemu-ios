@@ -89,6 +89,74 @@ offer): `regress.py --machine iPod-Touch-4G --checks app --guest-package OFFER` 
 installation_proxy, installd lists it, the agent launches it frontmost, and its GL triangle draws through the bridge
 with no refusals.
 
+## Firmware coverage (fw-a4, 2026-10-05)
+
+Every iPod4,1 build from api.ipsw.me, prepared by the pipeline under "How to boot" with three generic
+additions, then run through the gates below. Keys: api.ipsw.me's key pages (`keys/ipsw/iPod4,1/BUILD`),
+rendered into the key-page text `ipad1_fw.py` reads; an entry whose key is "0" is a key nobody published.
+
+- **Activation**: FirmwareKit's pattern-based recognizer (LightTouchMac `Packages/FirmwareKit/Sources/CActivation/
+  activation.c`, built as its standalone CLI) is the `--activation-hook`; it finds the development shortcut in
+  every 4.x/5.x lockdownd. No per-build hook.
+- **Keybag on 4.3.1-4.3.5**: no ramdisk keys are published, so the keybag one-shot boots 8F190's Update ramdisk
+  (the same sibling rule as FirmwareKit's `keybag_ramdisk_from`); `ipad1_fw.py` skips the unkeyed ramdisks.
+- **NAND signature epoch**: `ipad1_nand.py build` writes NANDDRIVERSIGN's '0' + PE_nand_epoch read off the kernel
+  (2 from 4.3.5's IOFlashStorage 410.4).
+
+Gates (each run alone; `tests/ipad1/regress.py --machine iPod-Touch-4G --device D --kboot K --nor N`):
+`boot` (lit, unlock, Hold locks; 5.x: lockdown Activated and Setup Assistant's first page), `usbmux`, `afc`,
+`persist` (guest power-off, marker survives), `wifi`; then `tests/ipad1/app-install.py` with the same
+arguments: Setup Assistant walked on 5.x, the Harness IPA installed through installation_proxy (AppSync),
+its icon put on page 1 through springboardservices, launched, its GLES 1.1 row tapped (cyan/magenta fixture on
+the panel, readback PASS, no bridge refusals), guest power-off.
+
+| iOS | Build | boot | usbmux | afc | persist | wifi | install + launch | GL app | power-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 4.1 | 8B117 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.1 | 8B118 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.2.1 | 8C148 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3 | 8F190 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3.1 | 8G4 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3.2 | 8H7 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3.3 | 8J2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3.4 | 8K2 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 4.3.5 | 8L1 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 5.0 | 9A334 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 5.0.1 | 9A405 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 5.1 | 9B176 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 5.1.1 | 9B206 | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 6.0 | 10A403 | kernel stops after corecrypto (below) | - | - | - | - | - | - | - |
+| 6.0.1-6.1.6 | 10A523, 10B144, 10B146, 10B329, 10B400, 10B500 | not run (6.0 first) | | | | | | | |
+
+Notes: the boot check's unlock slide can miss on a loaded host (debt 11): every boot above passed when run
+with no other emulator or preparation running (two batch runs needed that rerun; one app-install tap on 8B117 missed the icon once and passed on the rerun). By hand, a build is
+the pipeline in "How to boot" with `--activation-hook` the activation.c CLI and, on 4.3.1-4.3.5, 8F190's
+decrypted Update ramdisk copied into the build's `dec/` for `ipad1_keybag.py --ramdisk`.
+
+What it took beyond the 8C148 bring-up:
+
+1. **1x apps on the 2x panel went through the M2 scaler.** 4.x/5.x CoreAnimation with an ES2 render server
+   queues `IOSurfaceAcceleratorConditionalTransferSurface[WithSwap]` and hands the token to GL
+   (`CAEAGLContextScalarNotification` -> `sendNotification:<accelerator ID>`), which the SGX would release. The
+   GL front end (`contrib/gles-public`) records those calls and issues the unconditional transfer from a worker
+   thread when the notification arrives. Without it every 1x app's CAEAGLLayer was black.
+2. **Scaler version** (+0x260) 0x20002 on the A4: 4.3's driver refuses tiled buffers at version 0.
+3. **Scaler byte loads**: 5.x's reset polls with `ldrb`.
+4. **CLCD ENVID set at reset**: 5.x's AppleCLCD adopts only a running panel (else the Apple logo stays up).
+5. **Setup Assistant** (5.x) walked by label (OCR of the upright panel); the bottom edge of the digitizer reads
+   a little high (debt 7), so a link there is retapped lower.
+
+### iOS 6: not booting yet
+
+10A403 (6.0) gets through `pe_identify_machine` (boot_args Version 3 read off xnu-2107's pc-relative check) and,
+with DRAM's first page aliased at physical 0 under kboot (the kernel copies its exception vectors to
+kvtophys(gPhysBase) = 0 after unmapping V=P; checked with fw-a4's earlier zero-ROM mapping there), through
+corecrypto's FIPS self-test; it then stops printing and
+the panel keeps the boot logo, the CPU busy and the timer ticking (6.1.6 10B500 the same). Not yet diagnosed;
+ruled out by experiment: the NOR graft, the SGX DT override, `arm-io/clock-frequencies`, filling
+`chosen/nvram-proxy-data` with an empty CHRP image, a 64-byte `chosen/random-seed`. Its lockdownd has no development shortcut; the hactivation
+path (`should_hactivate`, MobileGestalt `ShouldHactivate`) is the candidate for a recognizer strategy.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation, P a
