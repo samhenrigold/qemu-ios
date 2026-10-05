@@ -102,6 +102,10 @@ def walk_setup(b, step):
         found = ocr_upright(b.shot("setup-%02d" % n))
         if "Safari" in found and "English" not in found:
             return True, "Setup walked: " + ", ".join(pages)
+        if "Back" in found and any(t.startswith("Forgot Apple ID") for t in found):
+            b.tap(found["Back"])           # 6.x with Wi-Fi up: a stray tap opened the sign-in form; back out, skip
+            pages.append("(Back)")
+            continue
         alert = next((t for t in ALERT_YES if t in found), None)        # a button labelled exactly so
         if alert:
             b.tap(found[alert])
@@ -189,7 +193,8 @@ def main():
             time.sleep(4)
             fresh = portrait and "English" in ocr_upright(b.shot("opened"))   # a fresh 5.x
             status, out = rg.itqmp.agent(b.qmp, "lockstatus") if rg.itqmp.agent_alive(b.qmp) else (1, b"")
-            if fresh or status or b"locked=0" in out:
+            dark = b.lit("opened") < rg.LIT_MIN_FRACTION   # 6.x can darken the panel mid-slide: Setup unseen
+            if fresh or (not dark and (status or b"locked=0" in out)):
                 break                                # Setup's language page, past the lock, or no agent to ask
         if fresh:
             if not step("setup", *walk_setup(b, step)):
