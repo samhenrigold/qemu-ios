@@ -1261,6 +1261,7 @@ FE_UNUSED(GLCRestoreDispatchFunction)
 FE_UNUSED(GLCSelectDispatchBounded)
 FE_UNUSED(GLCSelectDispatchFunction)
 FE_UNUSED(GLCSetProfilerStorage)
+FE_UNUSED(GLCSetCompilationPerformanceCallback)   /* 7.x */
 
 typedef signed char BOOL;
 typedef unsigned NSUInteger;
@@ -1288,6 +1289,10 @@ NSString *const kEAGLColorFormatRGBA8 = @"EAGLColorFormatRGBA8";
 NSString *const kEAGLContextPropertyAccelerated = @"EAGLContextPropertyAccelerated";
 NSString *const kEAGLContextPropertySharegroup = @"EAGLContextPropertySharegroup";
 NSString *const kEAGLContextPropertyClientRetainRelease = @"EAGLContextPropertyClientRetainRelease";
+/* 7.x */
+NSString *const kEAGLColorFormatSRGBA8 = @"EAGLColorFormatSRGBA8";
+NSString *const kEAGLContextPropertySharedWithCompute = @"EAGLContextPropertySharedWithCompute";
+NSString *const kEAGLContextPropertyVisibleInDebugTools = @"EAGLContextPropertyVisibleInDebugTools";
 
 __attribute__((visibility("default")))
 @interface EAGLSharegroup : NSObject { @public void *_private; NSUInteger _api; }
