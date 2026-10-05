@@ -708,7 +708,7 @@ def check_usbmux(cfg, r):
             return
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         c = b.run(["ideviceinfo", "-k", "DeviceClass"]).stdout.strip()
-        want = "iPod" if getattr(cfg, "machine", "ipad1") == "iPod-Touch-4G" else "iPad"
+        want = ipad1_boot.PORTRAIT.get(getattr(cfg, "machine", "ipad1"), "iPad")
         r.set(v == cfg.product_version and c == want, "ProductVersion %r, DeviceClass %r" % (v, c))
     finally:
         b.stop()
@@ -1041,7 +1041,7 @@ def main():
     a = ap.parse_args()
     if not any(a.checks.split(",")): ap.error("no checks selected")
     itqmp.W, itqmp.H = ipad1_boot.MACHINES[a.machine]
-    if a.machine == "iPod-Touch-4G":
+    if a.machine in ipad1_boot.PORTRAIT:
         # A plugged-in iPod's lock screen is the charging battery on black, not the wallpaper: ~30% lit.
         global LIT_MIN_FRACTION, UNLOCK_FROM, UNLOCK_TO
         LIT_MIN_FRACTION = 0.2

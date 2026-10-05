@@ -97,6 +97,7 @@ typedef struct A4Board {
     bool touch_landscape;
     A4PowerKnob pwroff_knob[5];          /* slide-to-power-off, per UIDeviceOrientation */
     int pwroff_drag_len;
+    int pwroff_watch_ms;                 /* request to halt, before the warning; 0 = 25 s */
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
@@ -219,6 +220,8 @@ static const A4Board a4_n81 = {
         [3] = { 116, 134, 1, 0 }, [4] = { 116, 134, 1, 0 },
     },
     .pwroff_drag_len = 460,
+    /* 4.2.1's launchd waits out a 20 s job exit timeout first: RB_HALT ~30-40 s in. */
+    .pwroff_watch_ms = 60000,
     .i2c = {
         { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
         /* CS42L59 (audio0): the same MAP register file the CS42L61 driver saw. */
@@ -232,6 +235,49 @@ static const A4Board a4_n81 = {
     /* n81.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:39:39 */
     .wifi_fw_version = "wl0: Oct 13 2010 15:39:39 version 4.221.38.1",
     .wifi_mac = { 0x02, 0x00, 0x00, 0x81, 0x00, 0x01 },  /* synthetic, locally administered */
+};
+
+/*
+ * iPhone 4 (N90AP, GSM): 512 MiB, the portrait 640x960 panel and N1 digitizer
+ * N81 has, the iPad's CS42L61 + Mikey, HDQ gauge, BT on uart3. No NOR
+ * (grafted, as N81). The baseband (spi2, its GPIOs) is left to the cell
+ * stream's model; `baseband=off` (default) unmatches its DT node at boot.
+ * docs/n90/README.md.
+ */
+static const A4Board a4_n90 = {
+    .desc = "iPhone 4 (N90AP, S5L8930)",
+    .dram_size = 0x20000000,
+    .chipid = { 0x31800387, 0x80758000 },    /* same die as K48 */
+    .board_id = 0x00,
+    .width = 640, .height = 960,
+    .panel_id = 0x0969e5a1,                  /* ponytail: K48's, as N81's */
+    .dsi_lanes = 4,
+    .mt_profile = &mt_profile_n81,           /* multi-touch,n90: N1F55 too */
+    .touch_landscape = false,
+    .mt_tx_fifo = 0x10000,
+    /* SpringBoard is portrait-only on the iPhone too: N81's sheet. */
+    .pwroff_knob = {
+        [1] = { 116, 134, 1, 0 }, [2] = { 116, 134, 1, 0 },
+        [3] = { 116, 134, 1, 0 }, [4] = { 116, 134, 1, 0 },
+    },
+    .pwroff_drag_len = 460,
+    .pwroff_watch_ms = 60000,
+    .i2c = {
+        { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
+        { 0, 0x4a, TYPE_CS42L58 },               /* audio0, cs42l61 as on K48 */
+        /* compass (akm8973s, 0x1e) is in the DT next to the AK8975s the unit
+         * carries; the AK8973 model answers its driver. */
+        { 0, 0x1e, TYPE_S5L8930_AK8973 },
+        { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
+        { 2, 0x19, TYPE_LIS302DL },
+    },
+    .bt_uart = 3,
+    .gauge_uart = 5,
+    .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
+    .wifi_board = "P=N90 V=u",               /* AppleBCMWLAN's "N90 USI - 4329 B1" */
+    /* n90.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:40:46 */
+    .wifi_fw_version = "wl0: Oct 13 2010 15:40:46 version 4.221.38.1",
+    .wifi_mac = { 0x02, 0x00, 0x00, 0x90, 0x00, 0x01 },  /* synthetic, locally administered */
 };
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
@@ -272,6 +318,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -404,6 +451,78 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
       .writefn = ipad1_qemu_call },
 };
 
+/*
+ * The flattened DT walk for a4_dt_unmatch: returns the offset past the node at
+ * `off` (or 0 when malformed); on the way, a node named `name` gets its
+ * "compatible" overwritten with "none" (same slot, zero-padded), so nothing
+ * matches it and the node stays for whoever turns it back on.
+ */
+static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const char *name, int depth)
+{
+    uint32_t nprops, nchildren;
+    uint8_t *compat = NULL;
+    uint32_t compat_len = 0;
+    bool named = false;
+
+    if (depth > 32 || off + 8 > len) {
+        return 0;
+    }
+    nprops = ldl_le_p(dt + off);
+    nchildren = ldl_le_p(dt + off + 4);
+    off += 8;
+    for (uint32_t i = 0; i < nprops; i++) {
+        uint32_t plen;
+
+        if (off + 36 > len) {
+            return 0;
+        }
+        plen = ldl_le_p(dt + off + 32) & 0x7fffffff;
+        if (plen > len - off - 36) {
+            return 0;
+        }
+        if (!strncmp((char *)dt + off, "name", 32)) {
+            named = plen > strlen(name) && !memcmp(dt + off + 36, name, strlen(name) + 1);
+        } else if (!strncmp((char *)dt + off, "compatible", 32)) {
+            compat = dt + off + 36;
+            compat_len = plen;
+        }
+        off += 36 + ((plen + 3) & ~3u);
+    }
+    if (named && compat && compat_len >= 5) {
+        memset(compat, 0, compat_len);
+        memcpy(compat, "none", 5);
+    }
+    for (uint32_t i = 0; i < nchildren; i++) {
+        off = a4_dt_walk(dt, len, off, name, depth + 1);
+        if (!off) {
+            return 0;
+        }
+    }
+    return off;
+}
+
+/* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
+ * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
+static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
+                          uint32_t bootargs_pa, const char *name)
+{
+    size_t ba = bootargs_pa - load_pa, dt;
+    uint32_t vbase, pbase, dtp, dtlen;
+
+    if (bootargs_pa < load_pa || ba + 0x38 > image_len) {
+        return;
+    }
+    vbase = ldl_le_p(image + ba + 4);
+    pbase = ldl_le_p(image + ba + 8);
+    dtp = ldl_le_p(image + ba + 0x30);
+    dtlen = ldl_le_p(image + ba + 0x34);
+    dt = (size_t)dtp - vbase + pbase - load_pa;
+    if (dtp < vbase || dt > image_len || dtlen > image_len - dt ||
+        !a4_dt_walk(image + dt, dtlen, 0, name, 0)) {
+        warn_report("ipad1: kboot device tree not walkable; '%s' left as is", name);
+    }
+}
+
 static void ipad1_cpu_reset(void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(opaque);
@@ -464,6 +583,14 @@ static void ipad1_cpu_reset(void *opaque)
         error_report("ipad1: kboot bundle does not fit in DRAM "
                      "(load 0x%x len 0x%x)", load_pa, image_len);
         exit(1);
+    }
+    /*
+     * No modem behind spi2 unless one is attached: the baseband node stays in
+     * the DT (the cell stream turns it on with baseband=on) but matches nothing,
+     * as on a Wi-Fi iPad, so AppleBaseband never waits on a silent radio.
+     */
+    if (!s->baseband) {
+        a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "baseband");
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
@@ -599,6 +726,11 @@ static void ipad1_set_button(IPad1MachineState *s, int pin, bool down)
 enum { PWROFF_IDLE, PWROFF_HOME, PWROFF_WAKE, PWROFF_HOLD, PWROFF_SETTLE, PWROFF_DRAG,
        PWROFF_WATCH };
 #define PWROFF_WATCH_MS     25000   /* from the request: warn if still running */
+
+static int pwroff_watch_ms(IPad1MachineState *s)
+{
+    return s->board->pwroff_watch_ms ? s->board->pwroff_watch_ms : PWROFF_WATCH_MS;
+}
 #define PWROFF_DRAG_STEPS   24
 
 static void ipad1_pwroff_arm(IPad1MachineState *s, int ms)
@@ -650,7 +782,7 @@ static void ipad1_pwroff_tick(void *opaque)
         } else {
             /* Now the guest halts: QEMU exits on the PMU standby write. */
             s->pwroff_phase = PWROFF_WATCH;
-            ipad1_pwroff_arm(s, PWROFF_WATCH_MS - 7300 - 80 * PWROFF_DRAG_STEPS);
+            ipad1_pwroff_arm(s, pwroff_watch_ms(s) - 7300 - 80 * PWROFF_DRAG_STEPS);
         }
         break;
     case PWROFF_WATCH:
@@ -660,7 +792,7 @@ static void ipad1_pwroff_tick(void *opaque)
          * bootloader's power-off simulation: that one did halt. */
         if (!s5l8930_d1815_guest_shutdown_confirmed()) {
             warn_report("ipad1: system_powerdown: the guest has not halted %d s "
-                        "after the request", PWROFF_WATCH_MS / 1000);
+                        "after the request", pwroff_watch_ms(s) / 1000);
         }
         s->pwroff_phase = PWROFF_IDLE;
         break;
@@ -1136,6 +1268,7 @@ static void ipad1_init(MachineState *machine)
 
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);
+    qdev_prop_set_uint64(dev, "dram-size", s->board->dram_size);
     if (s->gid_blobs_path) {
         qdev_prop_set_string(dev, "gid-blobs", s->gid_blobs_path);
     }
@@ -1671,6 +1804,16 @@ static void ipad1_set_iop_core(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->iop_core = value;
 }
 
+static bool ipad1_get_baseband(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->baseband;
+}
+
+static void ipad1_set_baseband(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->baseband = value;
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -1863,6 +2006,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "iop-core", ipad1_get_iop_core, ipad1_set_iop_core);
     object_class_property_set_description(klass, "iop-core",
         "Run the kernel's EmbeddedIOP firmware on a second core (arm946) (default on); off = the IOP HLE");
+    object_class_property_add_bool(klass, "baseband", ipad1_get_baseband, ipad1_set_baseband);
+    object_class_property_set_description(klass, "baseband",
+        "kboot= on a radio board: leave the DT's baseband node matched (a modem model is attached); "
+        "default off unmatches it (compatible \"none\") at every reset");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "
@@ -1917,6 +2064,12 @@ static const TypeInfo a4_board_types[] = {
         .parent = TYPE_IPAD1_MACHINE,
         .class_init = a4_board_class_init,
         .class_data = (void *)&a4_n81,
+    },
+    {
+        .name = MACHINE_TYPE_NAME("iPhone-4"),
+        .parent = TYPE_IPAD1_MACHINE,
+        .class_init = a4_board_class_init,
+        .class_data = (void *)&a4_n90,
     },
 };
 

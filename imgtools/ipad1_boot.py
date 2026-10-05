@@ -5,7 +5,9 @@ from pathlib import Path
 
 DEFAULT_DEVICE = os.path.expanduser('~/Developer/qemu-ios-files/ipad1/repro/default-iboot')
 # -M name -> scanout pixels, for the runners' absolute touch coordinates
-MACHINES = {'ipad1': (1024, 768), 'iPod-Touch-4G': (640, 960)}
+MACHINES = {'ipad1': (1024, 768), 'iPod-Touch-4G': (640, 960), 'iPhone-4': (640, 960)}
+# The portrait A4 boards (N81, N90) -> lockdown's DeviceClass
+PORTRAIT = {'iPod-Touch-4G': 'iPod', 'iPhone-4': 'iPhone'}
 
 
 def add_arguments(parser):

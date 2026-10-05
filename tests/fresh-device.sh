@@ -25,6 +25,7 @@ EXTRA=()
 case "$ENTRY" in
  k48ap-*) DRIVER="$ROOT/tests/ipad1/regress.py"; DEFAULT_CHECKS=boot,persist ;;
  n81ap-*) DRIVER="$ROOT/tests/ipad1/regress.py"; DEFAULT_CHECKS=boot,persist; EXTRA=(--machine iPod-Touch-4G) ;;
+ n90ap-*) DRIVER="$ROOT/tests/ipad1/regress.py"; DEFAULT_CHECKS=boot,persist; EXTRA=(--machine iPhone-4) ;;
  n72ap-*) DRIVER="$ROOT/tests/ipod/regress.py"; DEFAULT_CHECKS=boot,fsck,persist ;;
  n45ap-*) DRIVER="$ROOT/tests/ipod/regress.py"; DEFAULT_CHECKS=boot ;;
  *) echo "unsupported board: $ENTRY" >&2; exit 2 ;;

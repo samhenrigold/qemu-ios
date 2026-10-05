@@ -49,6 +49,13 @@ PHYS_BASE, DRAM_SIZE = 0x40000000, 0x10000000
 PRAM_SIZE, VRAM_SIZE = 0x4000, 0x900000 - 0x4000
 MEM_SIZE = DRAM_SIZE - PRAM_SIZE - VRAM_SIZE
 VRAM_PA, PRAM_PA = PHYS_BASE + MEM_SIZE, PHYS_BASE + DRAM_SIZE - PRAM_SIZE
+
+
+def layout(board):
+    """(memSize, vram PA, pram PA) for the board's DRAM: vram and pram at its top, as iBoot puts them."""
+    dram = board.get("dram", DRAM_SIZE)
+    mem = dram - PRAM_SIZE - VRAM_SIZE
+    return mem, PHYS_BASE + mem, PHYS_BASE + dram - PRAM_SIZE
 FB_DEPTH = 32
 # What differs per A4 board (the machine's A4Board in hw/arm/ipad1.c), keyed by the DT's own
 # compatible ("K48AP" -> k48), so the DT says which board it is.
@@ -57,12 +64,16 @@ FB_DEPTH = 32
 #   rotation      chosen/display-rotation, the panel's turn against the portrait UI (see fill_dt)
 #   board-id      chosen/board-id, what iBoot reads off the board straps
 #   model         model-number of the modelled storage size (identity default)
+#   radio         the board has a baseband: leave its DT node for the machine (-M ...,baseband=)
+#   dram          DRAM bytes when not K48's 256 MiB (memSize, vram/pram at its top)
 #   scale         chosen/display-scale, points to pixels (2 on Retina panels)
 # Boards without the SPI NOR (nvram, effaceable in NAND) get K48's grafted on (graft_nor).
 BOARDS = {
     "k48": {"machine": "ipad1", "fb": (1024, 768), "rotation": 270, "scale": 1, "board-id": 0x02, "model": "MB292"},
     "n81": {"machine": "iPod-Touch-4G", "fb": (640, 960), "rotation": 0, "scale": 2, "board-id": 0x08,
             "model": "MC540"},
+    "n90": {"machine": "iPhone-4", "fb": (640, 960), "rotation": 0, "scale": 2, "board-id": 0x00,
+            "model": "MC603", "dram": 0x20000000, "radio": True},
 }
 FB_WIDTH, FB_HEIGHT = BOARDS["k48"]["fb"]
 # serial bit 0 moves the console to UART0 (arm_init c005d5fe); debug=0x8 is DB_KPRT, which PE_init_kprintf
@@ -399,7 +410,8 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
     # detected.") and the real unit's IORegistry has no baseband node at all, so AppleBaseband never
     # loads and CommCenter never reports a dead radio. The editor cannot delete a node, so unmatch
     # and unname it instead. (spi2/uart2 stay: the real unit runs BasebandSPI/umts on them too.)
-    if "baseband" in dt.props:
+    # A radio board (N90) keeps its baseband node: the machine's baseband property unmatches it at boot.
+    if "baseband" in dt.props and not board.get("radio"):
         for key, value in {"compatible": "none", "device_type": "none", "name": "nobb"}.items():
             dt.set("baseband", key, value)
     if "chip-revision" in dt.props["arm-io"]:  # absent from the selfcheck DT
@@ -414,8 +426,9 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
             for key, value in fill.items():
                 if key in dt.props[node]:   # iBoot-931 (4.x) DTs drop the *-ns timings
                     dt.set(node, key, value)
-    dt.set("pram", "reg", (PRAM_PA, PRAM_SIZE))
-    dt.set("vram", "reg", (VRAM_PA, VRAM_SIZE))
+    _, vram_pa, pram_pa = layout(board)
+    dt.set("pram", "reg", (pram_pa, PRAM_SIZE))
+    dt.set("vram", "reg", (vram_pa, VRAM_SIZE))
     for i, (name, pa, size) in enumerate(memory_map):
         dt.rename("chosen/memory-map", f"MemoryMapReserved-{i}", name)
         dt.set("chosen/memory-map", name, (pa, size))
@@ -491,8 +504,9 @@ def build(kernel_path, dt_blob, boot_args=DEFAULT_BOOT_ARGS, ident=None, iboot=I
     cmdline = boot_args.encode()
     assert len(cmdline) < 256, "boot-args longer than BOOT_LINE_LENGTH"
     fbw, fbh = board["fb"]
-    args = struct.pack("<HHIIII6IIII256s", 1, boot_args_version(m), vbase, PHYS_BASE, MEM_SIZE, top_of_kernel,
-                       VRAM_PA, 0 if verbose else 1, fbw * FB_DEPTH // 8, fbw, fbh,
+    mem_size, vram_pa, _ = layout(board)
+    args = struct.pack("<HHIIII6IIII256s", 1, boot_args_version(m), vbase, PHYS_BASE, mem_size, top_of_kernel,
+                       vram_pa, 0 if verbose else 1, fbw * FB_DEPTH // 8, fbw, fbh,
                        FB_DEPTH | (board["scale"] - 1) << 16,
                        0, dt_va, len(dt_blob), cmdline)
     image[args_va - vbase:args_va - vbase + len(args)] = args
@@ -510,7 +524,8 @@ def main(dec_dir, out, boot_args=DEFAULT_BOOT_ARGS, identity=IDENTITY_FILE, ramd
                                               load_identity(identity), iboot_version(dec_dir),
                                               open(ramdisk, "rb").read() if ramdisk else None)
     logo = os.path.join(dec_dir, "AppleLogo.bin")
-    segments = logo_segments(open(logo, "rb").read(), VRAM_PA, dt_board(DeviceTree(dt_blob))) \
+    board = dt_board(DeviceTree(dt_blob))
+    segments = logo_segments(open(logo, "rb").read(), layout(board)[1], board) \
         if os.path.exists(logo) else []
     with open(out, "wb") as f:
         f.write(image + pack_segments(segments) + TRAILER.pack(b"K48KBOOT", load_pa, entry_pa, args_pa, len(image)))
