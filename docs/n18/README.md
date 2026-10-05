@@ -88,7 +88,11 @@ The lock screen turns the panel off after a few idle seconds and the digitizer w
 `DisablePowerForUILock`): press Home (`qom-set /machine button-home true`, then false) before a drag.
 
 Machine properties: `kboot`, `nand`, `nand-overlay`, `nor`, `nor-rw` (on the N18 a NOR on spi0 only when one
-is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad).
+is set), `button-home`, `button-hold`, `usb-tcp-addr` (usbmuxd-qemu's QEMU port, as on the iPad), `die-id`,
+`wifi`, `wifi-bssid`, `guest-package`, `gles-debug`, `gles-rejects`, `display-sleeping` (the DSI panel is off),
+`accel-orientation`/`-x`/`-y`/`-z`/`-shake`. The app's button bridge reaches the board's pins
+(`s5l8920_press_button`). Not on n18 yet: the guest agent, pasteboard, battery-level/-charging and usb-attached
+(the cable is always in).
 
 ### App install
 
