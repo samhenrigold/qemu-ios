@@ -4,9 +4,12 @@ import os
 from pathlib import Path
 
 DEFAULT_DEVICE = os.path.expanduser('~/Developer/qemu-ios-files/ipad1/repro/default-iboot')
+# -M name -> scanout pixels, for the runners' absolute touch coordinates
+MACHINES = {'ipad1': (1024, 768), 'iPod-Touch-4G': (640, 960)}
 
 
 def add_arguments(parser):
+    parser.add_argument('--machine', default='ipad1', choices=MACHINES, help='the A4 board\'s -M name')
     parser.add_argument('--device', default=DEFAULT_DEVICE, help='device.py output (iBoot, NOR, keys, NAND)')
     parser.add_argument('--kboot', help='explicit direct-kernel bring-up fallback')
     parser.add_argument('--bootrom', help='explicit SecureROM boot for restore validation')
@@ -20,6 +23,14 @@ def boot_options(cfg, writable_dir=None):
     if sum(bool(getattr(cfg, name, None)) for name in ('kboot', 'iboot', 'bootrom')) > 1:
         raise ValueError('select only one of --kboot, --iboot, --bootrom')
     if getattr(cfg, 'kboot', None):
+        if getattr(cfg, 'nor', None) and writable_dir:
+            # kboot with an explicit NOR (effaceable, e.g. a 4.x keybag): a private writable copy
+            import shutil
+            target = Path(writable_dir) / 'nor.bin'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                shutil.copyfile(cfg.nor, target)
+            return f'kboot={cfg.kboot},nor-rw={target}'
         return f'kboot={cfg.kboot}'
     device = Path(getattr(cfg, 'device', DEFAULT_DEVICE))
     paths = {key: Path(getattr(cfg, key.replace('-', '_'), None) or device / filename)
