@@ -79,6 +79,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchMultitouchState, IPOD_TOUCH_MULTITOUCH)
  * one-byte "unknown command" fragments, and no touch frame ever reaches iOS.
  */
 #define MT_CMD_FRAME_READ_V2         0xEB
+/* AppleMultitouchN1SPI (N1F55) reads a frame in two 0xEE transfers: a 16-byte
+ * length query, then the frame packet itself (see mt_n1_read()). */
+#define MT_CMD_N1_READ               0xEE
 
 // frame types
 #define MT_FRAME_TYPE_PATH 0x44
@@ -264,6 +267,8 @@ typedef struct IPodTouchMultitouchState {
      * sizeof(MTFrame) once it can carry more than one finger.
      */
     uint32_t next_frame_len;
+    uint8_t *n1_frame;              /* the frame an N1 length query announced */
+    uint32_t n1_frame_len;
     uint32_t frame_counter;
     bool touch_down;
     QEMUTimer *touch_timer;
