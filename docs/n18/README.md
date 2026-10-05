@@ -171,15 +171,11 @@ offsets at 0x80000000).
      path leaves it (PMU scratch over I2C is the remaining candidate), then make kboot's reset loader branch there
      on a PMU wake.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
-8. **GL scene on the panel**: the harness's GLES view renders into its 240x360 IOSurface (stride 960) and
-   reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
-   (the top 270 rows, cyan/magenta stripes). The CLCD keeps scanning its own framebuffer (window 1 unchanged)
-   and the scaler runs no transfer during the scene, so the copy happens in the guest's composite of the app
-   surface. With CoreAnimation compositing through the GL bridge (FirmwareKit's `ca_ogl`), the same surface is
-   read at 320x480 twice: two stacked copies, a black row at 270, and 88% fixture colour. The gate's
-   fixture-colour test passes either way. Next: find which compositor reads the
-   surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
-   app's layer).
+8. **GL scene on the panel** (fixed 2026-10-05, d6ab1dab16). For a full-screen GL view, 4.x scans the app's
+   surface out directly. CLCD window 1 is the 240x360 GL surface (stride 240, origin 40,60, double-buffered);
+   window 2 is the UI, alpha-blended over it; +0x04 = 0x30. The model composed planes only when not behind the
+   DART, and read them physically, so N18/N88 showed window 1 at panel geometry (the stripes). Composition now
+   reads through the IOMMU (`ipod_touch_lcd.c` lcd_bus_read). Machines without one are unchanged.
 9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a
    `usb-kbd` on `usb-bus.0`, cannot run (Bus 'usb-bus.0' not found). `wifi`, `persist` and app-install do.
 
