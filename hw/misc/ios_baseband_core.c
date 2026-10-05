@@ -498,7 +498,7 @@ static void mx_rx_frame(IosBbCore *bb, uint8_t addr, uint8_t ctrl,
         }
         mx_send_frame_canned(bb, dlci, MX_UA | (ctrl & MX_PF));
         TRACE("mux SABM dlci %u -> UA\n", dlci);
-        if (dlci == 3 && !bb->xsim_pushed) {
+        if (dlci == bb->xsim_ch && !bb->xsim_pushed) {
             /* The SIM model only moves after it sees the SIM, so poke it once
              * the sms/SIM channel exists. */
             bb->xsim_due_ms = bb->now_ms + 100;
@@ -1559,7 +1559,7 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     unsigned n, tpdu;
     IosBbSms *slot;
 
-    if (!bb->ch[3].open || !radio_ok(bb) || !number[0] || !text[0]) {
+    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !number[0] || !text[0]) {
         return false;
     }
     for (const char *p = number; *p; p++) {
@@ -1577,7 +1577,7 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     snprintf(slot->pdu, sizeof(slot->pdu), "%s", pdu);
     bb->store_next++;
 
-    chan_printf(bb, 3, "\r\n+CMT: ,%u\r\n\r\n%s\r\n", tpdu, pdu);
+    chan_printf(bb, bb->sms_ch, "\r\n+CMT: ,%u\r\n\r\n%s\r\n", tpdu, pdu);
     return true;
 }
 
@@ -1622,6 +1622,22 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
     }
 
     cmd++;                                       /* skip '+' */
+
+    /*
+     * URCs go back on the DLCI that enabled them. 1.0 fixes the channel roles
+     * (call 1, reg 2, sms 3); 4.x may lay its DLCIs out differently, so learn.
+     */
+    if (ch > 0) {
+        if (strncmp(cmd, "creg=", 5) == 0) {
+            bb->creg_ch = ch;
+        } else if (strncmp(cmd, "xmer=", 5) == 0) {
+            bb->xciev_ch = ch;
+        } else if (strncmp(cmd, "xcallstat=", 10) == 0) {
+            bb->call_ch = ch;
+        } else if (strncmp(cmd, "cnmi=", 5) == 0) {
+            bb->sms_ch = ch;
+        }
+    }
 
     if (strcmp(cmd, "xsio?") == 0) {
         /* 1.0 wants field 1 after its first char ("*0") to equal 0. */
@@ -2230,6 +2246,7 @@ void ios_bb_reset(IosBbCore *bb)
     bb->creg_ch = 2;
     bb->xciev_ch = 2;
     bb->xsim_ch = 3;
+    bb->sms_ch = 3;
     bb->cops_format = 2;
     bb->next_call_id = 1;
     bb->ceer_cause = 16;                         /* normal call clearing */

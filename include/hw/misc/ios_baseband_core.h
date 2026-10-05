@@ -132,7 +132,7 @@ typedef struct IosBbCore {
     bool cops_detached;        /* +COPS=2 */
     int creg_n, creg_ch;
     int cgreg_n, cgreg_ch;
-    int xciev_ch, xsim_ch, call_ch;
+    int xciev_ch, xsim_ch, call_ch, sms_ch;   /* learnt from where each is enabled */
     int s0;                    /* auto-answer register (at s0=n) */
     int last_rssi, last_batt;  /* what the host was last told, to send +XCIEV on change only */
     bool sim_last;            /* last SIM presence pushed, to send +XSIM on change only */

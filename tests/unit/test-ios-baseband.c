@@ -761,6 +761,17 @@ static void test_incoming_sms(void)
     expect_frame(3, "\r\n+CMGR: 1,,33\r\n"
         "\r\n00040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
     expect_frame(3, "\r\nOK\r\n");
+
+    /* URCs follow the DLCI that enabled them (4.x lays its channels out its own way). */
+    c_mux_str(4, "at+cnmi=1,2,2,1\r");
+    pump();
+    expect_frame(4, "\r\nOK\r\n");
+    CHECK(ios_bb_incoming_sms(&bb, "14155550100", "Hi"));
+    pump();
+    expect_frame(4, "\r\n+CMT: ,21\r\n\r\n00040B914151550501F000007040203125810002C834\r\n");
+    c_mux_str(3, "at+cnmi=1,2,2,1\r");
+    pump();
+    expect_frame(3, "\r\nOK\r\n");
 }
 
 /* Worked example 4.3: the user sends "Hi" to +1 415 555 0100. */

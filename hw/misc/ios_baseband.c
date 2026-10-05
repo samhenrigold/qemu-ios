@@ -464,7 +464,7 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
 
 static const VMStateDescription vmstate_ios_baseband = {
     .name = "ios-baseband",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         /* Controls: re-set by the board at realize, but kept so a restored
@@ -519,6 +519,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         VMSTATE_INT32(bb.xciev_ch, IosBasebandState),
         VMSTATE_INT32(bb.xsim_ch, IosBasebandState),
         VMSTATE_INT32(bb.call_ch, IosBasebandState),
+        VMSTATE_INT32_V(bb.sms_ch, IosBasebandState, 2),
         VMSTATE_INT32(bb.s0, IosBasebandState),
         VMSTATE_INT32(bb.last_rssi, IosBasebandState),
         VMSTATE_INT32(bb.last_batt, IosBasebandState),
