@@ -226,7 +226,8 @@ bool ios_bb_ifx_pending(const IosBbIfx *x);
 /*
  * One transfer of n bytes: fills miso, and points *rx and *rxlen at the AP's payload
  * inside mosi (0 bytes on an empty or malformed frame) for the caller to hand to
- * ios_bb_input.
+ * ios_bb_input. Either side may be NULL: a controller that produces MISO before the
+ * AP's MOSI has arrived calls it twice (the modem's reply never depends on it).
  */
 void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
                      const uint8_t **rx, size_t *rxlen);

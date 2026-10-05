@@ -2133,7 +2133,7 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
 
     *rx = NULL;
     *rxlen = 0;
-    if (n >= IOS_BB_IFX_HDR) {
+    if (mosi && n >= IOS_BB_IFX_HDR) {
         in_len = mosi[0] | (mosi[1] & 0xf) << 8;
         /* 0xfff and anything past the frame: no payload (the kext's own rule). */
         if (in_len <= x->max_data && IOS_BB_IFX_HDR + in_len <= n) {
@@ -2142,6 +2142,12 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
         } else {
             in_len = 0;
         }
+        if (x->version == 2 && in_len) {
+            x->credits_out--;
+        }
+    }
+    if (!miso) {
+        return;
     }
     memset(miso, 0, n);
     if (n < IOS_BB_IFX_HDR) {
@@ -2155,9 +2161,6 @@ void ios_bb_ifx_xfer(IosBbIfx *x, const uint8_t *mosi, uint8_t *miso, size_t n,
     }
     if (x->version == 2) {
         /* ponytail: credits counted per data frame; refine once the N90 guest is traced. */
-        if (in_len) {
-            x->credits_out--;
-        }
         if (x->credits_out < IFX_V2_GRANT / 2) {
             grant = IFX_V2_GRANT - x->credits_out;
             x->credits_out += grant;

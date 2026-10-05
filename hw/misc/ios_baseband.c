@@ -127,8 +127,10 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     if (rxlen) {
         ios_bb_input(&s->bb, rx, rxlen);
     }
-    s->srdy_level = false;
-    qemu_set_irq(s->srdy, 0);
+    if (miso) {
+        s->srdy_level = false;
+        qemu_set_irq(s->srdy, 0);
+    }
     iosbb_arm(s, s->bb.now_ms + IOS_BB_LATENCY_MS);
 }
 

@@ -10,6 +10,7 @@
 #include "net/net.h"
 
 #define TYPE_IOS_BASEBAND "ios-baseband"
+#define TYPE_IOS_BASEBAND_SPI "ios-baseband-spi"
 
 OBJECT_DECLARE_SIMPLE_TYPE(IosBasebandState, IOS_BASEBAND)
 
@@ -41,7 +42,8 @@ Chardev *ios_baseband_chardev(DeviceState *dev);
 /*
  * SPI transport: one full-duplex IFX frame of n bytes, called by the baseband SPI
  * controller once the AP has clocked it (MRDY is the named GPIO in "mrdy", SRDY the
- * named GPIO out "srdy").
+ * named GPIO out "srdy"). mosi or miso may be NULL to run one half (see
+ * ios_bb_ifx_xfer); the MISO half ends the SRDY request.
  */
 void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso, size_t n);
 
