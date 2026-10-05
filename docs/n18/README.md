@@ -45,6 +45,33 @@ second board on the same machine file (`-M n88`, below).
 - Audio: I2S0 gets the codec's PCM from CDMA channel 0x15 on the audio clock (no listening test yet).
 - Not yet: the D1755's button wake path (debt 6), a USB host port for regress's keyboard checks (debt 9).
 
+## iOS 5.1.1 (9B206)
+
+FirmwareKit prepares `n18ap-9B206` the same way as 4.2.1 (LTM n18-app): plain store, SCEP epoch 2, the keybag
+one-shot on the Update ramdisk, seal, and a check boot. 5.x needs n88's two fixes, cherry-picked here (03fcb2468b):
+- the CLCD keeps iBoot's display state under kboot;
+- the D1755's brick-mux reads a USB host's cable.
+
+The device boots to Setup Assistant's "slide to set up" screen. Walked by hand (2026-10-05): English, Australia,
+location off, Wi-Fi qemu-ios, set up as new, Apple ID skipped, terms, don't send. That reaches the home screen, and
+the system_powerdown gesture powers it off with Setup kept.
+
+From that overlay (`app-install.py --overlay`), app-install passes all 7 steps: install, launch (the guest agent
+names the frontmost app; 5.x logs no launch line), GL fixture correct, and the agent's halt, confirmed by
+guest-shutdown-confirmed. regress persist passes. Past Setup, the Harness's HTTP GET reaches the host over Wi-Fi.
+
+Gaps:
+- regress `wifi` fails on 5.x: its driver prints no lease line, and a device still at Setup times out waiting
+  for an IP.
+
+Unattended (2026-10-05): on a fresh 5.x device, `app-install.py --machine n18` walks Setup itself with regress's
+setup_assistant_5, now portrait-aware:
+- ocr.swift reads a portrait panel unturned and upscales a 320x480 one 2x;
+- it retries the accurate model, which fails in bursts with e5rtError;
+- the boxes and alert test are scaled from 320x480;
+- the labels are "Set Up iPod touch" and "Start Using iPod touch".
+All 8 steps pass, including setup.
+
 ## How to boot
 
 Assets under `~/Developer/qemu-ios-files/n18/` (never committed): the 8C148 IPSW, its keys rendered as a

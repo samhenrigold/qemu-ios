@@ -9,7 +9,7 @@ the icon on page 1 -> tap it -> the app's process must show in syslog and the fr
 (--gl-tap, default the Harness's GLES row) tap, then the frame must be mostly the fixture's cyan/magenta with no
 bridge refusals -> guest power-off. Screens land in OUT/install/*.png. Exit status 0 only if every step passed.
 """
-import argparse, importlib.util, os, plistlib, re, subprocess, sys, time, zipfile
+import argparse, importlib.util, os, plistlib, re, shutil, subprocess, sys, time, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -145,6 +145,7 @@ def main():
     ap.add_argument("--usbmuxd", default=rg.USBMUXD)
     ap.add_argument("--product-version")
     ap.add_argument("--boot-timeout", type=int, default=560)
+    ap.add_argument("--overlay", help="start from a copy of this NAND overlay (e.g. a 5.x device past Setup)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
@@ -152,6 +153,8 @@ def main():
     if portrait:
         rg.LIT_MIN_FRACTION = 0.2
         rg.UNLOCK_FROM, rg.UNLOCK_TO = rg.portrait_unlock()
+        if rg.itqmp.W < rg.itqmp.H:
+            rg.portrait_layout()
     rg.device_args(a)
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
@@ -163,7 +166,13 @@ def main():
         rg.log("  %-8s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
         return ok
 
-    b = rg.Boot(a, "install", usb=True)
+    overlay = None
+    if a.overlay:
+        overlay = os.path.join(a.out, "install", "overlay")
+        shutil.rmtree(overlay, ignore_errors=True)
+        os.makedirs(os.path.dirname(overlay), exist_ok=True)
+        subprocess.run(["cp", "-cR", a.overlay, overlay], check=True)   # a clone on APFS; the original stays as it was
+    b = rg.Boot(a, "install", usb=True, overlay=overlay)
     try:
         b.start()
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
