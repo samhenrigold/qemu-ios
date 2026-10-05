@@ -474,12 +474,6 @@ static const ARMCPRegInfo ipad1_cp_reginfo[] = {
  * place (same slot, zero-padded) when the slot holds `vlen` bytes. Returns
  * the offset past the node at `off`, or 0 when malformed.
  */
-typedef struct A4DTEdit {
-    const char *name, *prop;
-    const void *value;
-    uint32_t vlen;
-} A4DTEdit;
-
 static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e, int depth)
 {
     uint32_t nprops, nchildren;
@@ -505,7 +499,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e,
         }
         if (!strncmp((char *)dt + off, "name", 32)) {
             named = plen > strlen(e->name) && !memcmp(dt + off + 36, e->name, strlen(e->name) + 1);
-        } else if (!strncmp((char *)dt + off, e->prop, 32)) {
+        }
+        if (!strncmp((char *)dt + off, e->prop, 32)) {      /* "name" itself may be edited */
             slot = dt + off + 36;
             slot_len = plen;
         }
@@ -526,8 +521,8 @@ static size_t a4_dt_walk(uint8_t *dt, size_t len, size_t off, const A4DTEdit *e,
 
 /* The DT a kboot bundle carries, found through its boot_args (iBoot's struct:
  * virtBase +4, physBase +8, deviceTreeP +0x30, deviceTreeLength +0x34). */
-static void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
-                       uint32_t bootargs_pa, const A4DTEdit *e)
+void a4_dt_edit(uint8_t *image, size_t image_len, uint32_t load_pa,
+                uint32_t bootargs_pa, const A4DTEdit *e)
 {
     size_t ba = bootargs_pa - load_pa, dt;
     uint32_t vbase, pbase, dtp, dtlen;
