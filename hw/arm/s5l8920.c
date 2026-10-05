@@ -229,8 +229,6 @@ static qemu_irq s5l8920_irq(S5L8920MachineState *s, int irq)
  * Stage the K48KBOOT bundle on every reset, as ipad1_cpu_reset does.
  * ponytail: a copy of the ipad1 loader; share it once both machines settle.
  */
-static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down);
-
 static void s5l8920_cpu_reset(void *opaque)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(opaque);
@@ -242,9 +240,6 @@ static void s5l8920_cpu_reset(void *opaque)
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 
     cpu_reset(cs);
-    /* The GPIO model resets every input high: put active-high buttons at rest. */
-    s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
-    s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
                      s->kboot_path, gerr->message);
@@ -678,6 +673,16 @@ static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
     qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
 }
 
+/* After every device reset (the GPIO model's puts every input high): buttons at rest. */
+static void s5l8920_machine_reset(MachineState *machine, ResetType type)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(machine);
+
+    qemu_devices_reset(type);
+    s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
+    s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
+}
+
 static bool s5l8920_get_button_hold(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->btn_hold;
@@ -792,6 +797,7 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     MachineClass *mc = MACHINE_CLASS(klass);
 
     mc->init = s5l8920_init;
+    mc->reset = s5l8920_machine_reset;
     mc->max_cpus = 2;        /* the AP and the IOP core */
     mc->default_cpus = 2;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
