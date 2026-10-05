@@ -1020,6 +1020,13 @@ void s5l8920_press_button(IPodTouchButton button, bool down)
 
 bool ipod_touch_mipi_dsi_panel_off(void);   /* hw/arm/ipod_touch_mipi_dsi.c */
 
+/* The guest's power-off command reached the PMU: 5.x's halt then restarts through it, so this, not a
+ * QEMU SHUTDOWN event, is the evidence (as ipad1's D1815). */
+static bool s5l8920_get_guest_shutdown_confirmed(Object *obj, Error **errp)
+{
+    return pcf50633_guest_shutdown_confirmed();
+}
+
 static bool s5l8920_get_display_sleeping(Object *obj, Error **errp)
 {
     return ipod_touch_mipi_dsi_panel_off();
@@ -1400,6 +1407,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "battery-level", "Battery charge, 0-100 percent (the PMU's ADC)");
     object_class_property_add_str(klass, "battery-charging", s5l8920_get_battery_charging, s5l8920_set_battery_charging);
     object_class_property_set_description(klass, "battery-charging", "auto, on or off");
+    object_class_property_add_bool(klass, "guest-shutdown-confirmed", s5l8920_get_guest_shutdown_confirmed, NULL);
+    object_class_property_set_description(klass, "guest-shutdown-confirmed",
+        "The guest's power-off command reached the PMU this run");
     object_class_property_add_bool(klass, "display-sleeping", s5l8920_get_display_sleeping, NULL);
     object_class_property_set_description(klass, "display-sleeping", "The panel is off (DSI display-off)");
     object_class_property_add_bool(klass, "wifi", s5l8920_get_wifi, s5l8920_set_wifi);
