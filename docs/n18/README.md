@@ -22,7 +22,8 @@ second board on the same machine file (`-M n88`, below).
   behind dart0. Home wakes the panel, slide to unlock works (N1F55 digitizer firmware downloaded, frames
   read), the home screen comes up (2026-10-04, `screens` in qemu-ios-files/n18/runs/t4.png).
 - Power-off: QMP `system_powerdown` makes the user's gesture (Home, Hold 3.5 s, drag "slide to power
-  off"); SpringBoard swaps every framebuffer, AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
+  off", rest 0.5 s at the end, lift; up to three drags). SpringBoard swaps every framebuffer,
+  AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
   syncs the FTL ("AppleNANDFTL::_powerDownHandler: sync complete") and QEMU exits about 15 s after the
   request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
   (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
@@ -114,6 +115,62 @@ tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-n
     --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```
 
+### iOS 3.1.3 (7E18)
+
+Boots by kboot to an activated home screen. Unlock works, and usbmux, AFC (five sizes), persist (70001
+bytes across a guest power-off and a reboot on the same overlay) and Wi-Fi pass (2026-10-05). Wi-Fi joins
+qemu-ios and takes 10.0.2.15. 3.1.3's AppleBCMWLAN-1.25 logs no lease, so regress's wifi check also
+accepts slirp's DHCPACK in a capture of the netdev. The same tools as 4.2.1 build it, with four differences that the 3.1.3 kernel and IOP
+firmware need:
+
+| What | Why |
+|---|---|
+| `ipad1_nand.py build --sig-flags 4` | 3.1.3's AppleNANDFTL formats with NANDDRIVERSIGN flags 4 (0xc03dbae2). It reports "Incompatible Signature" for flags above 4 under a '1' second signature byte (0xc03db8aa), which includes 4.x's 5 |
+| `ipad1_rootfs.py build --data-block-size 8192 --data-unjournaled` | 3.1.3's mount_hfs fails the journaled data volume the Mac makes with EINVAL, at 4096 or 8192 bytes, and also with the journal left for the device to initialize. An unjournaled volume mounts. Debt 10 |
+| kboot (`s5l8920_kboot.py`) | the 3.1.x DT has no die-id, display-rotation or display-scale slots, so fill_dt skips them (the 3.x kernel reads none of them) |
+| lockdownd | the 8C148 activation patcher's pattern matches 3.1.3's lockdownd unchanged (`activation_hook` as for 4.2.1) |
+
+The model side:
+- `s5l8930.h2fmi` arms the next FIFO transfer on a READ ID (3.1.3's IOP firmware reads each chip's ID
+  without clearing control in between). Without that, the panic is "IOP failed to read ID".
+- A new write transfer (control 5) clears DONE.
+- The board now sets `explicit-start` for the N18 as well as the N88. 3.1.3's s5l8922x firmware fills the
+  FIFO for the next page before it writes control 5, so without it the page completes onto the previous
+  chip and the FTL later reads it blank ("multiple read operation ... 0x80000023", then a disk0s2 media
+  error).
+- 4.2.1 passes usbmux, AFC, persist and Wi-Fi with this change (the FirmwareKit fk-dev device).
+
+```
+F=~/Developer/qemu-ios-files/n18-fw            # keys: api.ipsw.me/v4/keys/ipsw/iPod3,1/7E18, as a key page
+imgtools/ipad1_fw.py $F/iPod3,1_3.1.3_7E18_Restore.ipsw $F/keys-7E18.txt $F/dec-7E18
+imgtools/ipad1_rootfs.py build --rootfs $F/dec-7E18/rootfs.dmg --pristine $F/dec-7E18/rootfs.dmg --mbr $F/mbr.bin \
+    --out $F/userland-7E18 --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
+# activation_hook(offline-activation-8C148/patch_lockdownd.py) on userland-7E18/pristine/system.img, as above
+imgtools/ipad1_nand.py build --no-whitening --sig-flags 4 --geometry k48-16g --mbr $F/mbr.bin \
+    --kernelcache $F/dec-7E18/kernelcache.mach --system $F/userland-7E18/pristine/system.img \
+    --data $F/userland-7E18/pristine/data.img --out $F/userland-7E18/nand-pristine
+imgtools/s5l8920_kboot.py n18 --identity $F/identity.json $F/dec-7E18 $F/kboot-7E18.bin \
+    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userland-7E18/nand-pristine \
+    --product-version 3.1.3 --checks usbmux,afc,persist
+```
+
+3.x has no data protection, so it needs no NOR and no keybag. `tests/ipad1/regress.py` now passes
+IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
+`-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
+
+### iOS 3.1.1 (7C145)
+
+Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
+the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
+(keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
+persist and Wi-Fi pass (2026-10-05). It needed no model change of its own. One gesture fix came out of it:
+in about one 3.1.1 persist run in three, the touch landed on the power-off knob (its label faded) but the knob
+ignored the drag and snapped back, so the guest never shut down. Screendumps every 1.5 s show it. The gesture
+now rests 0.5 s at the end of the track before lifting. If the guest is still up 2.5 s later, it drags again,
+up to three times in all, as a user would. Once the guest is shutting down, the sheet is gone and a drag
+does nothing.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation of what
@@ -158,20 +215,29 @@ offsets at 0x80000000).
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
 5. **AMC**: not wired.
 6. **Buttons**: GPIO only. On USB power (always, as on the iPad), Hold locks the panel and Hold or Home wakes it
-   (2026-10-05, FirmwareKit device). The AP never deep-sleeps there. The D1755's wake latch (DT wake_button_* on
-   its STAT) is not driven, so an AP that did suspend (no cable) could not be woken by a press.
+   (2026-10-05, FirmwareKit device). The AP never deep-sleeps there. Unplugged (`usb-attached=off`), the locked
+   device deep-sleeps about 2 minutes after boot: "System Sleep", then the D1755 driver's "pmu go hib" (0x805cc8f6 on
+   8C148), which writes 0x6f = 0x80 and sets 0x26 in 0x0d. Bit 0 stays clear, so it is not power-off. Nothing models
+   the PMU cutting AP power or a press powering it back, so it stays asleep. On hardware, LLB resumes the
+   kernel. Findings so far:
+   - The wake buttons are the PMU's STAT function (DT buttons: function-wake_button_menu/_hold, args 0x180/0x181).
+   - The hib path first configures wake sources (0x805cb4c0, reads 0x50..0x57).
+   - No resume address appears in PMGR, pram (top 16 KiB of DRAM) or SRAM after sleep.
+   - Re-entering the kboot entry with DRAM kept and devices reset (an experiment) ends in the abort handler.
+     So the kernel expects a separate resume entry, which LLB knows about. Next: find where xnu-1504's ARM sleep
+     path leaves it (PMU scratch over I2C is the remaining candidate), then make kboot's reset loader branch there
+     on a PMU wake.
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
-8. **GL scene on the panel**: the harness's GLES view renders into its 240x360 IOSurface (stride 960) and
-   reads back right, but the panel shows that surface laid out linearly at the panel's 320-pixel stride
-   (the top 270 rows, cyan/magenta stripes). The CLCD keeps scanning its own framebuffer (window 1 unchanged)
-   and the scaler runs no transfer during the scene, so the copy happens in the guest's composite of the app
-   surface. With CoreAnimation compositing through the GL bridge (FirmwareKit's `ca_ogl`), the same surface is
-   read at 320x480 twice: two stacked copies, a black row at 270, and 88% fixture colour. The gate's
-   fixture-colour test passes either way. Next: find which compositor reads the
-   surface at panel geometry (SpringBoard's software CA with `CA_ENABLE_OGL=0`, or IOMFB's swap of the
-   app's layer).
+8. **GL scene on the panel** (fixed 2026-10-05, d6ab1dab16). For a full-screen GL view, 4.x scans the app's
+   surface out directly. CLCD window 1 is the 240x360 GL surface (stride 240, origin 40,60, double-buffered);
+   window 2 is the UI, alpha-blended over it; +0x04 = 0x30. The model composed planes only when not behind the
+   DART, and read them physically, so N18/N88 showed window 1 at panel geometry (the stripes). Composition now
+   reads through the IOMMU (`ipod_touch_lcd.c` lcd_bus_read). Machines without one are unchanged.
 9. **No USB host port**: the OTG runs in device mode only, so regress's `boot`/`net` checks, which type on a
    `usb-kbd` on `usb-bus.0`, cannot run (Bus 'usb-bus.0' not found). `wifi`, `persist` and app-install do.
+10. **3.1.3: data volume without a journal.** 3.1.3's mount_hfs refuses the Mac-made journal (EINVAL) for
+    reasons not yet traced, so the data volume is built unjournaled. A guest that stops without unmounting
+    then needs fsck.
 
 ## iPhone 3GS (N88AP, S5L8920): `-M n88`
 

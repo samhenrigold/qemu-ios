@@ -6,7 +6,7 @@
 
 /* Host angles are degrees: right edge down is positive roll; top edge away
  * is positive pitch. The LIS302DL mounting reverses device X exactly once.
- * Keep the emulator's established 64 counts/g calibration. */
+ * The vector is in 1/64 g; the sensor model converts it to its own counts. */
 static inline bool ipod_attitude_vector(double pitch, double roll, bool flat,
                                         int8_t out[3])
 {

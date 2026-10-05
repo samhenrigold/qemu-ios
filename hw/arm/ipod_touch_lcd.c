@@ -199,13 +199,16 @@ void ipod_lcd_set_iommu(DeviceState *lcd, hwaddr (*xlate)(void *opaque, uint32_t
     s->xlate_opaque = opaque;
 }
 
-/* A non-contiguous frame into buf, page by page; unmapped pages read black. */
-static void lcd_gather(IPodTouchLCDState *s, uint8_t *buf)
+/* len bytes at a bus address: through the IOMMU when there is one (page by page,
+ * unmapped pages read black), else physical. */
+static void lcd_bus_read(const IPodTouchLCDState *s, uint32_t addr, uint8_t *buf, uint32_t len)
 {
-    uint32_t len = LCD_FB_WIDTH * LCD_FB_HEIGHT * 4;
-
+    if (!s->xlate) {
+        cpu_physical_memory_read(addr, buf, len);
+        return;
+    }
     for (uint32_t off = 0; off < len;) {
-        uint32_t va = s->scanout_va + off;
+        uint32_t va = addr + off;
         uint32_t n = MIN(0x1000 - (va & 0xfff), len - off);
         hwaddr pa = s->xlate(s->xlate_opaque, va, 0);
 
@@ -216,6 +219,12 @@ static void lcd_gather(IPodTouchLCDState *s, uint8_t *buf)
         }
         off += n;
     }
+}
+
+/* A non-contiguous frame into buf. */
+static void lcd_gather(IPodTouchLCDState *s, uint8_t *buf)
+{
+    lcd_bus_read(s, s->scanout_va, buf, LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
 }
 
 static void lcd_update_irq(IPodTouchLCDState *s)
@@ -578,7 +587,7 @@ static void lcd_filter_plane(const uint8_t *src, unsigned sw, unsigned sh,
                                                 yp + y * yr, vbank, 4);
 }
 
-static bool lcd_compose_planes(const uint32_t *r, uint8_t *out)
+static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, uint8_t *out)
 {
     const unsigned pw = LCD_FB_WIDTH, ph = LCD_FB_HEIGHT;
     memset(out, 0, pw * ph * 4);
@@ -658,15 +667,14 @@ static bool lcd_compose_planes(const uint32_t *r, uint8_t *out)
         unsigned rotation = p[0] >> 22;
         if (!w || w > 2048 || !h || h > 2048 || p[2] > 8192 || p[3] ||
             (p[0] & 0xf00) != 0x700 || (rotation != 0 && rotation != 3) ||
-            !lcd_plane_range(p[1], stride, h, w * 4)) return false;
+            (!s->xlate && !lcd_plane_range(p[1], stride, h, w * 4))) return false;
         /* RGB scanout can bypass CA composition too. Mode 3 rotates its
          * padded landscape surface into the physical portrait panel, just
          * like the video plane. Geometry and origin are guest registers. */
         unsigned dw = rotation ? h : w, dh = rotation ? w : h;
         g_autofree uint8_t *pixels = g_malloc((size_t)w * h * 4);
-        for (unsigned sy = 0; sy < h; sy++)
-            cpu_physical_memory_read(p[1] + sy * stride,
-                                     pixels + (size_t)sy * w * 4, w * 4);
+        for (unsigned sy = 0; sy < h; sy++)    /* behind an IOMMU (the M2 CLCD), bus addresses */
+            lcd_bus_read(s, p[1] + sy * stride, pixels + (size_t)sy * w * 4, w * 4);
         for (unsigned dy = 0; dy < dh && dy + y0 < ph; dy++) {
             for (unsigned dx = 0; dx < dw && dx + x0 < pw; dx++) {
                 unsigned sx = rotation ? dy : dx;
@@ -854,17 +862,18 @@ static void lcd_refresh(void *opaque)
     const uint32_t *planes = lcd->plane_scanout;
     /* The S5L8900 layout keeps its own words in plane_regs (LCDCON2, VIDCON,
      * window 2); the S5L8720 plane test would misread them as a composition. */
-    if (lcd->gather) {
+    if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
         if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
-        lcd_gather(lcd, lcd->rotbuf);
-        composed = true;
-    } else if (!lcd->s5l8900 && lcd_needs_plane_composition(planes)) {
-        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
-        composed = lcd_compose_planes(planes, lcd->rotbuf);
+        composed = lcd_compose_planes(lcd, planes, lcd->rotbuf);
         if (!composed) {
             static bool warned;
             if (!warned) { warned = true; fprintf(stderr, "[LCD] unsupported plane configuration\n"); }
         }
+    }
+    if (!composed && lcd->gather) {
+        if (!lcd->rotbuf) lcd->rotbuf = g_malloc(LCD_FB_WIDTH * LCD_FB_HEIGHT * 4);
+        lcd_gather(lcd, lcd->rotbuf);
+        composed = true;
     }
     if (lcd->rotation != 0 || composed) {
         int64_t t = lcd_frametrace() ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;

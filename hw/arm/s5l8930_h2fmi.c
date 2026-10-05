@@ -220,6 +220,9 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     case 0x90:
         b->mode = MODE_ID;
         b->id_pos = 0;
+        /* The ID goes through the FIFO on the next control 3 even if control is already 3: 3.1.3's
+         * S5L8920 IOP firmware reads each CE's ID in turn without clearing control between them. */
+        b->read_pending = true;
         break;
     case 0xff:
         b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
@@ -244,6 +247,7 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         uint8_t mask;
         uint32_t result = 1;
 
+        HT("h%d program ce %d row 0x%x len %u\n", b->n, ce, b->row, ce >= 0 ? b->wpage_len[ce & 7] : 0);
         if (ce >= 0 && s->iop && b->wpage_len[ce & 7]) {
             s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
             int per_bus = MAX(ctpop8(mask), 1);
@@ -658,8 +662,10 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
              * IOP firmware with 3 then 0x83.
              */
             if ((v & 7) == 5) {
-                /* Write transfer: done once the FIFOs hold the page. */
+                /* Write transfer: done once the FIFOs hold the page. A new transfer's DONE is its own:
+                 * 3.1.3's S5L8922 IOP firmware programs CE after CE without clearing the last one's. */
                 b->fmi[off / 4] = v;
+                b->fmi[FMI_STATUS / 4] &= ~FMI_ST_DONE;
                 b->write_armed = true;
                 h2fmi_write_check(b);
                 return;

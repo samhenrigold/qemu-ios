@@ -245,7 +245,7 @@ typedef struct MTSensorProfile {
     int frame_width, frame_height;      /* span from 0.0 to 1.0 */
 } MTSensorProfile;
 
-extern const MTSensorProfile mt_profile_ipod, mt_profile_k48, mt_profile_n81, mt_profile_n88;
+extern const MTSensorProfile mt_profile_ipod, mt_profile_k48, mt_profile_n81, mt_profile_n88, mt_profile_n45;
 
 typedef struct IPodTouchMultitouchState {
     SSIPeripheral ssidev;

@@ -310,6 +310,7 @@ struct IPad1MachineState {
     ARMCPU *cpu;
     MemoryRegion dram;
     MemoryRegion dram_hi;                /* DRAM mirror at 0x50000000 (iBoot) */
+    MemoryRegion dram_lo;                /* DRAM's first page at PA 0 (the kernel's reset-vector page) */
     MemoryRegion chipid;
     MemoryRegion sram;
     MemoryRegion bootrom;
@@ -1096,6 +1097,18 @@ static void ipad1_init(MachineState *machine)
         memory_region_init_alias(&s->bootrom_alias, NULL,
                                  "ipad1.bootrom-alias", &s->bootrom, 0, size);
         memory_region_add_subregion(sysmem, 0xbf000000, &s->bootrom_alias);
+    } else {
+        /*
+         * Past the boot ROM, PA 0 is DRAM's first page. The 6.x and 7.x kernels
+         * (xnu-2107, xnu-2423) link at 0x80001000 and leave that page out. In early
+         * init they ml_io_map PA 0 (ml_vtophys of gPhysBase, which no longer has a
+         * V=P mapping) and copy the reset and exception vectors there for a core
+         * reset to land on. Without a page here the copy took an external abort
+         * ("sleh_abort at interrupt context", N90 10B329/11D257).
+         * ponytail: one page, aliased; the real remap's size is unmeasured.
+         */
+        memory_region_init_alias(&s->dram_lo, NULL, "ipad1.dram-lo", &s->dram, 0, 0x1000);
+        memory_region_add_subregion(sysmem, 0, &s->dram_lo);
     }
 
     /*
@@ -1484,10 +1497,12 @@ static void ipad1_init(MachineState *machine)
      * on Accessibility > Zoom, which puts the scaler on CA's display path,
      * hung the UI in "M2Scaler waiting for device reset step 2".
      */
-    ipod_scaler_set_iommu(sysbus_create_simple("ipodtouch.scaler",
-                                               S5L8930_SCALER_BASE,
-                                               ipad1_irq(s, S5L8930_IRQ_SCALER)),
-                          s5l8930_dart2_xlate, s->display, 2);
+    DeviceState *scaler = sysbus_create_simple("ipodtouch.scaler", S5L8930_SCALER_BASE,
+                                               ipad1_irq(s, S5L8930_IRQ_SCALER));
+    ipod_scaler_set_iommu(scaler, s5l8930_dart2_xlate, s->display, 2);
+    /* ponytail: 0x20002 is the lowest version the 4.3 driver gives tiled buffers (CA scales EAGL layers from
+     * them); unmeasured on a unit, read +0x260 off one to replace it. */
+    ipod_scaler_set_version(scaler, 0x20002);
 
     /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
     sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);

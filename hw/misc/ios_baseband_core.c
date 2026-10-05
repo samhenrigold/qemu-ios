@@ -1837,6 +1837,40 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         }
     }
 
+    if ((arg = arg_after(cmd, "xdrv=5,16,", NULL))) {
+        /*
+         * Temperature notifications (3GS: +xdrv=5,16,20). CommCenter arms a watchdog of
+         * period + 20 s and resets the baseband ("modem reset: temperature update
+         * timeout") unless +XDRVI: 5,17 keeps arriving. The iPhone 4 sends 5,16,0 (off).
+         */
+        int n = atoi(arg);
+
+        bb->temp_period_ms = n > 0 ? n * 1000 : 0;
+        bb->temp_ch = ch;
+        bb->temp_due_ms = n > 0 ? bb->now_ms + 1000 : 0;
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "crsm=", NULL))) {
+        /*
+         * Restricted SIM access (27.007 +CRSM: sw1,sw2[,data]). The fake SIM has
+         * EF_AD (6FAD: normal operation, MNC length 2, so 001/01 is unambiguous);
+         * every other file answers 94 04 (file not found) rather than a bare OK.
+         */
+        int op = 0, fid = 0;
+
+        sscanf(arg, "%d,%d", &op, &fid);
+        if (fid == 0x6fad && op == 176) {
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"00000002\"\r\n");
+        } else if (fid == 0x6fad && op == 192) {
+            /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
+        } else {
+            chan_printf(bb, ch, "\r\n+CRSM: 148,4\r\n");
+        }
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "xsio?") == 0) {
         /* 1.0 wants field 1 after its first char ("*0") to equal 0. */
         chan_printf(bb, ch, "\r\n+XSIO: 0,*0\r\n");
@@ -2503,6 +2537,13 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
     if (bb->reg_step && now_ms >= bb->reg_due_ms) {
         reg_tick(bb);
     }
+    if (bb->temp_due_ms && now_ms >= bb->temp_due_ms) {
+        /* 5,17: temperature; then readings in degrees C (the parser takes them as ints). */
+        if (bb->ch[bb->temp_ch].open || bb->temp_ch == 0) {
+            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,25,25,25,25,25\r\n");
+        }
+        bb->temp_due_ms = now_ms + bb->temp_period_ms;
+    }
     if (bb->xsim_due_ms && now_ms >= bb->xsim_due_ms) {
         bb->xsim_due_ms = 0;
         if (bb->ch[bb->xsim_ch].open) {
@@ -2556,6 +2597,9 @@ int64_t ios_bb_next_due(const IosBbCore *bb)
 
     if (bb->reg_step) {
         due = bb->reg_due_ms;
+    }
+    if (bb->temp_due_ms && (!due || bb->temp_due_ms < due)) {
+        due = bb->temp_due_ms;
     }
     if (bb->xsim_due_ms && (!due || bb->xsim_due_ms < due)) {
         due = bb->xsim_due_ms;

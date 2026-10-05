@@ -111,7 +111,7 @@ def build(board, dec_dir, boot_args, ident, ramdisk=None, nor=False):
     dt.set("", "platform-name", b["platform-name"])
     for key in ("chip-id", "board-id"):
         dt.set("chosen", key, b[key])
-    if "display-rotation" in dt.props["chosen"]:     # 3.1.3 DTs have none
+    if "display-rotation" in dt.props["chosen"]:       # 3.1.x DTs have none
         dt.set("chosen", "display-rotation", 0)
     # The N88's baseband node, which fill_dt unmatches and renames (there is no modem model): lockdownd
     # still reads its identity. GSMA's test IMEI and a placeholder serial, so nothing passes for a real unit.
