@@ -327,6 +327,7 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
              * _readADCGated 805cd2ca..805cd412); the RTC counter at 0x4c
              * (read twice as a ripple guard). */
             qdev_prop_set_uint8(DEVICE(slave), "adc-reg", 0x30);
+            qdev_prop_set_uint8(DEVICE(slave), "brick-mux", 6);   /* the dock data lines, as the D1815's */
             qdev_prop_set_uint8(DEVICE(slave), "rtc-reg", 0x4c);
             /* ponytail: the backlight is not decoded (DT backlight, SWI?);
              * keep the panel lit by pointing the enable at a scratch byte
