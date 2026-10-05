@@ -207,12 +207,14 @@ class Boot:
                 return status
             time.sleep(2)
 
-    def wait_lock_screen(self, timeout=300):
+    def wait_lock_screen(self, timeout=None):
         """(ok, detail): lit, not solid, and still so HOME_CONFIRM_S later.
 
         The lock screen turns the panel off about 8 s after it appears, so the confirmation is short and
         callers act right after. Home (the button-home property, which works even while a USB keyboard
         owns QMP keys) wakes a panel that went dark before it was sampled."""
+        if timeout is None:   # 7.x reaches its lock screen in 2-5 minutes here
+            timeout = 600 if getattr(self.cfg, "major", 0) >= 7 else 300
         t0, detail, woke = time.time(), "never sampled", 0
         while time.time() - t0 < timeout and self.qemu.poll() is None:
             if time.time() - t0 > 60 and time.time() - woke > 20 and \
@@ -458,16 +460,25 @@ def check_boot_5(cfg, r, b, detail):
     """check_boot on 5.x, which neither shows the stock USB alert nor, fresh, a home screen: it_boot's report,
     lockdown answering, then Setup Assistant (fresh) or the home screen (past Setup) after the slide, nothing
     over it, Hold locks, GL clean."""
-    if cfg.package_seed is not None and not cfg.guest_package:
+    def it_boot_said(detail):
+        """detail with it_boot's console report, or None after a FAIL (the r.set already made)."""
+        if cfg.package_seed is None or cfg.guest_package:
+            return detail
         # no offer this boot, so no QC report: it_boot says which package it loaded on the console
-        said = "it_boot: package %s\n" % cfg.package_seed
-        for _ in range(30):   # a loaded host can light the lock screen before it_boot has printed
-            if said in open(b.serial, errors="replace").read():
-                break
+        said = "it_boot: package %s" % cfg.package_seed
+        # A loaded host can light the lock screen before it_boot has printed; 7.x's read-only root prints
+        # "... (read-only root)" and only once launchd has loaded the jobs, minutes in, so 7.x looks last.
+        for _ in range(300 if cfg.major >= 7 else 30):
+            if re.search(re.escape(said) + r"( \(read-only root\))?\n", open(b.serial, errors="replace").read()):
+                return detail + "; it_boot loaded package %s" % cfg.package_seed
             time.sleep(1)
-        else:
-            return r.set(False, "%s, but it_boot never said it loaded the device's package (%r)" % (detail, said.strip()))
-        detail += "; it_boot loaded package %s" % cfg.package_seed
+        r.set(False, "%s, but it_boot never said it loaded the device's package (%r)" % (detail, said))
+        return None
+
+    if cfg.major < 7:
+        detail = it_boot_said(detail)
+        if detail is None:
+            return
     if b.usb:
         v = b.run(["ideviceinfo", "-k", "ProductVersion"]).stdout.strip()
         act = b.run(["ideviceinfo", "-k", "ActivationState"]).stdout.strip()
@@ -505,6 +516,10 @@ def check_boot_5(cfg, r, b, detail):
     locked = hold_locks(b)
     if not locked.startswith("Hold locked"):
         return r.set(False, "%s; %s: %s" % (detail, shown, locked))
+    if cfg.major >= 7:
+        detail = it_boot_said(detail)
+        if detail is None:
+            return
     gl_clean(b, r, "%s; %s%s, no alert, %s" % (detail, shown, " (frontmost %s)" % front if front else "", locked),
              [ppm])
 
@@ -1184,6 +1199,8 @@ def device_args(a):
     # A pinned PMU clock (a developer beta's lock, before its expiry date): every boot starts there, as the app's.
     a.rtc_epoch = (lockd.get("machine") or {}).get("rtc-epoch")
     a.major = int(a.product_version.split(".")[0])
+    if getattr(a, "boot_timeout", 0) is None:
+        a.boot_timeout = 1400 if a.major >= 7 else 600
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
     a.activated = bool((lockd.get("inputs") or {}).get("activation") or (lockd.get("inputs") or {}).get("activation_hook"))
     a.package_seed = (lockd.get("guest_package") or {}).get("seed")
@@ -1199,7 +1216,7 @@ def main():
     ap.add_argument("--qemu", default=os.path.join(ROOT, "build/qemu-system-arm"))
     ap.add_argument("--usbmuxd", default=USBMUXD)
     ap.add_argument("--ipa", help="app check: the IPA to install and launch (default the iPod harness)")
-    ap.add_argument("--boot-timeout", type=int, default=600, help="hard cap per QEMU, seconds")
+    ap.add_argument("--boot-timeout", type=int, help="hard cap per QEMU, seconds (default 600; 1400 on 7.x)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--product-version", help="usbmux's expected ProductVersion (default: NAND/../device.lock.json, else 3.2.2)")
     ap.add_argument("--sound-reference-root", help="explicit matching extracted rootfs when the guest has no agent")
