@@ -45,7 +45,18 @@ typedef struct IPodTouchSYSICState {
     uint32_t gpio_int_type[GPIO_NUMINTGROUPS];
     /* Asserted logical level requests from devices such as the nested PMU IC. */
     uint32_t gpio_level_pending[GPIO_NUMINTGROUPS];
+    /*
+     * Pad-driven sources (ipod_touch_sysic_set_pad): their input levels, and
+     * which bits have one. Those interrupt by the S5L8900's rule: INTTYPE bit 1 =
+     * level, 0 = edge; INTLEVEL bit = the polarity (1 high); a level source
+     * asserts while the pad matches, an edge source when it starts to.
+     */
+    uint32_t gpio_pad_level[GPIO_NUMINTGROUPS];
+    uint32_t gpio_pad_driven[GPIO_NUMINTGROUPS];
 } IPodTouchSYSICState;
+
+/* A pad behind GPIO-IC line `irq` is now at `level`. */
+void ipod_touch_sysic_set_pad(IPodTouchSYSICState *s, unsigned irq, bool level);
 
 /* Latch an edge request and update the masked group output. */
 void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s, unsigned group, unsigned bit);

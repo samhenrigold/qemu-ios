@@ -61,7 +61,7 @@ the 1G's row, unchanged.
 | PMU, WM8758 | on I2C0 (the 1G's are on I2C1) | board data | H |
 | Codec data | I2S0 at 0x3CA00000, dmac0 request 0, ready GPIO-IC 0x86, host output on (no piezo on the M68) | board data | R |
 | I2S1 (baseband audio), I2S at 0x3D400000 | RAM windows | — | S |
-| Buttons | menu 0x1600, volume up/down 0x1601/0x1602 (active low, rest high), Hold 0x1605, ring switch 0x1603; GPIO-IC 0x28-0x2d | board data | R |
+| Buttons | menu 0x1600, volume up/down 0x1601/0x1602 (active low, rest high), Hold 0x1605, ring switch 0x1603; GPIO-IC 0x28-0x2d, interrupting by the polarity and type the driver programs | board data / SYSIC | R |
 | Zephyr1 | `s5l8900.multitouch-z1`, subtype of the shared `ipodtouch.multitouch` (host input, frames and ATN shared; the Zephyr2 unchanged), chip select on GPIO 0x0705, ATN GPIO-IC 0xa3 | new | H (firmware) / R (wire) |
 | NAND | FMC `banks=4` (ID reads answer only populated chip enables); ADM firmware-14's transfer block (found by its data-section pointers, 0x824 into data2) and page list at +0x444 | property / variant | R / H |
 | UART1, UART3 | `cts` on: iBoot-159 waits for CTS before each byte it sends; with nothing attached the far end reads ready | property | R |
@@ -81,17 +81,15 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
    With no modem it stays zeros, and AppleMRVL868x refuses it ("Invalid calibration data in device tree": it
    accepts any first 128 bytes that are neither all 0x00 nor all 0xFF). Settings shows "No Wi-Fi". The modem
    model serving that nvram entry fixes it without touching the guest.
-2. **Volume buttons and the "ringer" HUD.** AppleM68Buttons maps its elements hold, menu, volup, voldown,
-   ringerab to usages 0x30, 0x40, 0xe9, 0xea, 0x2e, in that order, against the DT's interrupts 0x2d, 0x28,
-   0x29, 0x2a, 0x2b. The model follows the DT: volume pads 0x1601/0x1602 are active low (flags 0, as on the
-   2G) and rest high. The volume behaviour is wrong both ways:
-   - Pads high at rest: a ringer HUD comes up at boot and stays. A volume-up press (Cmd+=) runs the volume
-     to 0 and a down press runs it to 16; it never stops.
-   - Pads low at rest: a press steps the volume while it is held, but in the opposite direction, and not
-     consistently.
-   No button interrupt fires at boot (`IT_GPIO_TRACE`). Interrupt types 5 (volume) and 7 (the others)
-   suggest the volume pads' interrupts are level- or single-edge-sensitive, which the SYSIC's GPIO groups
-   do not model. The HUD also takes taps over its rectangle until a volume press hides it.
+2. **Volume buttons and the "ringer" HUD.** The button pads now interrupt by the GPIO IC's own rule (both
+   machines, `ipod_touch_sysic_set_pad`): the 1.x drivers program every button as a level interrupt and flip
+   its polarity (INTLEVEL, now stored) after each one, so a press and a release each make exactly one
+   interrupt (`IT_GPIO_TRACE`: STAT 0x200, LEVEL flipped, again on release). AppleM68Buttons maps hold,
+   menu, volup, voldown, ringerab to usages 0x30, 0x40, 0xe9, 0xea, 0x2e on interrupts 0x2d, 0x28, 0x29,
+   0x2a, 0x2b. The volume pads are active low as in the DT (polarity programmed low), resting high.
+   Still wrong: a "ringer" HUD comes up at boot and stays until a volume press. Volume presses (Cmd+= /
+   Cmd+-) take the level several steps, toward 0 for an up press. The HUD takes taps over its rectangle
+   while it is up. Cause unknown; the ring switch's level makes no difference.
 3. **No modem** (another stream): "Repair Needed" alert, no carrier, no IMEI in the DT (so lockdownd's view
    of the UDID lacks it; FirmwareKit's identity hashes the IMEI it records).
 4. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one

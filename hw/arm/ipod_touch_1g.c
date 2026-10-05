@@ -452,6 +452,17 @@ static void n45_cpu_reset(void *opaque)
     if (s->board->ring_gpio && s->ring_silent) {
         gpio_set_on(s->gpio->gpio_state, s->board->ring_gpio);
     }
+    /* ... and the GPIO IC sees each button pad's level. */
+    const uint32_t pads[][2] = {
+        { s->board->home_gpio, s->board->home_irq }, { s->board->power_gpio, s->board->power_irq },
+        { s->board->volup_gpio, s->board->volup_irq }, { s->board->voldown_gpio, s->board->voldown_irq },
+        { s->board->ring_gpio, s->board->ring_irq },
+    };
+    for (int i = 0; i < ARRAY_SIZE(pads); i++) {
+        if (pads[i][0]) {
+            ipod_touch_sysic_set_pad(s->sysic, pads[i][1], gpio_is_on(s->gpio->gpio_state, pads[i][0]));
+        }
+    }
     n45_stage_boot_chain(s);
     cpu_set_pc(CPU(s->cpu), N45_IBOOT_BASE);
 }
@@ -476,9 +487,9 @@ static void n45_button(IPodTouch1GMachineState *s, uint32_t gpio, uint32_t gpio_
     } else {
         gpio_set_off(pads, gpio);
     }
-    unsigned group = gpio_irq / 32, bit = gpio_irq % 32;
-    s->sysic->gpio_int_status[group] |= 1u << bit;
-    qemu_irq_raise(s->sysic->gpio_irqs[group]);
+    /* The GPIO IC compares the pad with the polarity the driver programmed
+     * (1.x flips it after each interrupt to catch press and release). */
+    ipod_touch_sysic_set_pad(s->sysic, gpio_irq, gpio_is_on(pads, gpio));
 }
 
 /* The app bridge's buttons (qemu_ios_ui_button), on the chords' pads; the 1G has no volume buttons. */
