@@ -32,6 +32,11 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
   alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
   hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer` with `+COLP` so the in-call screen
   shows the number, End Call from the UI).
+- Cellular data (EDGE) with `-netdev user,id=cell0` (the modem looks that name up; LightTouchMac adds it).
+  CommCenter defines and activates the context (`+cgdcont`, `+cgact`, `+xdns`, `+cgpaddr`), then
+  `+cgdata="M-RAW_IP",1` turns DLCI 6 into raw IPv4, which the modem bridges to slirp. With `wifi=off`,
+  Safari's Apple bookmark goes over it: DNS, TCP and `GET /iphone/start/` reach www.apple.com, which
+  redirects to HTTPS; 1.0's Safari can't negotiate today's TLS ("could not establish a secure connection").
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
 Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
@@ -100,7 +105,7 @@ reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2`
 ## Debts
 
 1. **Modem gaps.** Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
-   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No cellular data, no audio. Messages formats the sender oddly
+   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No audio. Messages formats the sender oddly
    ("+55 51 234").
 2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
    screenshots, not fixed delays. A tap sent before a view is up is lost, which looks like dropped keypad
