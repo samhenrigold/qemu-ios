@@ -146,7 +146,9 @@ What it took beyond the 8C148 bring-up:
 10A403 (6.0) gets through `pe_identify_machine` (boot_args Version 3 read off xnu-2107's pc-relative check) and,
 with the SecureROM window mapped at physical 0 under kboot (the kernel copies its exception vectors to
 kvtophys(gPhysBase) = 0 after unmapping V=P), through corecrypto's FIPS self-test; it then stops printing and
-the panel keeps the boot logo. Not yet diagnosed. Its lockdownd has no development shortcut; the hactivation
+the panel keeps the boot logo, the CPU busy and the timer ticking (6.1.6 10B500 the same). Not yet diagnosed;
+ruled out by experiment: the NOR graft, the SGX DT override, `arm-io/clock-frequencies`, filling
+`chosen/nvram-proxy-data` with an empty CHRP image, a 64-byte `chosen/random-seed`. Its lockdownd has no development shortcut; the hactivation
 path (`should_hactivate`, MobileGestalt `ShouldHactivate`) is the candidate for a recognizer strategy.
 
 ## Models: reused, varied, new
