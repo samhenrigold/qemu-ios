@@ -863,7 +863,8 @@ def check_wifi(cfg, r):
             time.sleep(2)
         joined = 'ssid[ 8] = "qemu-ios"' in text
         leased = "receivedIPv4Address(): Received" in text
-        fw = "BCM4329 revision B1" in text and "initFirmware(): successful initialization" in text
+        fw = "BCM4329 revision B1" in text and ("initFirmware(): successful initialization" in text or
+                                                 "setupDriver():  Succeeded" in text)     # 6.x AppleBCMWLANCore
         if joined and leased and fw:
             r.set(True, "BCM4329 B1 up, joined qemu-ios, DHCP lease")
         else:

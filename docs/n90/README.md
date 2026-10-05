@@ -102,8 +102,12 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
      it locally: the host finishes every call before the next, so a fence is signalled as it is made.
    - The bridge refuses nothing on 7.1.2.
    - Open: regress's Setup walk for iOS 7 (the slide-to-set-up gesture and the new pages), activation
-     (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and 6.x Wi-Fi DHCP. The 6.x driver
-     joins (split CDC length and "cap" handled), but no lease comes back.
+     (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and the 6.x Wi-Fi lease.
+8. 6.1.3 Wi-Fi: the driver comes up ("setupDriver(): Succeeded") and joins, with the split CDC length and
+   "cap" handled. With wlan.log.level=7, the DHCP offers are seen arriving ("Rx ... UDP sport 67 dport 68").
+   - A boot with usbmuxd attached got its lease (10.0.2.15 at 26 s).
+   - regress's wifi check boots without USB. There, two of two runs never took an offer, and the NetManager's
+     10 s IP window ran out. Not understood yet.
 
 ## How to boot
 
