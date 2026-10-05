@@ -66,6 +66,21 @@ The SPI2 block is the same S5L89xx SPI as spi0/spi1, but the baseband driver
 descriptors instead of PIO. `hw/arm/ipod_touch_spi.c` is PIO only, so spi2 needs DMA pacing.
 **(black-box)**: the register sequence.
 
+Static read of AppleS5L8920XBasebandSPIController. The MMIO base is at object+0xc8, and the
+register layout matches `ipod_touch_spi.c`:
+* loadConfiguration: word size from the DT config (8/16/32 -> CFG bits 15-16 = 0/1/2). The CFG
+  shadow is `0x2000 | ws << 15 | 0xc0000` (bits 18-19 are DMA request enables, absent in the PIO
+  model).
+* Per transfer (0x80676c10): CTRL = 0xc (FIFO resets), PIN = 0, RXCNT = TXCNT = 0,
+  CLKDIV = shadow 0xf4, WORD_DELAY = 0xf8, +0x3c = 0xffffffff, +0x40 = 0, STATUS = 0x1f,
+  RXCNT = len in words, then with TX data TXCNT = words and CFG = shadow | 0x40, or for
+  receive-only CFG = shadow | 0x41 (bit 0: clock out dummy data).
+* Start (0x80676b84): CTRL = 1 (RUN). Stop (0x80676bdc): CFG = shadow, CTRL = 0.
+
+Because the IFX reply does not depend on what the AP sends in the same frame, the controller model
+can produce MISO when the RX DMA first reads RXDATA, and consume MOSI once TXCNT words have arrived.
+That works whichever DMA channel the driver starts first, and the CDMA model can stay synchronous.
+
 v2 (iPhone 4) changes bytes 2-3 into a credit grant (`creditsGranted += b2 | (b3&0xf)<<8`, kext
 0x80677af0) and adds rx_err at byte 1 bit 5. See `iphone4-hsic.md`.
 
@@ -81,6 +96,7 @@ The parser infrastructure is the same as 1.0's: `getInt(field, line, base)` at 0
 | registration | `+creg=2`, `+cgreg=2`, `+xreg=1`, `+cops=0`, `+cops=3,2`, `+xcops=7/10`; handler 0x3ce78 parses `+CREG` exactly as 1.0 (n,stat,lac,ci / stat,lac,ci / n,stat / stat; lac/ci hex) | `+XREG`, `+XCGREG` and `+XSYSERR` URCs are new |
 | **signal** | once registered (`+CREG` stat 1/5 sets 0xb6), `+xmer=1` then a poll of **`+xcgedpage=0,1`** (0x3b940, re-armed). The response handler 0x3dd48 searches the text for `RSCP:` (UMTS, dBm = -n), otherwise `Rssi:` (GSM RXLEV, dBm = n - 110, 0..63), and `RAT:` up to the next comma: `"GSM"` = 0, `"UMTS"` = 2. UMTS then polls `ECN0:`. | **New.** 1.0 took rssi from `+XCIEV` field 0. The core answers `+XCGEDPAGE: RAT:"GSM",Rssi: <rxlev>` |
 | battery | `+XCIEV` handler 0x4f7e8 reads field 1 only (1..100) | the same field; field 0 is now ignored, so `+XCIEV: rssi,batt` serves both versions |
+| operator | `+cops=3,2`, then `+cops?` (handler 0x3e218), `+xcops=10`, `+xcops=7` (0x3e4e8). The helper is `getStr(out, resp, enc, field, line)` at 0x882fc. `+COPS?` takes field 2 twice, as enc 7 (name) and enc 3 (hex -> atoi = PLMN), and field 3 as AcT (base 10; 2 = UTRAN starts the ECN0 path). `+XCOPS` takes field 1 as enc 3 (hex) = name | the same fields as 1.0. Leave AcT out (GSM) |
 | calls | `+xcallstat=1`, `+clip=1`, `+ccwa=1`, `+cnap=1`, `+cusd=1`, `+cssn=1,1`, `+xemc=1`; `+XCALLSTAT: id,stat` (handler 0x2de50, getInt 0/1 base 10, the same Infineon states); `+CLIP` handler 0x2f58c (field 0 number, 1 type, 5 validity) | unchanged; adds `+XEMC`, `+COLP`, `+CSSI/U` |
 | SMS | `+cnmi=1,2,2,1`, `+csms=1`, `+cmms`; `+CMT` (0x4cd74: PDU from line 1, then `+cnma`), `+CMTI` (0x4e094: index from field 1, mem "SM" -> `+cmgr`, then `+cnma`, `+cmgd`) | the `+CMT: ,<len>\r\n<pdu>` form is unchanged |
 | SIM | `+cpin?`, `+xsimstate=1`, `+ccid`, `+cimi`, `+xpincnt`, `+clck="FD",2`, `+XSIM`/`+XLOCK` URCs, `+crsm`/`+csim` reads | adds `+XLOCK` and `+crsm` file reads (the core answers OK with no data) |
