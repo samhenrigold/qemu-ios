@@ -90,6 +90,12 @@ OpenGLES at preparation, so their `--checks gles` always fails with "no GL-path 
 `tests/fresh-device.sh k48ap-7B500` with `CHECKS=boot,persist,gles` passes: the GL bridge refuses nothing and
 the home frame reference qualifies.
 
+Debt: only 7B500 has a qualified home reference. On fresh FirmwareKit k48ap-8C148 (4.2.1) and k48ap-9B206 (5.1.1)
+(2026-10-05, qemu-ios 4b74bd3104), `--checks gles` walks every scene with nothing refused and then fails only on
+"missing qualified frame reference". Their GL-path home frames are kept as unqualified candidates in
+`qemu-ios-files/n90/frame-candidates/k48ap/<build>/`. A qualified reference needs an independent capture, made
+as 7B500's was (`ca_ogl=false`, the software renderer) or on the physical iPad.
+
 ## Audio (2026-09-27)
 Out works: CS42L61 + Mikey (i2c0 0x39; the codec waits for its 'mikey' function) -> AppleARMIISAudio ->
 CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> i2s0 FIFO ->
