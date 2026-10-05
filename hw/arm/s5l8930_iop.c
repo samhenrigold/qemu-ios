@@ -199,6 +199,7 @@ struct S5L8930IOPState {
     DeviceState *sdio;      /* ring 3 goes here; NULL = no card */
     uint32_t nand_id;       /* the 4 ID bytes the kext compares, LE packed */
     uint8_t nand_ce_mask;   /* CE slots populated on each bus */
+    uint8_t nand_buses;     /* buses with chips, from bus 0: the store's (geometry.json "buses"), 2 or 1 */
     char *nand_dir;         /* page store directory; NULL = blank chip */
     char *overlay_dir;      /* copy-on-write overlay; base is then read-only */
     BlockBackend *chip[NAND_BUSES][NAND_CES];
@@ -282,7 +283,7 @@ static void iop_raise_ap_irq(S5L8930IOPState *s)
 
 static bool nand_addr_bad(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t page)
 {
-    bool bad = bus < 0 || bus >= NAND_BUSES || ce >= NAND_CES || !(s->nand_ce_mask & (1u << ce)) ||
+    bool bad = bus < 0 || bus >= s->nand_buses || ce >= NAND_CES || !(s->nand_ce_mask & (1u << ce)) ||
                (s->nand_dir && page >= s->pages_per_ce);
 
     if (bad) {
@@ -410,13 +411,27 @@ uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t
     return nand_erase_block(s, bus, ce, s->store_ppb ? page / s->store_ppb : 0);
 }
 
-void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
+/*
+ * iBoot numbers chip selects round-robin across the populated buses (CS 0 = FMI0 CE0, CS 1 = FMI1 CE0,
+ * ...); the store keeps them bus-major, CS n at bus<n / ce_per_bus>-ce<n % ce_per_bus>.
+ */
+void s5l8930_iop_nand_store(DeviceState *dev, int bus, uint32_t ce, int *store_bus, uint32_t *store_ce)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+    int per_bus = MAX(ctpop8(s->nand_ce_mask), 1);
+    int cs = (ce & 7) * s->nand_buses + bus;
+
+    *store_bus = cs / per_bus;
+    *store_ce = cs % per_bus;
+}
+
+void s5l8930_iop_nand_info(DeviceState *dev, int bus, uint32_t *id, uint8_t *ce_mask,
                            uint32_t *page_bytes)
 {
     S5L8930IOPState *s = S5L8930_IOP(dev);
 
     *id = s->nand_id;
-    *ce_mask = s->nand_ce_mask;
+    *ce_mask = bus < s->nand_buses ? s->nand_ce_mask : 0;
     *page_bytes = s->nand_dir ? s->store_page_bytes : 0;
 }
 
@@ -636,7 +651,7 @@ static uint32_t fmi_reset_everything(S5L8930IOPState *s, int bus, uint8_t *cmd)
     uint8_t ids[FMI_ID_CES * FMI_ID_BYTES] = { 0 };
     int ce;
 
-    for (ce = 0; ce < 8; ce++) {
+    for (ce = 0; ce < 8 && bus < s->nand_buses; ce++) {
         if (s->nand_ce_mask & (1u << ce)) {
             stl_le_p(&ids[ce * FMI_ID_BYTES], s->nand_id);
             ids[ce * FMI_ID_BYTES + 4] = 0x54;
@@ -920,8 +935,9 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
             uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i))
                                      : iop_ldl(ces + 4 * i);    /* u16 CEs from v2 on, as fmi_multi */
             uint32_t pg = iop_ldl(pages + 4 * i);
-            int cs = (ce & 7) * NAND_BUSES + bus;   /* as s5l8930_h2fmi.c maps a chip */
-            int sb = cs / ctpop8(s->nand_ce_mask), sc = cs % ctpop8(s->nand_ce_mask);
+            int sb;
+            uint32_t sc;
+            s5l8930_iop_nand_store(DEVICE(s), bus, ce, &sb, &sc);   /* as s5l8930_h2fmi.c maps a chip */
             uint32_t wst = nand_read_page(s, sb, sc, pg, want, wm);
             bool dbad, mbad;
 
@@ -1570,6 +1586,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
     size_t size;
     int bus, ce;
 
+    s->nand_buses = NAND_BUSES;   /* until a store says otherwise */
     if (!s->nand_dir) {
         if (s->overlay_dir) {
             error_setg(errp, "nand-overlay needs a base nand store");
@@ -1622,7 +1639,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         ppb <= 0 || blocks <= 0 || ppb > UINT32_MAX ||
         blocks > UINT32_MAX / ppb ||
         (uint64_t)(blocks * ppb) > SIZE_MAX / (page_bytes + spare_bytes) ||
-        buses != NAND_BUSES || ce_per_bus != ctpop8(s->nand_ce_mask) ||
+        buses < 1 || buses > NAND_BUSES || ce_per_bus != ctpop8(s->nand_ce_mask) ||
         !id || g_ascii_strtoull(id, &id_end, 16) != s->nand_id || *id_end) {
         error_setg(errp, "%s does not match the IOP model (%d buses x %d CE, "
                    "id 0x%08x) or has a bad page geometry", path, NAND_BUSES,
@@ -1631,6 +1648,12 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         return;
     }
     qobject_unref(obj);
+    /*
+     * The store says which buses carry chips: both on every board so far, bus 0 alone for a single-bus
+     * map (3.0's AppleS5L8920XIOPFMI takes this part as 1x4 or 2x4, and the 1x4 superblock keeps
+     * yaFTL's block TOC in one page, as 3.0 assumes).
+     */
+    s->nand_buses = buses;
     for (bus = 0; bus < NAND_BUSES; bus++) {
         s->bytes_per_page[bus] = page_bytes;
         s->bytes_per_spare[bus] = spare_bytes;
@@ -1665,7 +1688,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    for (bus = 0; bus < NAND_BUSES; bus++) {
+    for (bus = 0; bus < s->nand_buses; bus++) {
         for (ce = 0; ce < NAND_CES; ce++) {
             g_autofree char *f = NULL;
 

@@ -149,8 +149,11 @@ uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32
                                   const uint8_t *data, uint32_t len, const uint8_t *meta);
 uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page);
 bool s5l8930_iop_io_failed(void);
-void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
+/* The part on `bus`: its ID, the CEs populated there (0 on a bus without chips) and its page size. */
+void s5l8930_iop_nand_info(DeviceState *dev, int bus, uint32_t *id, uint8_t *ce_mask,
                            uint32_t *page_bytes);
+/* The store's bus and CE for a chip select (bus, CE as the firmware addresses it). */
+void s5l8930_iop_nand_store(DeviceState *dev, int bus, uint32_t ce, int *store_bus, uint32_t *store_ce);
 
 /*
  * H2FMI (hw/arm/s5l8930_h2fmi.c): the NAND interfaces iBoot drives directly.

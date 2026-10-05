@@ -169,6 +169,17 @@ GEOMETRIES = {
     "k48-16g": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=2,
                     ce_per_bus=4, blocks_per_ce=0x1000, pages_per_block=128,
                     page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
+    # The same part on two CEs per bus (8 GB). Its 1024-page superblocks keep a block's TOC in one page,
+    # which 3.0's yaFTL assumes: its TOC page count is always 1 (c05c74ec on N88 7A341, fixed in 3.1), so
+    # the 2048-page superblocks above read past the TOC and restore a garbage map.
+    "k48-8g": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=2,
+                   ce_per_bus=2, blocks_per_ce=0x1000, pages_per_block=128,
+                   page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
+    # Four CEs on one bus: the layout 3.0's AppleS5L8920XIOPFMI board table takes for this part (it refuses
+    # the 2+2 map above, "2-bus not supported"). QEMU: the IOP's nand-buses=1.
+    "k48-8g-1bus": dict(chip_id=bytes.fromhex("add514b6") + b"\0" * 4, num_bus=1,
+                        ce_per_bus=4, blocks_per_ce=0x1000, pages_per_block=128,
+                        page_size=4096, spare_bytes=0x80, vendor_type=0x100014),
     # the research docs' guess (Samsung K9LCG08U1M, 8 KiB pages); the kernel
     # self-format oracle in nand/selfformat uses it. Not the captured unit: its
     # MBR is 4 KiB-sectored, so `build` refuses this geometry.

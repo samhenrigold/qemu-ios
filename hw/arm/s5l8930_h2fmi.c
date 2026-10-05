@@ -247,12 +247,15 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         uint8_t mask;
         uint32_t result = 1;
 
-        HT("h%d program ce %d row 0x%x len %u\n", b->n, ce, b->row, ce >= 0 ? b->wpage_len[ce & 7] : 0);
+        HT("h%d program ce %d row 0x%x len %u lpn 0x%x data %08x\n", b->n, ce, b->row,
+           ce >= 0 ? b->wpage_len[ce & 7] : 0, ce >= 0 ? ldl_le_p(b->wpmeta[ce & 7]) : 0,
+           ce >= 0 ? ldl_le_p(b->wpage[ce & 7]) : 0);
         if (ce >= 0 && s->iop && b->wpage_len[ce & 7]) {
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            result = s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
+            s5l8930_iop_nand_info(s->iop, b->n, &id, &mask, &pb);
+            int sb;
+            uint32_t sc;
+            s5l8930_iop_nand_store(s->iop, b->n, ce, &sb, &sc);
+            result = s5l8930_iop_nand_program(s->iop, sb, sc, b->row,
                                      b->wpage[ce & 7], b->wpage_len[ce & 7], b->wpmeta[ce & 7]);
             b->wpage_len[ce & 7] = 0;
         }
@@ -269,10 +272,11 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         uint32_t result = 1;
 
         if (ce >= 0 && s->iop) {
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            result = s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
+            s5l8930_iop_nand_info(s->iop, b->n, &id, &mask, &pb);
+            int sb;
+            uint32_t sc;
+            s5l8930_iop_nand_store(s->iop, b->n, ce, &sb, &sc);
+            result = s5l8930_iop_nand_erase(s->iop, sb, sc, b->row);
         }
         b->fmc[FMC_NAND_STATUS / 4] = NAND_READY | (result == 1 ? 0 : NAND_FAIL);
         break;
@@ -300,19 +304,15 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
              * iBoot numbers chip selects round-robin across the buses
              * (h2fmiInitVirtToPhysMap, 0x5ff026f8: CS 0 = FMI0 CE0, CS 1 =
              * FMI1 CE8, CS 2 = FMI0 CE1, ...); the page store is laid out
-             * bus-major, CS n at bus<n / ce_per_bus>-ce<n % ce_per_bus>, as
-             * the IOP model serves it to the kernel. Map through the CS so
-             * both see the same flash.
+             * bus-major, as the IOP model serves it to the kernel. Map through
+             * the CS (s5l8930_iop_nand_store) so both see the same flash.
              */
-            uint32_t id, pb;
-            uint8_t mask;
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = getenv("H2FMI_IDENTITY") ? -1 : (ce & 7) * H2FMI_BUSES + b->n;
-            b->page_ok[ce & 7] = cs < 0 ? s5l8930_iop_nand_read(s->iop, b->n, ce & 7, b->row, b->page[ce & 7], &b->stride)
-                                : s5l8930_iop_nand_read(s->iop, cs / per_bus,
-                                               cs % per_bus, b->row, b->page[ce & 7],
-                                               &b->stride);
+            int sb = b->n;
+            uint32_t sc = ce & 7;
+            if (!getenv("H2FMI_IDENTITY")) {
+                s5l8930_iop_nand_store(s->iop, b->n, ce, &sb, &sc);
+            }
+            b->page_ok[ce & 7] = s5l8930_iop_nand_read(s->iop, sb, sc, b->row, b->page[ce & 7], &b->stride);
         }
         break;
     }
@@ -362,7 +362,7 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
         int ce = h2fmi_ce(b);
 
         if (b->s->iop) {
-            s5l8930_iop_nand_info(b->s->iop, &id, &mask, &pb);
+            s5l8930_iop_nand_info(b->s->iop, b->n, &id, &mask, &pb);
         }
         b->fmc[FMC_NAND_STATUS / 4] = (ce >= 0 && (mask & (1u << ce)) && b->id_pos < 4) ?
                                       (id >> (8 * b->id_pos)) & 0xff : 0;
@@ -427,7 +427,7 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         b->unread &= ~(1u << (ce & 7));
     }
     if (s->iop) {
-        s5l8930_iop_nand_info(s->iop, &id, &ce_mask, &page_bytes);
+        s5l8930_iop_nand_info(s->iop, b->n, &id, &ce_mask, &page_bytes);
     }
     transfer_bytes = h2fmi_read_bytes(b, page_bytes);
     if (b->mode == MODE_ID) {
@@ -472,6 +472,9 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
             memset(b->data + b->data_off + b->data_len, 0xff, transfer_bytes);
             memset(m, 0xff, meta);
         }
+        HT("h%d read ce %d row 0x%x ok %d fmt 0x%x mpp %u meta %u: %02x%02x%02x%02x %02x%02x%02x%02x %02x %02x\n",
+           b->n, ce, ce >= 0 ? b->page_row[ce & 7] : b->row, ok, h2fmi_format(b), (h2fmi_format(b) >> 19) & 0x3f, meta, m[0], m[1], m[2], m[3],
+           m[4], m[5], m[6], m[7], m[8], m[9]);
         b->data_len += transfer_bytes;
         b->meta_len += meta;
         b->ecc_q[b->ecc_n++] = raw || ok ? 0 : ECC_BLANK;
@@ -512,7 +515,7 @@ static void h2fmi_write_check(H2FMIBus *b)
         return;
     }
     if (b->s->iop) {
-        s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
+        s5l8930_iop_nand_info(b->s->iop, b->n, &id, &mask, &page_bytes);
     }
     if (page_bytes && b->wdata_len >= page_bytes && b->wmeta_len >= mper &&
         !(b->fmi[FMI_STATUS / 4] & FMI_ST_DONE)) {
@@ -552,7 +555,7 @@ static void h2fmi_drain(H2FMIBus *b)
     if (!b->pending_n || !b->s->iop) {
         return;
     }
-    s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
+    s5l8930_iop_nand_info(b->s->iop, b->n, &id, &mask, &page_bytes);
     while (b->pending_n && h2fmi_room(b, h2fmi_read_bytes(b, page_bytes))) {
         int ce = b->pending_ce[0];
 

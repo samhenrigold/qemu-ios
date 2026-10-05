@@ -118,7 +118,8 @@ def build(board, dec_dir, boot_args, ident, ramdisk=None, nor=False):
     for node in ("nobb", "baseband"):
         if node in dt.props and "device-imei" in dt.props[node]:
             dt.set(node, "device-imei", "004999010640000")
-            dt.set(node, "snum", b"TESTSNUM0000")
+            if "snum" in dt.props[node]:                # 3.0's DT has no snum slot
+                dt.set(node, "snum", b"TESTSNUM0000")
     # ponytail: no NAND boot partition. These boards boot from NAND: IOFlashPartitionScheme claims the
     # flash for a boot-block partition table (LLB, iBoot, NVRAM) that only a restore writes, and without
     # one no FTL attaches. Hiding boot-from-nand makes the FTL take the whole device as on the iPad

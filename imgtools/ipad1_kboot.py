@@ -428,7 +428,8 @@ def fill_dt(dt, memory_map, ident, iboot=IBOOT_VERSION, root_matching=ROOT_MATCH
         # (SpringBoard died in its status bar with a 240-wide TV-out screen). Any nonzero
         # id works: nothing looks it up. This is the reply the DSI model gives.
         for key in ("lcd-panel-id", "raw-panel-id"):
-            dt.set("arm-io/mipi-dsim/lcd", key, 0x00A1D13C)
+            if key in dt.props["arm-io/mipi-dsim/lcd"]:   # 3.0's DT has no raw-panel-id slot
+                dt.set("arm-io/mipi-dsim/lcd", key, 0x00A1D13C)
     # The K48 DT ships an N82 baseband node; on a Wi-Fi iPad iBoot finds no radio ("Radio not
     # detected.") and the real unit's IORegistry has no baseband node at all, so AppleBaseband never
     # loads and CommCenter never reports a dead radio. The editor cannot delete a node, so unmatch
