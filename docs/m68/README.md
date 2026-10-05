@@ -32,6 +32,11 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
   alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
   hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer` with `+COLP` so the in-call screen
   shows the number, End Call from the UI).
+- Cellular data (EDGE) with `-netdev user,id=cell0` (the modem looks that name up; LightTouchMac adds it).
+  CommCenter defines and activates the context (`+cgdcont`, `+cgact`, `+xdns`, `+cgpaddr`), then
+  `+cgdata="M-RAW_IP",1` turns DLCI 6 into raw IPv4, which the modem bridges to slirp. With `wifi=off`,
+  Safari's Apple bookmark goes over it: DNS, TCP and `GET /iphone/start/` reach www.apple.com, which
+  redirects to HTTPS; 1.0's Safari can't negotiate today's TLS ("could not establish a secure connection").
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
 Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
@@ -95,24 +100,24 @@ The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultito
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
 (`D0 00` + 16-bit sum), `C4` execute, `D0` interface version, `8F` report info, `82` report, `46` frame
 length (`AA len len ck ck` for interface versions up to 0x10), `47` frame data (`AA` + frame + sum). The model
-reports interface version 1 and the Zephyr2 model's sensor profile. `MT_TRACE=2` logs every transaction.
+reports interface version 1 and the Zephyr2 model's sensor, with its own frame calibration: taps land
+within 0.1 px of their aim over the whole panel (fitted from the points 1.0's GraphicsServices reports,
+`GSEventGetLocationInWindow`, read through the gdbstub). `MT_TRACE=2` logs every transaction.
 
 ## Debts
 
 1. **Modem gaps.** Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
-   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No cellular data, no audio. Messages formats the sender oddly
+   `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No audio. Messages formats the sender oddly
    ("+55 51 234").
 2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
    screenshots, not fixed delays. A tap sent before a view is up is lost, which looks like dropped keypad
    digits. Once the keypad is up, taps 0.25 s apart all register (8 of 8).
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
-4. **Touch calibration.** The frames use the Zephyr2 model's sensor profile. Taps land on their targets at the
-   few points checked (Dismiss, icons, table rows), but no calibration fit was done as for the K48.
-5. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
+4. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
    gdbstub was killed by `timeout` (the CPU idles taking serial interrupts, no syscalls). Not root-caused; a
    clean detach is fine.
-6. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
+5. The 1G's debts apply as they are (wake from sleep, AES convention, CLCD, timers 0-3).
 
 ## Notes for guest software
 
