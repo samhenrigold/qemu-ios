@@ -89,6 +89,7 @@ typedef struct IosBbCore {
     IosBbOutFn out;
     void *opaque;
     int64_t now_ms;
+    int64_t wall_offset_ms;    /* now_ms + this = Unix ms (SMS timestamps); set by the device */
 
     /* Network and SIM, set by the device's properties. */
     char operator_long[33];

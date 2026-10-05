@@ -697,6 +697,21 @@ static void test_incoming_call(void)
     expect_frame(1, "\r\n+CEER: CC,16\r\n");
     expect_frame(1, "\r\nOK\r\n");
     check_str(ios_bb_call_state(&bb), "idle", "call state");
+
+    /* 4.x answers with ATA and hangs up with ATH. */
+    CHECK(ios_bb_incoming_call(&bb, "15555550199"));
+    pump();
+    ev_i = nev;
+    c_mux_str(1, "ata\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    c_mux_str(1, "ath\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
 }
 
 /* Worked example 4.3: user dials +1 415 555 0100 and hangs up. */
@@ -724,6 +739,7 @@ static void test_outgoing_call(void)
     expect_frame(1, "\r\nOK\r\n");
     expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
     check_str(ios_bb_call_state(&bb), "idle", "call state");
+    bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
 }
 
 /*

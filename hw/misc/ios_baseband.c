@@ -694,6 +694,8 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
         ios_bb_init(&s->bb, iosbb_out, s);
     }
     s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, iosbb_tick_timer, s);
+    /* SMS-DELIVER timestamps in host time (the guest's clock follows it too). */
+    s->bb.wall_offset_ms = g_get_real_time() / 1000 - qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     qemu_register_reset(iosbb_machine_reset, s);
 
     {

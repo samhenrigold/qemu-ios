@@ -1030,7 +1030,7 @@ static unsigned sms_build_deliver(IosBbCore *bb, const char *number, const char 
     n += digits_to_semi(number, oct + n, sizeof(oct) - n);
     oct[n++] = 0x00;                             /* PID */
     oct[n++] = ucs2 ? 0x08 : 0x00;               /* DCS */
-    scts_from_ms(bb->now_ms, oct + n);
+    scts_from_ms(bb->now_ms + bb->wall_offset_ms, oct + n);
     n += 7;
 
     if (ucs2) {
@@ -1637,6 +1637,30 @@ static void at_command(IosBbCore *bb, int ch, const char *cmd)
     }
     if (cmd[0] == 'd') {
         dial_command(bb, ch, cmd + 1);
+        return;
+    }
+    if (strcmp(cmd, "a") == 0) {
+        /* 4.x answers with ATA (1.0 used +chld=2): OK, then the call goes active. */
+        for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
+            IosBbCall *c = &bb->calls[i];
+
+            if (c->used && (c->stat == IOS_BB_CALL_INCOMING ||
+                            c->stat == IOS_BB_CALL_WAITING)) {
+                at_ok(bb, ch);
+                call_progress(bb, c, IOS_BB_CALL_ACTIVE);
+                return;
+            }
+        }
+        chan_printf(bb, ch, "\r\nNO CARRIER\r\n");
+        return;
+    }
+    if (strcmp(cmd, "h") == 0 || strcmp(cmd, "h0") == 0) {
+        at_ok(bb, ch);
+        for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
+            if (bb->calls[i].used) {
+                call_release(bb, &bb->calls[i]);
+            }
+        }
         return;
     }
     if (strncmp(cmd, "s0=", 3) == 0) {
@@ -2353,7 +2377,7 @@ void ios_bb_reset(IosBbCore *bb)
     bool registered = bb->registered, sim_present = bb->sim_present;
     IosBbOutFn out = bb->out, data_out = bb->data_out;
     void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
-    int64_t now_ms = bb->now_ms;
+    int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
 
     memcpy(operator_long, bb->operator_long, sizeof(operator_long));
     memcpy(operator_short, bb->operator_short, sizeof(operator_short));
@@ -2387,6 +2411,7 @@ void ios_bb_reset(IosBbCore *bb)
     bb->data_out = data_out;
     bb->data_opaque = data_opaque;
     bb->now_ms = now_ms;
+    bb->wall_offset_ms = wall_offset_ms;
 
     /* The FCS/CRC tables are lazy-initialized on first use; the mux rx path
      * can run before anything is ever sent, so make sure they exist. */
