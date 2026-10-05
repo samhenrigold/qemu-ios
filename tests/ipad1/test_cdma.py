@@ -36,7 +36,7 @@ for pat in (r'typedef struct CDMAChannel \{.*?\} CDMAChannel;',
     structs.append(re.search(pat, source, re.S).group())
 
 order = ('gid_lookup', 'aes_apply', 'fifo_push', 'aes_feed', 'aes_for_channel',
-         'cdma_is_memory', 'cdma_fifo_fed', 'cdma_update_irq', 'fifo_pop',
+         'cdma_is_memory', 'cdma_source', 'cdma_fifo_fed', 'cdma_update_irq', 'fifo_pop',
          'cdma_waits_for_uart', 'cdma_fifo_xfer', 'cdma_run', 'cdma_is_paced',
          'cdma_paced_advance', 'cdma_paced_pos', 'cdma_pace_arm', 'cdma_pace_tick',
          'cdma_paced_stop', 'cdma_start_paced', 'cdma_read', 'cdma_write',
@@ -55,6 +55,8 @@ prelude = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#define g_assert_not_reached() abort()
 typedef uint64_t hwaddr;
 typedef int SysBusDevice, MemoryRegion, QEMUTimer, qemu_irq;
 typedef struct DeviceState DeviceState;
