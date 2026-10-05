@@ -1172,6 +1172,10 @@ def main():
         LIT_MIN_FRACTION = 0.2
         UNLOCK_FROM, UNLOCK_TO = portrait_unlock()
     device_args(a)
+    if a.major >= 7:
+        # 7.x's Setup "Hello" is a few thin grey words on white: 25-80 colours, against 64 for a lit picture
+        global MIN_COLOURS
+        MIN_COLOURS = 16
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:
