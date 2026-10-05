@@ -127,6 +127,21 @@ within 0.1 px of their aim over the whole panel (fitted from the points 1.0's Gr
   as 1187/65536 (18 mg), so the same part reads 0.43 g on 1.0 and 1.00 g on 3.x.
 - 1.0's SpringBoard labels an icon with the `.app` directory name and ignores `CFBundleName` (guestdev:
   Hello2.app with CFBundleName "Hello 2" shows "Hello2").
+- Web proxy (LightTouchMac's, 10.0.2.100:3128 on the wifi0 guestfwd). 1.x reads its SystemConfiguration
+  preferences from root's home (~/Library/Preferences/SystemConfiguration), where FirmwareKit now writes
+  the known network and the PAC'd AirPort service. Wi-Fi then joins on demand and Safari follows the PAC:
+  a plain GET through the proxy, and for HTTPS a CONNECT and a TLS 1.0 ClientHello (AES128-SHA, RC4,
+  3DES; SSLv3 retry). For the proxy's HTTPS, 1.0 has to trust its CA. 1.0's SecTrust consults only the
+  system anchors, `/System/Library/Frameworks/Security.framework/TrustStore.sqlite3` (table tsettings;
+  the user store is never asked). A row there makes it an anchor:
+  - sha1 of the certificate;
+  - subj = the subject Name's content with PrintableString values uppercased (UTF8String and T61String
+    kept as issued);
+  - tset = the empty-array plist the stock rows carry;
+  - data = the certificate.
+  With a CA and leaf shaped like WebProxyCA's and that row, Safari opened an HTTPS page through a TLS 1.0
+  relay (lock icon; SecTrustEvaluate's verdict 4). Without it, the verdict is deny and Safari says it
+  "could not establish a secure connection". No "continue" prompt in 1.0.
 - Sideloading unofficial apps: [sideload.md](sideload.md). Debugging the guest (gdbstub, lldb, `xnu.py`):
   [../guest-debug.md](../guest-debug.md).
 
