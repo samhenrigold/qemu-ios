@@ -30,6 +30,7 @@ struct IosBasebandState {
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
     bool srdy_level;
     bool mrdy_level;              /* in: the AP wants a transfer */
+    bool frame_armed;             /* the controller holds a frame waiting for SRDY */
     void (*spi_ready)(void *opaque);  /* SRDY rose: the controller may move the frame */
     void *spi_ready_opaque;
 
