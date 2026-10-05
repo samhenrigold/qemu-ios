@@ -103,9 +103,15 @@ def main():
             return 1
         # The S5L8920 boards power the digitizer down on the lock screen (DisablePowerForUILock): Home first.
         wake = (lambda: (b.press("home"), time.sleep(1))) if a.machine in ("n18", "n88") else (lambda: None)
-        wake()
-        b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
-        time.sleep(4)
+        # springboardservices answers on a locked 4.0, so the frame proves the unlock: lit and no longer the lock screen.
+        _, locked = ac.snap(b, rg, "locked")
+        for _ in range(4):
+            wake()
+            b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO)
+            time.sleep(4)
+            nz, now = ac.snap(b, rg, "unlocked")
+            if nz > 0.30 and ac._framediff(locked, now):
+                break
         slot = None
         for _ in range(6):   # springboardservices answers once SpringBoard is past the lock screen
             slot = ac.pin_to_page1(b, bundle) or ac.icon_slot(b, bundle)
