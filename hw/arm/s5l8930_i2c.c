@@ -294,6 +294,7 @@ struct S5L8930D1815State {
     uint8_t reg;            /* current register, auto-incrementing */
     bool addressing;        /* next byte received is the register number */
     int64_t rtc_base;       /* counter = host epoch + rtc_base */
+    uint64_t rtc_epoch;     /* "rtc-epoch": the counter at power-on, seconds; 0 = the host clock */
     uint32_t rtc_latch;
     uint16_t vbat_mv;       /* what ADC mux 4 measures; 0 = the 3900 default */
     bool usb_host;          /* a host's cable: VBUS, and its pull-downs on D+/D-
@@ -549,6 +550,8 @@ static void d1815_reset(DeviceState *dev)
     if (s->restarting) {        /* the always-on domain stays */
         memcpy(scratch, &s->regs[PMU_SCRATCH], sizeof(scratch));
         rtc_base = s->rtc_base;
+    } else if (s->rtc_epoch) {  /* a pinned date (a beta's expiry), running from power-on */
+        rtc_base = (int64_t)s->rtc_epoch - time(NULL);
     }
     s->restarting = false;
     timer_del(s->adc_timer);
@@ -612,11 +615,16 @@ static const VMStateDescription vmstate_s5l8930_d1815 = {
     }
 };
 
+static const Property d1815_properties[] = {
+    DEFINE_PROP_UINT64("rtc-epoch", S5L8930D1815State, rtc_epoch, 0),
+};
+
 static void d1815_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
+    device_class_set_props(dc, d1815_properties);
     dc->vmsd = &vmstate_s5l8930_d1815;
     device_class_set_legacy_reset(dc, d1815_reset);
     k->event = d1815_event;

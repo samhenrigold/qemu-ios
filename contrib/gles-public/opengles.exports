@@ -1,6 +1,7 @@
 # The OpenGLES.framework/OpenGLES exports of every firmware the front end replaces: the union of 2.2.1 (5H11a),
 # 3.1.3 (7E18), 3.2.2 (7B500), 4.2.1 (8C148, iPad and iPod), 4.3.5 (8L1), 5.0 beta 1 (9A5220p, which exports the
-# ...EXT set as ...APPLE), 5.1.1 (9B206), 6.0 (10A403) and 7.1.2 (11D257, iPhone 4), without the leading _
+# ...EXT set as ...APPLE), 5.1.1 (9B206), 6.0 beta 1 (10A5316k, which exports
+# the map-buffer-range pair as ...APPLE), 6.0 (10A403) and 7.1.2 (11D257, iPhone 4), without the leading _
 # (contrib/gles-public/seam_survey.py; docs/ipad1/gles-public-seam.md). Every name any of them exports, because dyld
 # binds each cached consumer's imports by name once the cached OpenGLES is overridden. 2.1.1 (5F138) and 2.2 export
 # 2.2.1's set (it-gles/opengles-2x.exports); 3.2 (7B367) and 4.3-4.3.4 are their families'. A new firmware's name
@@ -187,6 +188,7 @@ glFinishObjectAPPLE
 glFinishTextureAPPLE
 glFlush
 glFlushMappedBufferRange
+glFlushMappedBufferRangeAPPLE
 glFlushMappedBufferRangeEXT
 glFogf
 glFogfv
@@ -351,6 +353,7 @@ glLogicOp
 glMapBuffer
 glMapBufferOES
 glMapBufferRange
+glMapBufferRangeAPPLE
 glMapBufferRangeEXT
 glMaterialf
 glMaterialfv
