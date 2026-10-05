@@ -287,6 +287,10 @@ offsets at 0x80000000).
 | I2S0 | the A4's `s5l8930.i2s`, registers at 0x84500400, its TX FIFO window (MMIO 1) at 0x84500000 where CDMA channel 0x15 writes; the CDMA's `paced-base` puts that FIFO on the audio clock | variant | R |
 | Everything else | the unimplemented window 0x80000000-0xbfffffff (SDIO/Wi-Fi, JPEG, VXD, AMC, PWM) | | S |
 
+## Guest debugging
+
+5.1.1 9B206: gdbstub + lldb with kernel and userland symbols PASS (`xnu-procs`; SpringBoard `mach_msg` stop, local symbols kept). No debugserver: iOS ships none, and the 5.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
+
 ## Debts
 
 1. **No NAND boot partition; a NOR instead (P, kboot)**. These boards boot from NAND: with DT

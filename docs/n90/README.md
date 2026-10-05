@@ -151,6 +151,10 @@ As N81, plus:
 | Baseband (spi2, GPIOs) | DT node unmatched by `baseband=off`; the controller with nothing on it | P (until the cell stream's modem) | S |
 | Compass | AK8973 at the DT's 0x1e node (the unit has AK8975B at 0x0c/0x0d) | variant | H |
 
+## Guest debugging
+
+7.1.2 11D257: gdbstub + lldb with kernel and userland symbols PASS (`tests/ipad1/debug-check.py`; the cache's local symbols are `<redacted>` on 7.x). No debugserver: iOS ships none, and the 7.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
+
 ## Debts
 
 0. ~~**GL apps draw black (4.2.1).**~~ Fixed by gles-public 81c8124a35 (fw-a4 e9d82647fb). On these Retina

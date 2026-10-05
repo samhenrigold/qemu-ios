@@ -143,7 +143,8 @@ within 0.1 px of their aim over the whole panel (fitted from the points 1.0's Gr
   relay (lock icon; SecTrustEvaluate's verdict 4). Without it, the verdict is deny and Safari says it
   "could not establish a secure connection". No "continue" prompt in 1.0.
 - Sideloading unofficial apps: [sideload.md](sideload.md). Debugging the guest (gdbstub, lldb, `xnu.py`):
-  [../guest-debug.md](../guest-debug.md).
+  [../guest-debug.md](../guest-debug.md). 1.0 1A543a, 2026-10-05: kernel and userland symbols PASS (`xnu-procs`;
+  SpringBoard `mach_msg` stop with libSystem/CoreFoundation frames); no debugserver exists for 1.0.
 
 ## Files
 
