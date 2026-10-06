@@ -1,4 +1,4 @@
-/* A bounded native Saved Photos client for 7E18. A persistent
+/* A bounded native Saved Photos client for 3.1 and 3.2 (PLCameraAlbum). A persistent
  * receipt prevents replay when a previous process died during an async save.
  * Native Photos supplies the saved DCIM path for deletion reconciliation. */
 #include <stdio.h>
@@ -197,17 +197,19 @@ int main(int argc, char **argv) {
         !dlopen("/System/Library/Frameworks/Foundation.framework/Foundation",RTLD_NOW))
         fail("cannot load Foundation");
     m0(m0(getclass("NSAutoreleasePool"),"alloc"),"init");
-    ID version = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",
-                    string("/System/Library/CoreServices/SystemVersion.plist"));
-    const char *build = utf8(m1(version,"objectForKey:",string("ProductBuildVersion")));
-    if (!build || strcmp(build,"7E18")) fail("unsupported firmware; expected 7E18");
     if (!dlopen("/System/Library/Frameworks/UIKit.framework/UIKit",RTLD_NOW) ||
         !dlopen("/System/Library/PrivateFrameworks/PhotoLibrary.framework/PhotoLibrary",RTLD_NOW))
         fail("cannot load the native photo-saving API");
     ID album = m0(getclass("PLCameraAlbum"),"sharedInstance");
+    /* The camera's save with the saved path as context: 3.1's, or 3.2's with a zoom factor
+     * (the same call otherwise). Later firmware saves through PLAssetsSaver instead. */
     const char *save = "addImage:withPreview:exifProperties:date:jpegData:notifyingTargetWithPath:selector:";
-    if (!album || !CALL(int,(ID,ID,ID))(album,selector("respondsToSelector:"),selector(save)))
-        fail("native photo identity API unavailable");
+    const char *zoomed = "addCapturedImage:withPreview:zoomFactor:exifProperties:date:jpegData:notifyingTargetWithPath:selector:";
+    int zoom = 0;
+    if (album && !CALL(int,(ID,ID,ID))(album,selector("respondsToSelector:"),selector(save)))
+        zoom = CALL(int,(ID,ID,ID))(album,selector("respondsToSelector:"),selector(zoomed));
+    if (!album || (!zoom && !CALL(int,(ID,ID,ID))(album,selector("respondsToSelector:"),selector(save))))
+        fail("unsupported firmware: no native photo identity API");
     ID cls = allocate(getclass("NSObject"),"LTPhotoSaver",0);
     if (!cls || !add_method(cls,selector("image:didFinishSavingWithError:contextInfo:"),saved,"v@:@@^v"))
         fail("cannot create photo callback");
@@ -219,8 +221,9 @@ int main(int argc, char **argv) {
     if (!jpeg) fail("cannot read staged photo");
     receipt(1);  /* After input preparation, before submitting the mutation. */
     /* 7E18 retains the saved full-size path and passes it as contextInfo. */
-    if (!CALL(int,(ID,ID,ID,ID,ID,ID,ID,ID,ID))(album,selector(save),image,NULL,NULL,NULL,jpeg,
-            target,selector("image:didFinishSavingWithError:contextInfo:")))
+    ID callback = selector("image:didFinishSavingWithError:contextInfo:");
+    if (zoom ? !CALL(int,(ID,ID,ID,ID,float,ID,ID,ID,ID,ID))(album,selector(zoomed),image,NULL,1.0f,NULL,NULL,jpeg,target,callback)
+             : !CALL(int,(ID,ID,ID,ID,ID,ID,ID,ID,ID))(album,selector(save),image,NULL,NULL,NULL,jpeg,target,callback))
         fail("Photos declined the save; outcome may be unknown");
     ID deadline = CALL(ID,(ID,ID,double))(getclass("NSDate"),selector("dateWithTimeIntervalSinceNow:"),40.0);
     m1(m0(getclass("NSRunLoop"),"currentRunLoop"),"runUntilDate:",deadline);

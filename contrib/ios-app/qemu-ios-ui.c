@@ -204,6 +204,26 @@ static void ios_capture(DisplaySurface *surface)
         ios.published = -1;
     }
 
+    /*
+     * A panel that redraws whole frames every refresh (s5l8930_display, and
+     * any panel while the VM is paused) repaints identical pixels. Publishing
+     * them would wake the helper's copy and the app's texture upload for
+     * nothing, so an unchanged frame keeps the old serial.
+     */
+    if (ios.published >= 0 && ios.width == w && ios.height == h) {
+        const uint8_t *last = ios.buf[ios.published];
+        for (y = 0; y < h; y++) {
+            if (memcmp(last + (size_t)y * w * 4, src + (size_t)y * stride,
+                       (size_t)w * 4)) {
+                break;
+            }
+        }
+        if (y == h) {
+            qemu_mutex_unlock(&ios.frame_lock);
+            return;
+        }
+    }
+
     next = (ios.published + 1) % IOS_FRAME_BUFFERS;
     dst = ios.buf[next];
     for (y = 0; y < h; y++) {

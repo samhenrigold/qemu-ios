@@ -25,6 +25,7 @@
 #include "qemu/config-file.h"
 #include "qemu/option.h"
 #include "net/net.h"
+#include "net/util.h"
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/irq.h"
@@ -319,6 +320,7 @@ struct IPad1MachineState {
     DeviceState *vic[S5L8930_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *pmu;
+    DeviceState *cdma;
     DeviceState *ltc;                    /* charger: USB cable level */
     synopsys_usb_state *usb_otg;
     IPodTouchMultitouchState *mt;
@@ -340,6 +342,8 @@ struct IPad1MachineState {
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
+    uint8_t wifi_mac[6];                 /* BCM4329 CIS MAC (wifi-mac) */
+    bool wifi_mac_explicit;
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
@@ -373,6 +377,11 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 #define KBOOT_TRAILER_LEN 24
 #define IPAD1_IBOOT_BASE 0x5ff00000     /* iBoot-817.29 link address */
 #define KBOOT_SEGMENT_LEN 20
+
+static void ipad1_amc_port_kick(void *cdma)
+{
+    s5l8930_cdma_kick(cdma);
+}
 
 static qemu_irq ipad1_irq(IPad1MachineState *s, int irq)
 {
@@ -1276,10 +1285,12 @@ static void ipad1_init(MachineState *machine)
             .no_common_funce = true,
             .fw_version = s->board->wifi_fw_version,
         };
+        BCMSDIOChip chip = bcm4329;
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
-        memcpy(bcm4329.mac, s->board->wifi_mac, sizeof(bcm4329.mac));
-        ipod_touch_sdio_set_chip(card, &bcm4329);
+        memcpy(chip.mac, s->wifi_mac_explicit ? s->wifi_mac : s->board->wifi_mac,
+               sizeof(chip.mac));
+        ipod_touch_sdio_set_chip(card, &chip);
         /* qom-set /machine wifi-bssid aa:bb:..: a new access point for
          * locationd, which caches a position per BSSID (location.md). */
         object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
@@ -1361,6 +1372,7 @@ static void ipad1_init(MachineState *machine)
     }
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
+    s->cdma = dev;
     sysbus_mmio_map(sbd, 0, S5L8930_CDMA_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_AES_BASE);
     for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
@@ -1540,18 +1552,34 @@ static void ipad1_init(MachineState *machine)
 
     /*
      * AMC (audio media codec, amc,s5l8920x): the same AppleAMC_r2 kext family
-     * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"). Reuse the
-     * iPod model's register/interrupt handshake; its buffer aperture is the
-     * 256 KiB at 0x84000000 that the machine already backs as SRAM. The third
-     * DT window (0x84300000, 0x5000) stays unimplemented; UI sounds and PCM
-     * playback never reach the AMC (it is the hardware decode transformer).
+     * the iPod's 3.1.3 drives, one hardware revision up ("AMC 2.1"), loading
+     * the same DE programs. Music's MP3/AAC/ALAC go through it (smoke #72:
+     * without the decoder an MP3 stays at 0:00); UI sounds and PCM do not.
+     * Its buffer aperture is the 256 KiB at 0x84000000 that the machine
+     * already backs as SRAM, laid out as AMC 2.1 (AMC_RESULT_OFFSET_21).
+     * The third DT window (0x84300000, 0x5000) stays unimplemented.
      */
     dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
     qdev_prop_set_uint64(dev, "buf-base", S5L8930_SRAM_BASE);
+    qdev_prop_set_uint32(dev, "dram-base", S5L8930_DRAM_BASE);
+    qdev_prop_set_uint32(dev, "dram-size", s->board->dram_size);
+    qdev_prop_set_bit(dev, "rev21", true);
+#ifdef IT_HAVE_AVCODEC
+    qdev_prop_set_uint8(dev, "mode", AMC_MODE_DECODE);
+#endif
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_AMC_BASE);
-    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC));
+    /* AMC 2.1 attaches its status handler (the one that reads 0xa98/0xb18)
+     * to the 8th of its 23 lines: [this+0x108] = 7 (7B500 c06e2e88; AMC 2.0
+     * uses its only line), registered at c06ec698. */
+    sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_AMC + 7));
+    /* Its output port, which CDMA channel 0x17 drains (amc dma-channels). */
+    sysbus_mmio_map(sbd, 1, S5L8930_AMC_PORT_BASE);
+    IPOD_TOUCH_AMC(dev)->port_kick = ipad1_amc_port_kick;
+    IPOD_TOUCH_AMC(dev)->port_opaque = s->cdma;
+    s5l8930_cdma_set_source(s->cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE,
+                            ipod_touch_amc_port_avail, dev);
 
     /*
      * UART0-5, same Samsung UART as the S5L8720, including its interrupt
@@ -1587,6 +1615,37 @@ static void ipad1_init(MachineState *machine)
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
     qemu_register_powerdown_notifier(&ipad1_powerdown_notifier);
     qemu_register_reset(ipad1_cpu_reset, s);
+}
+
+/* The BCM4329's CISTPL_FUNCE MAC; the device tree and NOR carry the same
+ * address. Unset keeps a locally administered placeholder. */
+static char *ipad1_get_wifi_mac(Object *obj, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    const uint8_t *m = s->wifi_mac;
+
+    if (!s->wifi_mac_explicit) {
+        return g_strdup("");
+    }
+    return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void ipad1_set_wifi_mac(Object *obj, const char *value, Error **errp)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(obj);
+    uint8_t mac[6];
+
+    if (s->cpu) {
+        error_setg(errp, "wifi-mac must be set before the machine starts");
+        return;
+    }
+    if (net_parse_macaddr(mac, value) < 0) {
+        error_setg(errp, "wifi-mac must be a MAC address");
+        return;
+    }
+    memcpy(s->wifi_mac, mac, sizeof(mac));
+    s->wifi_mac_explicit = true;
 }
 
 static char *ipad1_get_kboot(Object *obj, Error **errp)
@@ -2108,6 +2167,10 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
     mc->default_ram_size = a4_k48.dram_size;
 
+    object_class_property_add_str(klass, "wifi-mac", ipad1_get_wifi_mac,
+                                  ipad1_set_wifi_mac);
+    object_class_property_set_description(klass, "wifi-mac",
+        "BCM4329 card MAC (unset keeps the board's placeholder)");
     object_class_property_add_str(klass, "kboot", ipad1_get_kboot,
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",

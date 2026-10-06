@@ -1,4 +1,4 @@
-/* Import staged music or video through the 7E18 MusicLibrary service. The service owns
+/* Import staged music or video through the guest's MusicLibrary purchase-folder service. The service owns
  * the item. SQLite below is read-only, for retry reconciliation; the item's year, which
  * the purchase-folder insert has no property for, goes through MusicLibrary's own connection.
  * There is no CRT in these ARMv6 executables; see armv6-toolchain/README.md.
@@ -195,6 +195,10 @@ static void database_failure(sqlite3 *db, const char *reason) {
     _exit(1);
 }
 
+/* 5.x replaced the iTunes Library.itlp databases with ML3's one MediaLibrary.sqlitedb. */
+#define ML3_LIBRARY MEDIA "iTunes_Control/iTunes/MediaLibrary.sqlitedb"
+static int ml3;
+
 /* An old SQLite connection can retain the attached Locations schema while
  * Apple's sync service replaces its indexes. Reopen and reprepare only on
  * SQLITE_SCHEMA; every other error remains fatal, so uncertainty never replays
@@ -204,10 +208,10 @@ static int read_query(const char *sql, const char *folder, const char *filename,
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
         sqlite3 *db = NULL;
         sqlite3_stmt *stmt = NULL;
-        int rc = sql_open(LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL);
+        int rc = sql_open(ml3 ? ML3_LIBRARY : LIBRARY "Library.itdb",&db,SQLITE_OPEN_READONLY,NULL);
         if (rc == SQLITE_OK) {
             sql_timeout(db,5000);
-            if (folder) rc = sql_exec(db,"ATTACH DATABASE '" LIBRARY "Locations.itdb' AS loc",NULL,NULL,NULL);
+            if (folder && !ml3) rc = sql_exec(db,"ATTACH DATABASE '" LIBRARY "Locations.itdb' AS loc",NULL,NULL,NULL);
             if (rc == SQLITE_OK) rc = sql_prepare(db,sql,-1,&stmt,NULL);
             if (rc == SQLITE_OK && folder) rc = sql_bind(stmt,1,folder,-1,SQLITE_TRANSIENT);
             if (rc == SQLITE_OK && filename) rc = sql_bind(stmt,2,filename,-1,SQLITE_TRANSIENT);
@@ -232,9 +236,12 @@ static int read_query(const char *sql, const char *folder, const char *filename,
 /* Read identity and the native artwork ID at the immutable staged location.
  * Errors are fatal: an uncertain prior import must never replay. */
 static sqlite3_int64 existing(const char *folder, const char *filename, unsigned *artwork_id) {
-    const char *sql = "SELECT item.pid,item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
-                      "JOIN loc.base_location b ON b.id=l.base_location_id "
-                      "WHERE b.path=? AND l.location=? LIMIT 1";
+    const char *sql = ml3
+        ? "SELECT item.item_pid,e.artwork_cache_id FROM item JOIN item_extra e ON e.item_pid=item.item_pid "
+          "JOIN base_location b ON b.base_location_id=item.base_location_id WHERE b.path=? AND e.location=? LIMIT 1"
+        : "SELECT item.pid,item.artwork_cache_id FROM item NOT INDEXED JOIN loc.location l ON l.item_pid=item.pid "
+          "JOIN loc.base_location b ON b.id=l.base_location_id "
+          "WHERE b.path=? AND l.location=? LIMIT 1";
     sqlite3_int64 pid = 0, art = 0;
     if (read_query(sql,folder,filename,&pid,&art) != SQLITE_ROW) return 0;
     *artwork_id = (unsigned)art;
@@ -285,6 +292,72 @@ static void record_year(sqlite3_int64 pid, unsigned year) {
     if (rc != SQLITE_DONE && rc != SQLITE_OK) fail("year not recorded; retain staged media for reconciliation");
 }
 
+/* 5.x: ML3's own importer (what the store's downloads use), given an MLTrackImport: the
+ * entity properties under MusicLibrary's exported ML3TrackProperty names, the asset path and
+ * the cover's bytes, which it renders into its artwork cache itself. It runs the insert in one
+ * transaction and calls its completion block (BOOL success, int64 pid) before returning. */
+struct block_descriptor { unsigned long reserved, size; };
+struct block { void *isa; int flags, reserved; void *invoke; const struct block_descriptor *descriptor; };
+static struct { int done, ok; sqlite3_int64 pid; } ml3_result;
+static void ml3_finished(struct block *b, signed char ok, long long pid) {
+    (void)b; ml3_result.done = 1; ml3_result.ok = ok; ml3_result.pid = pid;
+}
+static sqlite3_int64 ml3_import(void *music, ID input, const char *folder, const char *filename, const char *artwork) {
+    static const struct block_descriptor descriptor = {0, sizeof(struct block)};
+    void **global = dlsym(RTLD_DEFAULT,"_NSConcreteGlobalBlock");
+    ID track = m0(m0(getclass("MLTrackImport"),"alloc"),"init");
+    /* sharedLibrary is read-only outside the system's writers; this process opens its own writer. */
+    ID writer = CALL(ID,(ID,ID,ID,signed char))(m0(getclass("ML3MusicLibrary"),"alloc"),selector("initWithPath:enableWrites:"),
+                                                string(ML3_LIBRARY),1);
+    ID importer = writer ? m1(m0(getclass("ML3TrackImporter"),"alloc"),"initWithMusicLibrary:",writer) : NULL;
+    if (!global || !track || !importer) fail("ML3 importer unavailable");
+    const char *source[] = {"title","artist","album","album_artist","composer","genre","track_number","track_count",
+                            "disc_number","disc_count","year","compilation"};
+    const char *target[] = {"ML3TrackPropertyTitle","ML3TrackPropertyArtist","ML3TrackPropertyAlbum",
+                            "ML3TrackPropertyAlbumArtist","ML3TrackPropertyComposer","ML3TrackPropertyGenre",
+                            "ML3TrackPropertyTrackNumber","ML3TrackPropertyTrackCount","ML3TrackPropertyDiscNumber",
+                            "ML3TrackPropertyDiscCount","ML3TrackPropertyYear","ML3TrackPropertyIsCompilation"};
+    for (unsigned i=0; i<sizeof(source)/sizeof(*source); ++i) {
+        ID value = field(input,source[i]);
+        ID *key = dlsym(music,target[i]);
+        if (!key || !*key) fail("ML3 track property unavailable");
+        if (value) CALL(void,(ID,ID,ID,ID))(track,selector("setValue:forEntityProperty:"),value,*key);
+    }
+    ID *total = dlsym(music,"ML3TrackPropertyTotalTime");
+    if (!total || !*total) fail("ML3 track property unavailable");
+    double ms = CALL(double,(ID,ID))(field(input,"duration_ms"),selector("doubleValue"));
+    CALL(void,(ID,ID,ID,ID))(track,selector("setValue:forEntityProperty:"),number((unsigned)fmax(1.0,floor(ms+0.5))),*total);
+    /* ML3's media types are not MPMediaType's: 9B206 MusicLibrary's MLMediaType description names bit 8 "Song",
+     * and Music's song queries select item.media_type & 8. With 1 the row is counted (Music shows its tabs) but
+     * never listed. */
+    CALL(void,(ID,ID,unsigned))(track,selector("setMediaType:"),8);
+    char path[512];
+    snprintf(path,sizeof(path),MEDIA "%s/%s",folder,filename);
+    m1(track,"setAssetFilePath:",string(path));
+    if (artwork) {
+        snprintf(path,sizeof(path),MEDIA "%s/artwork.jpg",folder);
+        ID data = m1(getclass("NSData"),"dataWithContentsOfFile:",string(path));
+        if (!data) fail("cannot read artwork");
+        m1(track,"setArtworkData:",data);
+    }
+    struct block done = {*global, 1<<28, 0, (void *)ml3_finished, &descriptor};
+    CALL(void,(ID,ID,ID,void *))(importer,selector("importTrack:withCompletionBlock:"),track,&done);
+    if (!ml3_result.done || !ml3_result.ok || !ml3_result.pid)
+        fail("MusicLibrary declined import; retain staged media for reconciliation");
+    return ml3_result.pid;
+}
+
+/* 5.x: Music plays only tracks whose item_extra.integrity verifies (ML3TrackIntegrityVerify). The importer
+ * computes it through FairPlay (FairPlayCandyBarCompute), which serves only processes carrying a fairplay-client
+ * entitlement (itmedia.entitlements); without one it logs -42180 and leaves the column NULL, and Music lists the
+ * song but will not play it. */
+static int ml3_has_integrity(sqlite3_int64 pid) {
+    char sql[128];
+    sqlite3_int64 has = 0;
+    snprintf(sql,sizeof(sql),"SELECT integrity IS NOT NULL FROM item_extra WHERE item_pid=%lld",(long long)pid);
+    return read_query(sql,NULL,NULL,&has,NULL) == SQLITE_ROW && has;
+}
+
 __attribute__((naked)) void _start(void) {
     __asm__ volatile("ldr r0, [sp]\n\tadd r1, sp, #4\n\tb _main");
 }
@@ -296,13 +369,10 @@ int main(int argc, char **argv) {
     setenv("HOME","/var/mobile",1);
     load_foundation();
     ID pool = m0(m0(getclass("NSAutoreleasePool"),"alloc"),"init");
-    ID version = m1(getclass("NSDictionary"),"dictionaryWithContentsOfFile:",
-                    string("/System/Library/CoreServices/SystemVersion.plist"));
-    const char *build = utf8(field(version,"ProductBuildVersion"));
-    if (!build || strcmp(build,"7E18")) fail("unsupported firmware; expected 7E18");
     const char *filename, *artwork;
     unsigned year;
-    ID props = item_properties(read_metadata(argv[1]),&filename,&artwork,&year);
+    ID input = read_metadata(argv[1]);
+    ID props = item_properties(input,&filename,&artwork,&year);
     char folder[160], path[512];
     snprintf(folder,sizeof(folder),"LightTouch/%s",argv[2]);
     regular_path(MEDIA "LightTouch",1);
@@ -320,8 +390,8 @@ int main(int argc, char **argv) {
 
     int lock = open(MEDIA "LightTouch/.import.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if (lock < 0 || flock(lock,LOCK_EX|LOCK_NB)) fail("another media import is running");
-    if (!dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary",RTLD_NOW))
-        fail("cannot load MusicLibrary");
+    void *music = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary",RTLD_NOW);
+    if (!music) fail("cannot load MusicLibrary");
     void *sqlite = dlopen("/usr/lib/libsqlite3.dylib",RTLD_NOW);
     if (!sqlite) fail("cannot load SQLite for import reconciliation");
     sql_open = dlsym(sqlite,"sqlite3_open_v2");
@@ -339,8 +409,28 @@ int main(int argc, char **argv) {
         !sql_step || !sql_finalize || !sql_close || !sql_error) fail("SQLite API unavailable");
     ID library = m0(getclass("MusicLibrary"),"sharedMusicLibrary");
     const char *insert = "insertItemFromPurchaseFolder:withItemProperties:";
-    if (!library || !CALL(int,(ID,ID,ID))(library,selector("respondsToSelector:"),selector(insert)))
-        fail("MusicLibrary import service is unavailable");
+    /* The capability, not a build list: 3.1 through 4.x answer this insert over the
+     * iTunes Library.itlp SQLite library the queries below read; 5.x has ML3's importer instead. */
+    if (!library || !CALL(int,(ID,ID,ID))(library,selector("respondsToSelector:"),selector(insert))) {
+        ml3 = getclass("ML3TrackImporter") && getclass("MLTrackImport") && getclass("ML3MusicLibrary");
+        if (!ml3) fail("unsupported firmware: no MusicLibrary import service");
+        if (field(input,"kind") && strcmp(utf8(field(input,"kind")),"song")) fail("unsupported firmware: movies need 4.x or earlier");
+        m0(getclass("ML3MusicLibrary"),"sharedLibrary");   /* creates the library on a device that has none */
+        unsigned artwork_id = 0;
+        sqlite3_int64 pid = existing(folder,filename,&artwork_id);
+        int was_present = pid != 0;
+        if (!was_present && !(pid = ml3_import(music,input,folder,filename,artwork)))
+            fail("import not visible; retain staged media for reconciliation");
+        if (!was_present && !existing(folder,filename,&artwork_id))
+            fail("import not visible; retain staged media for reconciliation");
+        if (!ml3_has_integrity(pid))
+            fail("MusicLibrary stored the track without its integrity; Music would list it but not play it");
+        puts(was_present ? "already-imported" : "imported");
+        fflush(stdout);
+        m0(pool,"drain");
+        close(lock);
+        _exit(0);
+    }
     unsigned artwork_id = 0;
     sqlite3_int64 pid = existing(folder,filename,&artwork_id);
     int was_present = pid != 0;
@@ -367,6 +457,8 @@ int main(int argc, char **argv) {
     int (*postprocess)(ID,int) = sync ? dlsym(sync,"ITDBPrepServerPostProcessRun") : NULL;
     if (!postprocess || !postprocess(NULL,1))
         fail("music post-processing did not finish; retain staging for reconciliation");
+    sleep(2);
+    if (!existing(folder,filename,&artwork_id)) fail("the music library dropped the import");
     puts(was_present ? "already-imported" : "imported");
     fflush(stdout);
     m0(pool,"drain");

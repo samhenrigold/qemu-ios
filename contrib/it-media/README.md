@@ -1,14 +1,45 @@
-# Native media import (7E18)
+# Native media import (3.1, 3.2 and 5.x)
 
 `itmedia` adds one staged song or movie through the guest's own MusicLibrary framework.
 It preserves existing songs and lets iOS write its SQLite tables, indexes,
 locations, Purchased playlist and backup files. It does not generate a legacy
 iTunesDB or rewrite the library on the host.
 
-This changes the original plan's D.1/D.2 implementation choice: iOS 3.1.3 uses
-`iTunes_Control/iTunes/iTunes Library.itlp/*.itdb`. The native
-`-[MLMusicLibrary_SQL insertItemFromPurchaseFolder:withItemProperties:]` service
-was verified on 7E18; the helper rejects other firmware builds. Upstream
+This changes the original plan's D.1/D.2 implementation choice: iOS 3.x uses
+`iTunes_Control/iTunes/iTunes Library.itlp/*.itdb`, and its MusicLibrary answers
+`-[MLMusicLibrary_SQL insertItemFromPurchaseFolder:withItemProperties:]`. The helper checks for that
+service at runtime, not for a build. Verified with tags, cover and playback on the iPod's 3.1.2 and 3.1.3
+and the iPad's 3.2 (Light Touch `tests/sessions/check-media-native.py --single`).
+
+5.x (verified on the iPad's 5.1.1, 9B206, with tags, cover, the Songs list and playback) replaced the library
+with ML3 (`MediaLibrary.sqlitedb`) and has no purchase-folder insert. The helper uses ML3's own importer,
+`-[ML3TrackImporter importTrack:withCompletionBlock:]` with an `MLTrackImport` (`setValue:forEntityProperty:` with
+the exported `ML3TrackProperty*` names, `setAssetFilePath:`, `setArtworkData:`, `setMediaType:`), on a writer from
+`-[ML3MusicLibrary initWithPath:enableWrites:]` (`sharedLibrary` is read-only to other processes). Two things decide
+whether Music shows and plays the row:
+
+- the media type is ML3's, not MPMediaType's: 9B206 MusicLibrary's `MLMediaType` description names bit 8 "Song" and
+  Music's song queries select `item.media_type & 8` (verbose ML3 query log). A row with 1 makes Music show its tabs
+  but list nothing;
+- `item_extra.integrity` (`ML3TrackIntegrityVerify`) must be set, or Music lists the song but won't play it. The
+  importer computes it with FairPlay (`FairPlayCandyBarCompute`), which answers only processes with a
+  `fairplay-client` entitlement (it logs -42180 otherwise). `itmedia.entitlements` carries 9B206 atc's client ID,
+  the sync agent that imports tracks from iTunes; the helper fails if the column stays NULL.
+
+5.x covers are rendered by the importer under `iTunes_Control/iTunes/Artwork/NN/` (`artwork_info` lists them).
+
+Not offered by Light Touch (its MediaSupport), and why:
+
+- 4.x keeps the insert and the itlp files, but signs `Locations.itdb` with `Locations.itdb.cbk`, and the
+  post-processing server (`itdbprepserver`) deletes a library whose signature doesn't check ("couldn't open cbk",
+  "recovery option 2"), the inserted song with it. Neither a library this process creates nor one the server
+  creates gets a valid cbk in the emulator (8C148, both boards: `cfdcb statusError = -42180` in the server,
+  -42001 in Music). The helper re-checks after post-processing and fails rather than report an import the
+  library did not keep.
+- Other 5.x builds use the same importer but have not been round-tripped.
+- 2.x and 3.0 have neither (and 3.0 needs a legacy-linked build).
+
+Both helpers are signed with `ldid -S`: 3.2+ AMFI runs nothing unsigned. Upstream
 [libgpod's SQLite notes](https://github.com/fadingred/libgpod/blob/master/README.sqlite)
 describe the format transition. No libgpod implementation is included here.
 
@@ -113,7 +144,8 @@ as `/var/mobile/Media/LightTouch/<staging-id>/image.jpg`, then run
 `/tmp/itphoto <staging-id>` as root or mobile. Input is limited to 16 MiB and
 2048 pixels on each side, checked before UIKit decodes it. Light Touch prepares
 this representation on the host. The helper uses 7E18 PhotoLibrary's
-`PLCameraAlbum` save operation with `notifyingTargetWithPath:` and waits up to
+`PLCameraAlbum` save operation with `notifyingTargetWithPath:` (3.2's is
+`addCapturedImage:withPreview:zoomFactor:…`, used with zoom 1 where 3.1's is absent) and waits up to
 40 seconds for its callback. The local 3.1.3 SDK's Objective-C metadata confirms
 the selector and argument layout; the helper checks its availability at runtime.
 iOS creates the DCIM original, poster image and BTH/THM thumbnails.

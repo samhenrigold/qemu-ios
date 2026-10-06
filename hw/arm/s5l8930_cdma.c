@@ -159,8 +159,9 @@ struct S5L8930CDMAState {
     uint8_t *gid_data;
     size_t gid_size;
     /* device FIFOs that pace their channels (s5l8930_cdma_set_source):
-     * the FMI's, the baseband SPI's, and a UART's receive register */
-    CDMASource src[3];
+     * the FMI's, the baseband SPI's, a UART's receive register and the
+     * AMC's output port */
+    CDMASource src[4];
     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
      * write; paced[] marks a chain in flight. */
     bool paced[CDMA_CHANNELS];
