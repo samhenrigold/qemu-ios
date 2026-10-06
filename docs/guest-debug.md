@@ -39,8 +39,9 @@ tests/ipad1/ddi-check.py --machine n88 --device DEV --product-version 6.1.6 \
 ```
 
 - **Debuggable build.** The app must be signed with `get-task-allow` (the entitlement Xcode gives a development
-  build). Without it debugserver's `task_for_pid` fails and lldb reports "attach failed: Error 1" (seen by hand on
-  N81 6.1.6). ddi-check re-signs the IPA with `ldid -S` and a one-key entitlements plist.
+  build). Without it debugserver's `task_for_pid` fails, lldb reports "attach failed: Error 1" and the app keeps
+  running. `ddi-check.py --expect-refused` checks exactly that (PASS on N81 6.1.6 and N90 7.1.2, 2026-10-06). ddi-check
+  re-signs the IPA with `ldid -S` and a one-key entitlements plist (or none, for the negative case).
 - **Mount.** Xcode's DeveloperDiskImage.dmg and its .signature for the major.minor. On iOS < 7,
   libimobiledevice 1.4.0's `ideviceimagemounter` uploads the image over AFC, then prints "Unknown error occurred,
   can't mount" without ever sending MountImage (its AFC branch keeps a stale error). ddi-check then calls
@@ -49,7 +50,8 @@ tests/ipad1/ddi-check.py --machine n88 --device DEV --product-version 6.1.6 \
   (`app-install.py`'s `walk_setup`) the first time. OVL is a NAND overlay kept between runs, with a clean guest
   shutdown at the end. The host's pair records are kept in OVL.conf: a 7.x device that has paired once asks "Trust
   This Computer?" for a new host, and nothing answers it here. On 7.x, ddi-check waits for the guest's
-  `it_boot: package` line before using lockdown: file creation on the data volume can stall until then.
+  `it_boot: package` line before unlocking. it_boot starts the guest agent that the unlock asks, and file
+  creation on the data volume (pairing, the AFC upload) can stall until then.
 - **Launch.** The guest agent launches the app. Its pid comes from `launchctl list`
   (`UIKitApplication:<bundle>[..]`).
 - **lldb.** `idevicedebugserverproxy` forwards com.apple.debugserver. `imgtools/lldb/dsattach.py` then connects
@@ -58,8 +60,8 @@ tests/ipad1/ddi-check.py --machine n88 --device DEV --product-version 6.1.6 \
   detaches. Things it handles:
   - **Registers.** The 4.x and 5.x debugservers answer qRegisterInfo with nothing, which leaves lldb with no
     registers. dsattach then loads `arm_gdb_regs.py`, the classic GDB ARM `g` layout (`lldb_shim.py`'s), as
-    `plugin.process.gdb-remote.target-definition-file`. 6.x answers qRegisterInfo; 7.x answers an error until it
-    has a process.
+    `plugin.process.gdb-remote.target-definition-file`. 6.x and 7.x answer an error until they have a process,
+    then the layout.
   - **Breakpoint stops.** 4.2's debugserver reports the breakpoint trap with subcode 0, and lldb does not count
     that as a breakpoint. dsattach judges the stop by the pc instead.
   - **Async continue.** dsattach continues asynchronously, because a synchronous Continue blocks until the next
