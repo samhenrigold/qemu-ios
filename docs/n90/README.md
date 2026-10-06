@@ -261,14 +261,16 @@ What differs from 7.1.2:
    - an AFC request: stock afcd is POSIXSpawnType Adaptive, so it starts in the throttled band and the first
      request goes unanswered for about 60 s;
    - any throttled job.
-   On real hardware the same scheduling finishes sooner on a faster CPU. Mitigations in place:
-   - Our own jobs are POSIXSpawnType Interactive, so they are not throttled.
-   - The host waits for it_boot's report before AFC (regress, app-install, the app's install path).
-   afcd stays stock. Debt: TCG throughput on the A4 (instructions per second against a 1 GHz A4), which is what
-   makes this window long. Not started.
-   Effect of POSIXSpawnType Interactive on a fresh 7.1.2 prepare:
-   | Metric | Before | After |
-   |---|---|---|
-   | Seal halt | 165 s | 53 s |
-   | lockdown -> "it_boot: package" | 111 s | 0 s (both at 37 s) |
-   | regress boot | 2.7 min | 2.2 min |
+   On real hardware the same scheduling finishes sooner on a faster CPU. The mitigation in place is the host
+   waiting for it_boot's report before AFC (regress, app-install, the app's install path). That wait is a proxy
+   for "afcd unthrottled", not a direct readiness signal. It holds only because it_boot is throttled like afcd and
+   reports once the backlog has drained.
+   - POSIXSpawnType Interactive on our jobs broke the proxy, and it was reverted. it_boot reported at lockdown;
+     an AFC request ~45 s later went unanswered while 100-127 threads sat runnable and afcd had not run. 7.x
+     persist failed 4 of 5 in sessions.
+   - Interactive on it_seal alone was no better. The seal halted at 71 s instead of 129-180 s, before the
+     first-boot work finished, and persist failed 3 of 6 on the first boot.
+   afcd stays stock. Debts:
+   - TCG throughput on the A4 (instructions per second against a 1 GHz A4), which is what makes this window long.
+     Not started.
+   - A direct AFC readiness probe on the host, to replace the proxy.
