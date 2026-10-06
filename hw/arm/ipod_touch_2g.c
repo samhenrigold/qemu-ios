@@ -579,16 +579,6 @@ static void ipod_touch_set_h264_decode(Object *obj, Visitor *v, const char *name
     bool value;
     if (visit_type_bool(v, name, &value, errp)) {
         nms->h264_decode = value;
-        nms->h264_decode_explicit = true;
-    }
-}
-
-static void ipod_touch_h264_env_alias(IPodTouchMachineState *nms)
-{
-    if (!nms->h264_decode_explicit && getenv("IT_H264_DECODE") != NULL) {
-        /* The old alias tests presence, even for an empty or "0" value. */
-        nms->h264_decode = true;
-        warn_report_once("IT_H264_DECODE is deprecated; use -M iPod-Touch,h264-decode=on");
     }
 }
 
@@ -641,16 +631,6 @@ static void ipod_touch_set_lcd_planes(Object *obj, Visitor *v, const char *name,
     bool value;
     if (visit_type_bool(v, name, &value, errp)) {
         nms->lcd_planes = value;
-        nms->lcd_planes_explicit = true;
-    }
-}
-
-static void ipod_touch_lcd_planes_env_alias(IPodTouchMachineState *nms)
-{
-    if (!nms->lcd_planes_explicit && getenv("IT_LCD_PLANES") != NULL) {
-        /* The old alias tests presence, even for an empty or "0" value. */
-        nms->lcd_planes = true;
-        warn_report_once("IT_LCD_PLANES is deprecated; use -M iPod-Touch,lcd-planes=on");
     }
 }
 
@@ -672,16 +652,6 @@ static void ipod_touch_set_mpvd_decode(Object *obj, Visitor *v, const char *name
     bool value;
     if (visit_type_bool(v, name, &value, errp)) {
         nms->mpvd_decode = value;
-        nms->mpvd_decode_explicit = true;
-    }
-}
-
-static void ipod_touch_mpvd_env_alias(IPodTouchMachineState *nms)
-{
-    if (!nms->mpvd_decode_explicit && getenv("IT_MPVD_DECODE") != NULL) {
-        /* The old alias tests presence, even for an empty or "0" value. */
-        nms->mpvd_decode = true;
-        warn_report_once("IT_MPVD_DECODE is deprecated; use -M iPod-Touch,mpvd-decode=on");
     }
 }
 
@@ -703,16 +673,6 @@ static void ipod_touch_set_scaler_decode(Object *obj, Visitor *v, const char *na
     bool value;
     if (visit_type_bool(v, name, &value, errp)) {
         nms->scaler_decode = value;
-        nms->scaler_decode_explicit = true;
-    }
-}
-
-static void ipod_touch_scaler_env_alias(IPodTouchMachineState *nms)
-{
-    if (!nms->scaler_decode_explicit && getenv("IT_SCALER_DECODE") != NULL) {
-        /* The old alias tests presence, even for an empty or "0" value. */
-        nms->scaler_decode = true;
-        warn_report_once("IT_SCALER_DECODE is deprecated; use -M iPod-Touch,scaler-decode=on");
     }
 }
 
@@ -1981,8 +1941,14 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->bt_latency_us = 2000;
     IPOD_TOUCH_MACHINE(obj)->time_dilation = 1;
     IPOD_TOUCH_MACHINE(obj)->boot_args_delay_ms = 0;
-    IPOD_TOUCH_MACHINE(obj)->boot_args_repeat = 24;
-    IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms = 500;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_repeat = 200;
+    IPOD_TOUCH_MACHINE(obj)->boot_args_interval_ms = 250;
+    /* The real decoders and compositor; the off settings are legacy stubs. */
+    IPOD_TOUCH_MACHINE(obj)->h264_decode = true;
+    IPOD_TOUCH_MACHINE(obj)->scaler_decode = true;
+    IPOD_TOUCH_MACHINE(obj)->mpvd_decode = true;
+    IPOD_TOUCH_MACHINE(obj)->lcd_planes = true;
+    IPOD_TOUCH_MACHINE(obj)->amc_mode = AMC_MODE_DECODE;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
@@ -3104,11 +3070,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     ipod_touch_audio_env_alias(nms);
     ipod_touch_osk_env_alias(nms);
     ipod_touch_wdt_env_alias(nms);
-    ipod_touch_h264_env_alias(nms);
-    ipod_touch_scaler_env_alias(nms);
-    ipod_touch_mpvd_env_alias(nms);
     ipod_touch_amc_env_alias(nms);
-    ipod_touch_lcd_planes_env_alias(nms);
     ipod_touch_forge_sigcheck_env_alias(nms);
     ipod_touch_cpu_setup(machine, &sysmem, &cpu, &nsas);
 
@@ -3700,15 +3662,15 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "time-dilation", "Timer-4 interrupt interval multiplier (1..1000000)");
     object_class_property_add(klass, "h264-decode", "bool", ipod_touch_get_h264_decode,
                               ipod_touch_set_h264_decode, NULL, NULL);
-    object_class_property_set_description(klass, "h264-decode", "Enable hardware H.264 decoding instead of the legacy RAM register window");
+    object_class_property_set_description(klass, "h264-decode", "Hardware H.264 decoding (default on; off: the legacy RAM register window)");
     object_class_property_add(klass, "scaler-decode", "bool", ipod_touch_get_scaler_decode,
                               ipod_touch_set_scaler_decode, NULL, NULL);
-    object_class_property_set_description(klass, "scaler-decode", "Enable scaler color conversion instead of the legacy register stub");
+    object_class_property_set_description(klass, "scaler-decode", "Scaler color conversion (default on; off: the legacy register stub)");
     object_class_property_add(klass, "mpvd-decode", "bool", ipod_touch_get_mpvd_decode,
                               ipod_touch_set_mpvd_decode, NULL, NULL);
-    object_class_property_set_description(klass, "mpvd-decode", "Enable MPEG-4 Part 2 decoding instead of register-only MPVD");
+    object_class_property_set_description(klass, "mpvd-decode", "MPEG-4 Part 2 decoding (default on; off: register-only MPVD)");
     object_class_property_add_str(klass, "amc-mode", ipod_touch_get_amc_mode, ipod_touch_set_amc_mode);
-    object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode");
+    object_class_property_set_description(klass, "amc-mode", "AMC registers, handshake-only bring-up, or compressed audio decode (default)");
     object_class_property_add_str(klass, "direct-iboot", ipod_touch_get_direct_iboot, ipod_touch_set_direct_iboot);
     object_class_property_add_str(klass, "panel", ipod_touch_get_panel, ipod_touch_set_panel);
     object_class_property_add_str(klass, "direct-llb", ipod_touch_get_direct_llb, ipod_touch_set_direct_llb);
@@ -3725,7 +3687,7 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "forge-sigcheck", "Allow malformed boot signature recovery for unsigned-image compatibility");
     object_class_property_add(klass, "lcd-planes", "bool", ipod_touch_get_lcd_planes,
                               ipod_touch_set_lcd_planes, NULL, NULL);
-    object_class_property_set_description(klass, "lcd-planes", "Enable LCD multi-plane composition");
+    object_class_property_set_description(klass, "lcd-planes", "LCD multi-plane composition (default on)");
     object_class_property_add(klass, "wdt-noreset", "bool", ipod_touch_get_wdt_noreset,
                               ipod_touch_set_wdt_noreset, NULL, NULL);
     object_class_property_set_description(klass, "wdt-noreset", "Suppress guest watchdog reset commands for debugging");

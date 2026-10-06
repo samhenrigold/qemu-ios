@@ -111,6 +111,12 @@ int qemu_ios_gles_contexts(void);
 /* Loaded Mach-O UUID; NULL if unavailable. */
 const char *qemu_ios_build_id(void);
 
+/* This C API's version, major << 16 | minor. A minor bump only adds entry points;
+ * a major bump removes or changes one, and a host built for another major refuses
+ * the dylib. */
+#define QEMU_IOS_API_VERSION ((1u << 16) | 0u)
+uint32_t qemu_ios_api_version(void);
+
 /* Machine controls. */
 void qemu_ios_ui_pause(void);
 void qemu_ios_ui_resume(void);

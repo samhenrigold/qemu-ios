@@ -740,6 +740,11 @@ int32_t qemu_ios_gles_protocol(int64_t *serial)
     return guest_pkg_gles_protocol(serial);
 }
 
+uint32_t qemu_ios_api_version(void)
+{
+    return QEMU_IOS_API_VERSION;
+}
+
 /* Identify the loaded image, not an on-disk dylib a developer may replace. */
 const char *qemu_ios_build_id(void)
 {

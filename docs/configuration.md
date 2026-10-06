@@ -6,12 +6,14 @@ incremental; most existing `IT_*` variables still retain their documented behavi
 | Property | Values | Default | Legacy alias |
 | --- | --- | --- | --- |
 | `boot-args` | kernel command line, at most 255 bytes; empty disables injection | no override | none: the property is the only input |
-| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `2000` | none |
-| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `24` | none |
-| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `500` | none |
+| `boot-args-delay-ms` | 0..3600000 virtual milliseconds | `0` | none |
+| `boot-args-repeat` | 0..1000000 writes; 0 still performs the initial write | `200` | none |
+| `boot-args-interval-ms` | 1..3600000 virtual milliseconds | `250` | none |
 | `bt` | `on`, `off` | `on` | `IT_BT`: leading `0` disables, otherwise enables |
 | `bt-latency-us` | unsigned 32-bit microseconds | `2000` | `IT_BT_LATENCY_US` |
 | `osk` | `on`, `off` | `off` | `IT_OSK`: any present value enables |
+| `h264-decode`, `scaler-decode`, `mpvd-decode`, `lcd-planes` | `on`, `off` | `on`; `off` selects the legacy register stubs | none |
+| `amc-mode` | `registers`, `handshake`, `decode` | `decode` | `IT_AMC_STATE` selects `handshake` |
 | `audio-hw` | `auto`, `on`, `off` | `auto`: CS42L58, amp, I2S0 and AMC present on every boot (2.1.1 panics without them) | `IT_AUDIO_HW`: leading `0` disables; any other value enables |
 
 Use `-M iPod-Touch,audio-hw=on` to force audio hardware. An explicitly supplied
@@ -60,9 +62,8 @@ unchanged. Delays and intervals use guest virtual time, not wall-clock time.
 
 Legacy scheduling aliases are resolved once during startup with strict bounded
 integer parsing, and emit deprecation warnings. Explicit properties take priority
-even over malformed aliases. Reset reuses these resolved settings. The app's
-existing 1500 ms / 200 writes / 250 ms aliases remain compatible; the machine's
-defaults remain 2000 ms / 24 writes / 500 ms. The paused native matrix in
+even over malformed aliases. Reset reuses these resolved settings. The
+machine's defaults are 0 ms / 200 writes / 250 ms, what every iPod boot uses. The paused native matrix in
 `test_time_dilation_config.py` covers defaults, aliases, explicit precedence,
 boundaries, malformed input and runtime mutation rejection.
 

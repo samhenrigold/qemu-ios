@@ -819,7 +819,7 @@ static void iosbb_unrealize(DeviceState *dev)
 }
 
 /*
- * Identity defaults: the 3GPP test network (MCC 001 / MNC 01, a carrier name the
+ * Identity defaults: the 3GPP test network (MCC 001 / MNC 01, carrier "LightTouch", which the
  * Mac app can change), a test IMEI with TAC 00000000, and an IMSI/ICCID in the
  * 001-01 range. Full bars at -59 dBm, battery 100 until the board's PMU says
  * otherwise.
@@ -828,7 +828,7 @@ static void iosbb_instance_init(Object *obj)
 {
     IosBasebandState *s = IOS_BASEBAND(obj);
 
-    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "Test Network");
+    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "LightTouch");
     snprintf(s->bb.plmn, sizeof(s->bb.plmn), "00101");
     snprintf(s->bb.imei, sizeof(s->bb.imei), "000000001234569");
     snprintf(s->bb.imsi, sizeof(s->bb.imsi), "001010000000001");

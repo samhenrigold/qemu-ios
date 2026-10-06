@@ -293,12 +293,12 @@ typedef struct {
 	bool osk_enabled;
 	bool osk_explicit;
     bool wdt_noreset, wdt_noreset_explicit;
-    bool h264_decode, h264_decode_explicit;
-    bool scaler_decode, scaler_decode_explicit;
-    bool mpvd_decode, mpvd_decode_explicit;
+    bool h264_decode;
+    bool scaler_decode;
+    bool mpvd_decode;
     uint8_t amc_mode;
     bool amc_mode_explicit;
-    bool lcd_planes, lcd_planes_explicit;
+    bool lcd_planes;
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
     uint32_t panel_w, panel_h;   /* "panel=WxH": opt-in larger panel (0: the shipped 320x480) */
