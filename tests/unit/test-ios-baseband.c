@@ -497,6 +497,7 @@ static void test_boot(void)
     bb.lac = 0x1abf;
     bb.ci = 0x53f1;
     bb.answer_delay_ms = -1;               /* QMP answers calls instead */
+    bb.nitz = true;                        /* the M68's: kept by init */
     ios_bb_init(&bb, core_out, NULL);
     tnow = 1000;
 
@@ -614,14 +615,25 @@ static void test_boot(void)
     c_mux_str(2, "at+cops=3,2\r");
     pump();
     expect_frame(2, "\r\nOK\r\n");
+    c_mux_str(2, "at+ctzr=1\r");
+    pump();
+    expect_frame(2, "\r\nOK\r\n");
 
     tick_to(tnow + 350);                          /* searching */
     pump();
     expect_frame(2, "\r\n+CREG: 2\r\n");
     expect_frame(2, "\r\n+CGREG: 2\r\n");
+    /* NITZ on registration: the host's offset in quarter hours (EDT: -16) and the time, UTC. */
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+    int64_t wall = bb.wall_offset_ms;
+    bb.wall_offset_ms = 1791309600900LL - (tnow + 500);     /* 2026-10-06 18:00:00.9 UTC at the tick */
     tick_to(tnow + 500);                          /* registered on the home PLMN */
     pump();
     expect_frame(2, "\r\n+CREG: 1,1ABF,53F1\r\n");
+    expect_frame(2, "\r\n+CTZV: -16,\"26/10/06,18:00:00\"\r\n");
+    bb.nitz = false;                              /* the other boards' modem from here on */
+    bb.wall_offset_ms = wall;
     expect_frame(2, "\r\n+CGREG: 1\r\n");
     expect_frame(2, "\r\n+XCIEV: 27,100\r\n");
     expect_none();

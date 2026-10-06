@@ -100,6 +100,9 @@ typedef struct IosBbCore {
     int signal_dbm;
     int battery;               /* percent, from the board's charger/PMU model */
     bool registered;           /* attached to the home network when the radio is on */
+    bool nitz;                 /* the network sends its time zone (+CTZV) once the host asks (+CTZR) */
+    bool ctzr_on;              /* +CTZR=1: time zone reports wanted, on ctzr_ch */
+    int ctzr_ch;
     bool sim_present;
     unsigned lac, ci;
     char imei[16], imsi[16], iccid[21];

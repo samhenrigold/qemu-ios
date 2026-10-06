@@ -916,6 +916,8 @@ static void n45_machine_init(MachineState *machine)
         if (s->imei && s->imei[0]) {
             object_property_set_str(OBJECT(dev), "imei", s->imei, &error_fatal);
         }
+        /* 1.x takes its time zone only from the network: lockdownd has no TimeZone to set. */
+        qdev_prop_set_bit(dev, "nitz", true);
         qdev_realize_and_unref(dev, NULL, &error_fatal);
         for (int i = 0; i < ARRAY_SIZE(controls); i++) {
             object_property_add_alias(OBJECT(machine), controls[i], OBJECT(dev), controls[i]);

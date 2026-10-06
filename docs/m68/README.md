@@ -37,6 +37,10 @@ UART1: carrier "Test Network" with full bars and EDGE, Wi-Fi up, SMS in, calls i
   `+cgdata="M-RAW_IP",1` turns DLCI 6 into raw IPv4, which the modem bridges to slirp. With `wifi=off`,
   Safari's Apple bookmark goes over it: DNS, TCP and `GET /iphone/start/` reach www.apple.com, which
   redirects to HTTPS; 1.0's Safari can't negotiate today's TLS ("could not establish a secure connection").
+- Time zone: on registration the modem sends NITZ (`+CTZV: <tz>,"yy/MM/dd,hh:mm:ss"`, the host's offset in quarter
+  hours, the time UTC; the `ios-baseband` property `nitz`, on for the M68). 1.0's CommCenter points
+  /var/db/localtime at `Etc/GMT<offset>`; its lockdownd has no TimeZone, so this is how 1.x shows the Mac's local
+  time (without it, the restore's Pacific).
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.
 
 Modem verified 2026-10-05 on 1A543a with every item above, by QMP and screenshots.
