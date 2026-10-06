@@ -6,6 +6,7 @@
 #include "hw/arm/mrvl8686.h"
 #include "hw/qdev-properties.h"
 #include "qemu/log.h"
+#include "net/checksum.h"
 
 /*
  * Every register access and every command is worth seeing while the dongle
@@ -740,6 +741,16 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
         }
     }
 
+    /* The offload engine's switches: a NUL-terminated name, then a 32-bit value. */
+    if ((flags & CDC_DCMD_SET) && cmd == WLC_SET_VAR && *iovar && payload_len >= strlen(iovar) + 1 + 4) {
+        uint32_t value = ldl_le_p(cdc + hdrlen + strlen(iovar) + 1);
+        if (g_str_equal(iovar, "toe")) {
+            s->toe = value;
+        } else if (g_str_equal(iovar, "toe_ol")) {
+            s->toe_ol = value;
+        }
+    }
+
     /* The driver joining a network it found in the scan results. */
     if ((flags & CDC_DCMD_SET) && cmd == WLC_SET_SSID) {
         sdio_handle_set_ssid(s, cdc + hdrlen,
@@ -868,6 +879,13 @@ static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
     }
 
     if (!s->nic) {
+        return;
+    }
+    if (s->toe && (s->toe_ol & TOE_TX_CSUM_OL)) {
+        /* The host left the checksums to the dongle: IPv4 header 0, TCP/UDP only the pseudo-header sum. */
+        g_autofree uint8_t *frame = g_memdup2(payload + chosen, len - chosen);
+        net_checksum_calculate(frame, len - chosen, CSUM_ALL);
+        qemu_send_packet(qemu_get_queue(s->nic), frame, len - chosen);
         return;
     }
     qemu_send_packet(qemu_get_queue(s->nic), payload + chosen, len - chosen);
@@ -1549,6 +1567,7 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
     memset(s->registers, 0, sizeof(s->registers));
     ipod_touch_sdio_set_chip(s, &s->chip);
     s->card_irq_level = false;
+    s->toe = s->toe_ol = 0;      /* the dongle's firmware reloads with the engine off */
     if (s->mrvl) {
         mrvl8686_card_reset(s->mrvl);
     }
@@ -1629,6 +1648,24 @@ static const VMStateDescription vmstate_sdio_netif = {
     },
 };
 
+static bool sdio_toe_needed(void *opaque)
+{
+    IPodTouchSDIOState *s = opaque;
+    return s->toe || s->toe_ol;
+}
+
+static const VMStateDescription vmstate_sdio_toe = {
+    .name = TYPE_IPOD_TOUCH_SDIO "/toe",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdio_toe_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(toe, IPodTouchSDIOState),
+        VMSTATE_UINT32(toe_ol, IPodTouchSDIOState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_ipod_touch_sdio = {
     .name = TYPE_IPOD_TOUCH_SDIO,
     .version_id = 1,
@@ -1674,6 +1711,7 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
         &vmstate_sdio_bssid,
         &vmstate_sdio_card_irq,
         &vmstate_sdio_netif,
+        &vmstate_sdio_toe,
         NULL
     },
 };
