@@ -336,6 +336,7 @@ struct IPad1MachineState {
     char *usb_tcp_addr;                  /* host bridge, empty = no link */
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
+    uint64_t rtc_epoch;                  /* rtc-epoch: the PMU clock at power-on (Unix seconds), 0 = the host's */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
@@ -996,6 +997,11 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
             if (s->board->accel_mount) {
                 qdev_prop_set_string(dev, "mount", s->board->accel_mount);
             }
+        }
+        if (!strcmp(d->type, TYPE_S5L8930_D1815)) {
+            /* the PMU's clock and the agent's time sync agree on a pinned date */
+            qdev_prop_set_uint64(dev, "rtc-epoch", s->rtc_epoch);
+            ipod_agent_set_clock_offset(s->agent, s->rtc_epoch ? (int64_t)s->rtc_epoch - time(NULL) : 0);
         }
         i2c_slave_realize_and_unref(slave, bus, &error_fatal);
         if (d->irq2_pin) {
@@ -2020,6 +2026,8 @@ static void ipad1_instance_init(Object *obj)
     IPAD1_MACHINE(obj)->usb_cable = true;
     IPAD1_MACHINE(obj)->iop_core = true;
     IPAD1_MACHINE(obj)->wifi = true;
+    /* -M ...,rtc-epoch=N: the PMU clock starts at N (a beta before its expiry) rather than the host's */
+    object_property_add_uint64_ptr(obj, "rtc-epoch", &IPAD1_MACHINE(obj)->rtc_epoch, OBJ_PROP_FLAG_READWRITE);
     guest_pb_init(&IPAD1_MACHINE(obj)->pb, obj, "ipad1");
     guest_pkg_init(&IPAD1_MACHINE(obj)->pkg, obj);
     IPAD1_MACHINE(obj)->agent = ipod_agent_new();

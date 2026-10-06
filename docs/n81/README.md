@@ -188,6 +188,40 @@ What 6.x needed, all generic (nothing is chosen by build):
      modelled, PEHaltRestart's 30 s watchdog panicked first.
 9. **Wi-Fi**: the CDC ioctl length word is split (reply buffer low 16 bits, request high 16).
 
+### iOS 6.0 beta 1 (10A5316k, June 2012)
+
+Prepared by FirmwareKit (LightTouchMac guestdev-n81-6b1, catalog row n81ap-10A5316k, `prerelease` beta 1). The IPSW
+(SHA-1 3b8101d3c30453e4c4ab8eae224e6a3d7f9f6a92, 846,900,415 bytes; Apple hosted it only behind the developer login) is
+inside BetaArchive's `media_ipsw.rar` in archive.org's `Apple_iPod_Firmware` item ("Apple iPod Touch 4.1 Firmware 6.0
+(6.0.10A5316k) (beta)", RAR SHA-1 ce93a767ca3655acfb86b22b25d1c47b9aae6c58; `bsdtar -xf` unpacks it). theapplewiki's
+SundanceVail 10A5316k (iPod4,1) keys decrypt every component (`firmwarekit verify-keys`: 18 of 18), and BuildManifest
+and Restore.plist name 10A5316k and iPod4,1.
+
+| boot | usbmux | afc | persist | install + launch | GL app | power-off |
+|---|---|---|---|---|---|---|
+| PASS (activated home screen, Setup walked) | PASS | PASS | PASS | PASS | not run (ca_ogl off) | PASS |
+
+What the beta needed:
+
+1. **Expiry.** The check is lockdownd's, not SpringBoard's: when MobileGestalt's ReleaseType is "Beta"
+   (SystemVersion.plist), it compares time() with a constant in the binary (10A5316k: 2012-07-18 00:00:01 UTC,
+   also reported as lockdown's BuildExpireTime). Past it, it stops honouring the cached FactoryActivated: the data
+   ark becomes `Unactivated` with BrickState true, and that sticks. FirmwareKit's own keybag and seal boots run
+   lockdownd, so the clock is pinned for every boot: the machine property `rtc-epoch=<unix seconds>` starts the
+   D1815's counter there at power-on, and the guest agent's clock sync (op 0x165) answers the same pinned time
+   (it_agent otherwise sets the host's date within seconds). The recipe's `rtc_epoch` (1339848000,
+   2012-06-16 12:00 UTC) goes into every one-shot boot and the lock's `machine`, which the app and regress.py
+   append. The home screen's Calendar reads Saturday 16.
+2. **Activation**: the data-ark FactoryActivated path, unchanged from 10A403, once the clock is pinned. No
+   registered UDID is needed offline.
+3. **GL front end**: the beta's OpenGLES exports `glMapBufferRangeAPPLE` and `glFlushMappedBufferRangeAPPLE`
+   (renamed ...EXT by 10A403); both are in `opengles.exports` and route to the ...EXT rows. The beta's shared-cache
+   OpenGLES carries no `__GLIFunctionDispatchRec` @encode, which the front end reads its macro-context layout
+   from, so the row has `ca_ogl` off (software CoreAnimation) and no GL app was tried. Debt.
+4. Fit-check differences from 10A403, both warnings: MobileStorageMounter names no UNSUPPORTED_FAILURE string
+   (it_msmquiet left out), and the kernel's USB Ethernet classes differ (en1 unpinned). Setup Assistant walked as
+   10A403's.
+
 ## Models: reused, varied, new
 
 Classes as in LightTouchMac `docs/fidelity-ledger.md`: R register-level, H high-level emulation, P a
@@ -247,3 +281,8 @@ documented quirk/patch, S stub.
     early; the harness waits for `guest-shutdown-confirmed`.
 11. **Unlock timing.** The lock screen darkens about 8 s after waking. The harness's first slide can land
     on a dark panel after usbmux attaches; its retry handles it.
+12. **GL on 6.0 beta 1 (10A5316k).** The beta's shared-cache OpenGLES carries no `__GLIFunctionDispatchRec`
+    @encode, which the GL front end reads its macro-context dispatch layout from on 6.x, so FirmwareKit's fit check
+    refuses `ca_ogl` ("QuartzCore or CoreImage asks for a macro context ...") and the beta runs software
+    CoreAnimation with no GL app (n81ap/n90ap-10A5316k: ca_ogl off). Needs a layout source other than the @encode
+    (e.g. the stock trampolines alone, as the 914-field record's slots are already named from them).

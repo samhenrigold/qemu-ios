@@ -16,6 +16,8 @@ IPodAgent *ipod_agent_acquire(void);
 IPodAgent *ipod_agent_new(void);
 void ipod_agent_free(IPodAgent *a);
 void ipod_agent_reset(IPodAgent *a);
+/* The wall clock the agent keeps the guest on (op 0x165): the host's plus offset seconds (a pinned machine clock). */
+void ipod_agent_set_clock_offset(IPodAgent *a, int64_t offset);
 /* Request is an ASCII id/op header, newline, and base64 body. 0, or -EINVAL
  * (malformed), -EFBIG (over IT_AGENT_REQUEST_MAX: v3 agents take large files
  * as `putpart` chunks), -EBUSY (duplicate id or full queue). */

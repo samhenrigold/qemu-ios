@@ -147,6 +147,8 @@ class Boot:
                 machine += ",guest-package=" + cfg.guest_package
             if getattr(cfg, "imei", None):
                 machine += ",baseband=on,imei=" + cfg.imei
+            if getattr(cfg, "rtc_epoch", None):
+                machine += ",rtc-epoch=" + cfg.rtc_epoch
             if os.environ.get("IPAD1_MACHINE_EXTRA"):   # e.g. iop-core=off, as boot-smoke.py takes it
                 machine += "," + os.environ["IPAD1_MACHINE_EXTRA"]
             if self.machine_extra:
@@ -1179,6 +1181,8 @@ def device_args(a):
     a.udid = (lockd.get("identity") or {}).get("udid")
     # A radio board's lock records the modem's IMEI (the UDID hashes it): boot that modem, as the app does.
     a.imei = (lockd.get("machine") or {}).get("imei")
+    # A pinned PMU clock (a developer beta's lock, before its expiry date): every boot starts there, as the app's.
+    a.rtc_epoch = (lockd.get("machine") or {}).get("rtc-epoch")
     a.major = int(a.product_version.split(".")[0])
     a.gl_test = bool(lockd.get("gl_test"))      # it_gltest's scene sits over SpringBoard's screens
     a.activated = bool((lockd.get("inputs") or {}).get("activation") or (lockd.get("inputs") or {}).get("activation_hook"))

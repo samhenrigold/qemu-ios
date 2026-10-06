@@ -20,6 +20,7 @@ struct IPodAgent {
     uint64_t token;
     uint64_t ui_sequence;
     int64_t last_poll;
+    int64_t clock_offset;
     bool claimed;
 };
 
@@ -38,6 +39,11 @@ IPodAgent *ipod_agent_new(void)
     a->references = 1;
     qemu_mutex_init(&a->lock);
     return a;
+}
+
+void ipod_agent_set_clock_offset(IPodAgent *a, int64_t offset)
+{
+    a->clock_offset = offset;
 }
 
 void ipod_agent_reset(IPodAgent *a)
@@ -288,7 +294,7 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
         }
         result = item && !item->ui_cookie ? item->request->len : 0;
     } else if (op == 0x165) {
-        result = time(NULL);
+        result = time(NULL) + a->clock_offset;
     } else if (item && op == 0x162 && length <= sizeof(chunk) &&
                offset <= item->request->len) {
         length = MIN(length, item->request->len - offset);
