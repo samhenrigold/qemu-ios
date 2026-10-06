@@ -5,6 +5,8 @@
 <dict>
 	<key>Label</key>
 	<string>com.qemu.it-cctest</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/it_cctest</string>
