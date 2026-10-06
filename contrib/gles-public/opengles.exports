@@ -159,10 +159,12 @@ glDisableVertexAttribArray
 glDiscardFramebufferEXT
 glDrawArrays
 glDrawArraysInstanced
+glDrawArraysInstancedAPPLE
 glDrawArraysInstancedEXT
 glDrawBuffers
 glDrawElements
 glDrawElementsInstanced
+glDrawElementsInstancedAPPLE
 glDrawElementsInstancedEXT
 glDrawRangeElements
 glDrawTexfOES
@@ -550,6 +552,7 @@ glVertexAttrib3fv
 glVertexAttrib4f
 glVertexAttrib4fv
 glVertexAttribDivisor
+glVertexAttribDivisorAPPLE
 glVertexAttribDivisorEXT
 glVertexAttribI4i
 glVertexAttribI4iv
