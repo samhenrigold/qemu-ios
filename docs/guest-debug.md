@@ -15,18 +15,63 @@ Kernel: `xnu-procs` lists every process and `xnu-current` names the running one.
 <SpringBoard>` from a sysroot made with `dsc_extract.py`, then `xnu-break SpringBoard mach_msg` stops in SpringBoard
 with symbolized library frames. `tests/ipad1/debug-check.py` runs both passes on the kboot boards.
 
-| Board, build | Kernel | User | debugserver |
+| Board, build | Kernel | User | debugserver (DDI, `ddi-check.py`, 2026-10-06) |
 |---|---|---|---|
 | M68 1.0 1A543a | PASS (full symbols; r9 current thread) | PASS (52 images, plain rootfs as sysroot; libSystem/CoreFoundation frames) | none (1.0 never had one) |
-| N18 5.1.1 9B206 | PASS (4047 exported names; offsets found) | PASS (215 images; local symbols kept: `__CFRunLoopServiceMachPort`) | not in the firmware; needs the 5.1 DeveloperDiskImage (not on this host) |
-| N81 6.1.6 10B500 | PASS | PASS (231 images; the cache's local symbols are `<redacted>`, exported ones named) | not in the firmware; needs the 6.1 DDI (not on this host) |
-| N88 6.1.6 10B500 | PASS | PASS (231 images, `debug-check.py` all PASS) | as N81 |
-| N90 7.1.2 11D257 | PASS | PASS (318 images, `debug-check.py` all PASS; `<redacted>` locals) | not in the firmware; needs the 7.1 DDI (not on this host) |
+| N18 5.1.1 9B206 | PASS (4047 exported names; offsets found) | PASS (215 images; local symbols kept: `__CFRunLoopServiceMachPort`) | PASS with the 5.1 DDI: attach 9 s, breakpoint, bt to the Harness main, detach, app alive. Its debugserver has no qRegisterInfo: lldb gets `arm_gdb_regs.py` |
+| N81 6.1.6 10B500 | PASS | PASS (231 images; the cache's local symbols are `<redacted>`, exported ones named) | PASS with the 6.1 DDI: attach 13 s (36 s without `--sysroot`), all steps |
+| N88 6.1.6 10B500 | PASS | PASS (231 images, `debug-check.py` all PASS) | PASS with the 6.1 DDI: attach 11 s, all steps |
+| N90 4.2.1 8C148 | not run | not run | PASS with the 4.2 DDI: attach 13 s, all steps; this debugserver also has no qRegisterInfo, and reports its breakpoint trap with subcode 0, which lldb shows as EXC_BREAKPOINT |
+| N90 7.1.2 11D257 | PASS | PASS (318 images, `debug-check.py` all PASS; `<redacted>` locals) | PASS with the 7.1 DDI (11D167), mounted by `ideviceimagemounter`: attach 25 s, all steps |
 
 KERNEL for these: the decrypted kernelcache (FirmwareKit's cache, or `img3_decrypt` + `complzss` from
 `imgtools/ipad1_fw.py` with the catalog row's `kernelcache` key). kboot does not slide the kernel, so lldb loads it
 at its file address on 6.x and 7.x too. The sysroot: the decrypted rootfs's `dyld_shared_cache_armv7` through
 `dsc_extract.py`, plus `usr/lib/dyld` and SpringBoard.
+
+## debugserver from a DeveloperDiskImage (4.x to 7.x)
+
+`tests/ipad1/ddi-check.py` runs the whole thing on a kboot board and is the recipe:
+
+```
+tests/ipad1/ddi-check.py --machine n88 --device DEV --product-version 6.1.6 \
+    --ddi "xcode-ddi/ddi/6.1" --overlay OVL --sysroot ROOT --out OUT
+```
+
+- **Debuggable build.** The app must be signed with `get-task-allow` (the entitlement Xcode gives a development
+  build). Without it debugserver's `task_for_pid` fails and lldb reports "attach failed: Error 1" (seen by hand on
+  N81 6.1.6). ddi-check re-signs the IPA with `ldid -S` and a one-key entitlements plist.
+- **Mount.** Xcode's DeveloperDiskImage.dmg and its .signature for the major.minor. On iOS < 7,
+  libimobiledevice 1.4.0's `ideviceimagemounter` uploads the image over AFC, then prints "Unknown error occurred,
+  can't mount" without ever sending MountImage (its AFC branch keeps a stale error). ddi-check then calls
+  `mobile_image_mounter_mount_image` itself (ctypes) on `PublicStaging/staging.dimage`. On 7.x the tool works.
+- **Setup and pairing.** SpringBoard launches no app while Setup Assistant is up, so ddi-check walks it
+  (`app-install.py`'s `walk_setup`) the first time. OVL is a NAND overlay kept between runs, with a clean guest
+  shutdown at the end. The host's pair records are kept in OVL.conf: a 7.x device that has paired once asks "Trust
+  This Computer?" for a new host, and nothing answers it here. On 7.x, ddi-check waits for the guest's
+  `it_boot: package` line before using lockdown: file creation on the data volume can stall until then.
+- **Launch.** The guest agent launches the app. Its pid comes from `launchctl list`
+  (`UIKitApplication:<bundle>[..]`).
+- **lldb.** `idevicedebugserverproxy` forwards com.apple.debugserver. `imgtools/lldb/dsattach.py` then connects
+  and attaches by pid: these debugservers have no qfProcessInfo, so `attach -n` cannot work. It stops where the
+  main thread's mach_msg returns (a status-bar tap wakes the run loop), prints the backtrace, continues and
+  detaches. Things it handles:
+  - **Registers.** The 4.x and 5.x debugservers answer qRegisterInfo with nothing, which leaves lldb with no
+    registers. dsattach then loads `arm_gdb_regs.py`, the classic GDB ARM `g` layout (`lldb_shim.py`'s), as
+    `plugin.process.gdb-remote.target-definition-file`. 6.x answers qRegisterInfo; 7.x answers an error until it
+    has a process.
+  - **Breakpoint stops.** 4.2's debugserver reports the breakpoint trap with subcode 0, and lldb does not count
+    that as a breakpoint. dsattach judges the stop by the pc instead.
+  - **Async continue.** dsattach continues asynchronously, because a synchronous Continue blocks until the next
+    stop.
+- **Library symbols (ROOT).** Build ROOT from the build's rootfs: `dsc_extract.py` on
+  `System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7`, plus `usr/lib/dyld`. dsattach maps `/System` and
+  `/usr` there with `target modules search-paths` (`platform select remote-ios --sysroot` alone still read them
+  from memory), and lldb matches them by UUID. Without ROOT every library is read from guest memory over USB:
+  attach then takes 36 s instead of 11 s on N88 6.1.6 (about 100 s under load), and library frames have no names.
+  The app binary is always read from guest memory (the Harness has no LC_UUID to match a host copy).
+- **Killing lldb.** Killed while attached, lldb takes the app with it: debugserver kills its inferior. Always
+  detach.
 
 ## Recipe
 

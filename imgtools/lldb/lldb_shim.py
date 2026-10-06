@@ -267,4 +267,5 @@ def main():
     print('shim: client gone', flush=True)
 
 
-main()
+if __name__ == "__main__":
+    main()
