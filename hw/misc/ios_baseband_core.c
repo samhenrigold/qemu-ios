@@ -2181,6 +2181,41 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         at_ok(bb, ch);
         return;
     }
+    if (strcmp(cmd, "xcfc") == 0 || strcmp(cmd, "xcfc?") == 0) {
+        /*
+         * Infineon's call-forwarding indicator query. CommCenter's reply
+         * handler (GsmSettingsModel) reads field 0 and takes anything but 3,
+         * including no +XCFC line at all, as unconditional forwarding active:
+         * the status bar's forwarding arrow. Nothing is forwarded here.
+         */
+        chan_printf(bb, ch, "\r\n+XCFC: 3\r\n");
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "ccfc=", NULL))) {
+        /*
+         * 27.007 7.11: +CCFC=<reason>,<mode>[,<number>[,<type>[,<class>]]].
+         * A query (mode 2) answers +CCFC: <status 0>,<class> (class 7 when
+         * none is given). Registrations are accepted and not kept.
+         * ponytail: no forwarding state; keep one per reason if a guest needs
+         * to read back what it set.
+         */
+        int reason, mode, cls = 7;
+        const char *p = arg;
+
+        for (int i = 0; i < 4 && p; i++) {
+            p = strchr(p, ',');
+            p = p ? p + 1 : NULL;
+        }
+        if (p && *p >= '0' && *p <= '9') {
+            cls = atoi(p);
+        }
+        if (sscanf(arg, "%d,%d", &reason, &mode) == 2 && mode == 2) {
+            chan_printf(bb, ch, "\r\n+CCFC: 0,%d\r\n", cls);
+        }
+        at_ok(bb, ch);
+        return;
+    }
     if (strcmp(cmd, "ceer") == 0) {
         chan_printf(bb, ch, "\r\n+CEER: CC,%d\r\n", bb->ceer_cause);
         at_ok(bb, ch);

@@ -1087,6 +1087,22 @@ static void test_ifx(void)
     CHECK(strstr(got, "+XSIGSTR: 2,0,45") != NULL);
     c.signal_dbm = -60;
 
+    /* Call forwarding: nothing is forwarded. CommCenter reads +XCFC: 3 as not
+     * active (no +XCFC line shows the forwarding arrow); +CCFC queries
+     * answer status 0 for the asked class (27.007 7.11). */
+    ifx_frame(&x, &c, "at+xcfc\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\n+XCFC: 3\r\n\r\nOK\r\n", "xcfc");
+    ifx_frame(&x, &c, "at+ccfc=0,2\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\n+CCFC: 0,7\r\n\r\nOK\r\n", "ccfc query");
+    ifx_frame(&x, &c, "at+ccfc=2,2,,,1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\n+CCFC: 0,1\r\n\r\nOK\r\n", "ccfc query, class 1");
+    ifx_frame(&x, &c, "at+ccfc=0,3,\"5551234\",129\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\nOK\r\n", "ccfc registration");
+
     /* 3GS temperature notifications: +xdrv=5,16,<s> then +XDRVI: 5,17 every <s> seconds. */
     ifx_frame(&x, &c, "at+xdrv=5,16,20\r", miso, 0x7fc, got);
     ios_bb_tick(&c, c.now_ms + 1500);
