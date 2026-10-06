@@ -83,7 +83,6 @@ _qemu_ios_device_info
 _qemu_ios_ui_attach
 _qemu_ios_ui_frame
 _qemu_ios_ui_frame_size
-_qemu_ios_ui_copy_frame
 _qemu_ios_ui_touch
 _qemu_ios_ui_modem_set
 _qemu_ios_ui_modem_status
@@ -125,8 +124,6 @@ _qemu_ios_ui_reset
 _qemu_ios_ui_powerdown
 _qemu_ios_ui_quit
 _qemu_ios_ui_net_restrict
-_qemu_ios_snapshot_save
-_qemu_ios_snapshot_done
 _qemu_ios_ui_ready
 _qemu_ios_ui_storage_failed
 _qemu_ios_ui_guest_shutdown_confirmed
