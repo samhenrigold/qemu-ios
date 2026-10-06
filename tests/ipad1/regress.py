@@ -177,6 +177,21 @@ class Boot:
             argv = [argv[0], "-u", self.udid] + argv[1:]
         return subprocess.run(argv, env=self.env(), capture_output=True, text=True, timeout=timeout)
 
+    def afc_ready(self, budget=300):
+        """(answered, seconds): until afcd answers a cheap request (devinfo, 15 s per try), at most budget s.
+        7.x starts afcd in launchd's throttled band; early in a boot it can sit unscheduled behind ~100 runnable
+        daemon threads for minutes, and a request sent then goes unanswered (docs/n90 debt 6)."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < budget and self.qemu.poll() is None:
+            try:
+                r = self.run(["afcclient", "devinfo"], timeout=15)
+                if r.returncode == 0 and "FSTotalBytes" in r.stdout:
+                    return True, time.monotonic() - t0
+            except subprocess.TimeoutExpired:
+                pass
+            time.sleep(2)
+        return False, time.monotonic() - t0
+
     def shot(self, name):
         ppm = os.path.join(self.dir, name + ".ppm")
         self.qmp.cmd("human-monitor-command", **{"command-line": "screendump " + ppm})
@@ -322,13 +337,11 @@ def booted(cfg, tag, r, **kw):
     if b.usb and not b.wait_mux():
         r.set(False, "lock screen but usbmux never attached")
         return b, None
-    if b.usb and cfg.major >= 7 and cfg.package_seed is not None:
-        # 7.x stalls the data volume for 1-3 minutes after lockdown answers, and it_boot reports at the end of
-        # that window; an AFC request inside it goes unanswered for 60 s (persist's readback failed so).
-        # app-install waits the same way. Bounded: a missing report is check_boot's to judge.
-        deadline = time.monotonic() + 300
-        while time.monotonic() < deadline and "it_boot: package" not in open(b.serial, errors="replace").read():
-            time.sleep(3)
+    if b.usb and cfg.major >= 7:
+        ok, took = b.afc_ready()
+        if not ok:
+            r.set(False, "usbmux attached but AFC never answered in %d s (afcd starved: docs/n90 debt 6)" % took)
+            return b, None
     return b, detail
 
 
