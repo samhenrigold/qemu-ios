@@ -250,3 +250,22 @@ What differs from 7.1.2:
    Safari turns with `accel-orientation` 1/3/4 as on hardware.
 5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
    calibrated (N81's debt 7, the shared `mt_profile_n81`).
+6. **7.x boots saturate the emulated A4 CPU for about 2 minutes** (measured 2026-10-06 on 7.1.2 with
+   `imgtools/lldb/xnu.py` plus a scratch thread walker; task->threads at task+0x28, thread link at +0x258,
+   sched_pri/base/max as int16s at +0x6c). Every 7.x boot starts about 100 daemons. Most run in launchd's throttled
+   band (base and max priority 4), and 90-130 of their threads sit runnable around 100-125 s. CPU time goes first
+   to datamigrator (first boot only), mobileassetd (boosted), itunesstored and backupd at 28-46. That pushes back:
+   - an AFC request: stock afcd is POSIXSpawnType Adaptive, so it starts in the throttled band and the first
+     request goes unanswered for about 60 s;
+   - any throttled job.
+   On real hardware the same scheduling finishes sooner on a faster CPU. Mitigations in place:
+   - Our own jobs are POSIXSpawnType Interactive, so they are not throttled.
+   - The host waits for it_boot's report before AFC (regress, app-install, the app's install path).
+   afcd stays stock. Debt: TCG throughput on the A4 (instructions per second against a 1 GHz A4), which is what
+   makes this window long. Not started.
+   Effect of POSIXSpawnType Interactive on a fresh 7.1.2 prepare:
+   | Metric | Before | After |
+   |---|---|---|
+   | Seal halt | 165 s | 53 s |
+   | lockdown -> "it_boot: package" | 111 s | 0 s (both at 37 s) |
+   | regress boot | 2.7 min | 2.2 min |
