@@ -90,6 +90,8 @@ typedef struct DisasContext {
     GHashTable *cp_regs;
     uint64_t features; /* CPU features bits */
     bool aarch64;
+    /* ArchCPU::idle_loop_pc, read at translation */
+    uint32_t idle_loop_pc;
     bool thumb;
     bool lse2;
     /*

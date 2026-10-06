@@ -7563,6 +7563,7 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     dc->condjmp = 0;
     dc->pc_save = dc->base.pc_first;
     dc->aarch64 = false;
+    dc->idle_loop_pc = cpu->idle_loop_pc;
     dc->thumb = EX_TBFLAG_AM32(tb_flags, THUMB);
     dc->be_data = EX_TBFLAG_ANY(tb_flags, BE_DATA) ? MO_BE : MO_LE;
     condexec = EX_TBFLAG_AM32(tb_flags, CONDEXEC);
@@ -7817,6 +7818,10 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     dc->insn = insn;
     dc->base.pc_next = pc + 4;
 
+    if (unlikely(dc->idle_loop_pc && pc == dc->idle_loop_pc)) {
+        gen_update_pc(dc, 0);       /* a halt resumes on this branch */
+        gen_helper_idle_loop(tcg_env);
+    }
     disas_arm_insn(dc, insn);
 
     arm_post_translate_insn(dc);

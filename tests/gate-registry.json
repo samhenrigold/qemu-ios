@@ -148,6 +148,7 @@
     {"name": "tests/ipad1/test_appsync_entry.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_cdma.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_d1815_pmu.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipad1/test_iop_idle.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipad1/test_dart.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_device_cli.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_display_panel.py", "tier": "quick", "prerequisites": []},
