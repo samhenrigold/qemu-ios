@@ -339,6 +339,7 @@ def booted(cfg, tag, r, **kw):
         return b, None
     if b.usb and cfg.major >= 7:
         ok, took = b.afc_ready()
+        log("%s: AFC answered after %d s" % (tag, took) if ok else "%s: AFC silent for %d s" % (tag, took))
         if not ok:
             r.set(False, "usbmux attached but AFC never answered in %d s (afcd starved: docs/n90 debt 6)" % took)
             return b, None
