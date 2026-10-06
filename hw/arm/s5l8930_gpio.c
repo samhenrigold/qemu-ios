@@ -61,6 +61,7 @@ struct S5L8930GPIOState {
 
     uint32_t cfg[GPIO_MAX_PINS];
     uint32_t input[GPIO_GROUPS];      /* external pin levels, bit per pin */
+    uint32_t rest_low[GPIO_GROUPS];   /* inputs a reset leaves low: switches the board holds there */
     uint32_t enabled[GPIO_GROUPS];
     uint32_t status[GPIO_GROUPS];
 };
@@ -303,9 +304,25 @@ static void s5l8930_gpio_reset(DeviceState *dev)
         unsigned pin = S5L8930_GPIO_PIN(low_inputs[i]);
         s->input[pin / 32] &= ~(1u << (pin % 32));
     }
+    for (unsigned g = 0; g < GPIO_GROUPS; g++) {
+        s->input[g] &= ~s->rest_low[g];
+    }
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->status, 0, sizeof(s->status));
     qemu_irq_lower(s->irq);
+}
+
+/* A level the pin keeps across resets (a switch's position): applied now, and by every reset after. */
+void s5l8930_gpio_set_rest_level(DeviceState *dev, unsigned pin, bool level)
+{
+    S5L8930GPIOState *s = S5L8930_GPIO(dev);
+
+    if (level) {
+        s->rest_low[pin / 32] &= ~(1u << (pin % 32));
+    } else {
+        s->rest_low[pin / 32] |= 1u << (pin % 32);
+    }
+    s5l8930_gpio_set_input(s, pin, level);
 }
 
 /* The K48's 176 pins / 6 groups in the main section, as before; the

@@ -122,6 +122,7 @@ static inline hwaddr s5l8930_iop_pa(hwaddr a)
  * 0..S5L8930_GPIO_PINS-1 drive pin input levels (buttons, PMU IRQ, ...).
  */
 #define TYPE_S5L8930_GPIO "s5l8930.gpio"
+void s5l8930_gpio_set_rest_level(DeviceState *dev, unsigned pin, bool level);
 #define S5L8930_GPIO_PINS        (0x16 * 8)    /* 22 ports x 8 pins (the K48; "ports" property) */
 #define S5L8930_GPIO_MAX_PINS    (0x2e * 8)    /* the S5L8920's 46 ports */
 /* DT pin ids are 0xPPB (port, bit); qdev GPIO outputs 0..PINS-1 follow
@@ -131,6 +132,7 @@ static inline hwaddr s5l8930_iop_pa(hwaddr a)
 #define S5L8930_GPIO_BTN_HOLD    0x001
 #define S5L8930_GPIO_BTN_VOLUP   0x002
 #define S5L8930_GPIO_BTN_VOLDOWN 0x003
+#define S5L8930_GPIO_BTN_RINGER  0x004         /* buttons/ringerab: the ring/silent switch */
 #define S5L8930_GPIO_NOR_CS      0x505
 #define S5L8930_GPIO_MT_ATN      0x205         /* == pin 0x15 */
 

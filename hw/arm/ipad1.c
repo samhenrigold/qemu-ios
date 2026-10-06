@@ -118,6 +118,9 @@ typedef struct A4Board {
     uint8_t bb_ifx;
     uint16_t bb_max_data;
     uint16_t bb_mrdy, bb_srdy;
+    /* buttons/ringerab's polarity (its GPIO function's flags 0x100): which level of pin 4 is "silent".
+     * GPIO inputs rest high, which on an active-high switch is silent: every system sound muted. */
+    bool ringer_active_high;
 } A4Board;
 
 /* iPad 1 (K48AP): values measured on the real unit unless said otherwise. */
@@ -295,6 +298,7 @@ static const A4Board a4_n90 = {
     .wifi_mac = { 0x02, 0x00, 0x00, 0x90, 0x00, 0x01 },  /* synthetic, locally administered */
     .bb_ifx = 2, .bb_max_data = 0x7fc,       /* DT spi2 protocol-version, max-data-size */
     .bb_mrdy = 0x0605, .bb_srdy = 0x0104,
+    .ringer_active_high = true,              /* function-button_ringerab flags 0x100; K48's are 0 */
 };
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
@@ -343,6 +347,7 @@ struct IPad1MachineState {
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     bool camera;                         /* leave the kboot DT's isp node matchable (default off) */
+    bool ring_silent;                    /* ring-switch: the side switch at silent (default off: ring) */
     uint8_t wifi_mac[6];                 /* BCM4329 CIS MAC (wifi-mac) */
     bool wifi_mac_explicit;
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
@@ -560,6 +565,16 @@ static void a4_dt_unmatch(uint8_t *image, size_t image_len, uint32_t load_pa,
 {
     a4_dt_edit(image, image_len, load_pa, bootargs_pa,
                &(A4DTEdit){ name, "compatible", "none", 5 });
+}
+
+/* The ring/silent switch's pad, by the board's polarity; it stays put across resets, and both edges
+ * interrupt, so a flip at run time reaches the guest. */
+static void ipad1_apply_ring_switch(IPad1MachineState *s)
+{
+    if (s->gpio) {
+        s5l8930_gpio_set_rest_level(s->gpio, S5L8930_GPIO_PIN(S5L8930_GPIO_BTN_RINGER),
+                                    s->ring_silent == s->board->ringer_active_high);
+    }
 }
 
 static void ipad1_cpu_reset(void *opaque)
@@ -1238,6 +1253,7 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8930_GPIO_BASE);
     sysbus_connect_irq(sbd, 0, ipad1_irq(s, S5L8930_IRQ_GPIO));
+    ipad1_apply_ring_switch(s);
 
     ipad1_i2c_create(s, 0);
     ipad1_i2c_create(s, 2);
@@ -2055,6 +2071,17 @@ static void ipad1_set_camera(Object *obj, bool value, Error **errp)
     IPAD1_MACHINE(obj)->camera = value;
 }
 
+static bool ipad1_get_ring_switch(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->ring_silent;
+}
+
+static void ipad1_set_ring_switch(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->ring_silent = value;
+    ipad1_apply_ring_switch(IPAD1_MACHINE(obj));
+}
+
 static bool ipad1_get_wifi(Object *obj, Error **errp)
 {
     return IPAD1_MACHINE(obj)->wifi;
@@ -2265,6 +2292,9 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_set_description(klass, "camera",
         "kboot= on a camera board: leave the DT's isp node matched (there is no ISP model yet); "
         "default off unmatches it at every reset");
+    object_class_property_add_bool(klass, "ring-switch", ipad1_get_ring_switch, ipad1_set_ring_switch);
+    object_class_property_set_description(klass, "ring-switch",
+        "the side switch (buttons/ringerab): on = silent, off = ring (default); settable at run time");
     object_class_property_add_bool(klass, "wifi", ipad1_get_wifi, ipad1_set_wifi);
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "

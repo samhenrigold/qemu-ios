@@ -26,7 +26,6 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "imgtools"))
 import itqmp  # noqa: E402
 
-itqmp.W, itqmp.H = 1024, 768
 FILES = os.path.expanduser("~/Developer/qemu-ios-files/ipad1")
 ROOTFS = "/System/Library"
 EXPECT = [
@@ -142,19 +141,20 @@ def judge(wav, serial=None, *, expect):
     return ok
 
 
-def play_sounds(q):
+def play_sounds(q, start=(957, 480), end=(957, 67)):
     """Make stock SpringBoard play EXPECT[1:] (the boot sound comes by itself).
 
     q is an itqmp.QMP on a machine booted >= 40 s ago (lock screen up, boot
-    sound done); takes about 25 s. itqmp.W/H must be 1024x768.
+    sound done); takes about 25 s. start/end: the unlock slider's drag in scanout
+    pixels of itqmp.W x itqmp.H (default the iPad's, 1024x768).
     """
     def unlock():
         itqmp.button(q, "home")               # wake the idle-dimmed lock screen
         time.sleep(2)
-        itqmp.move(q, 957, 480)               # slide-to-unlock knob, scanout pixels (upright portrait)
+        itqmp.move(q, *start)                 # slide-to-unlock knob, scanout pixels
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
         for i in range(1, 41):
-            itqmp.move(q, 957, 480 - (480 - 67) * i // 40)
+            itqmp.move(q, start[0] + (end[0] - start[0]) * i // 40, start[1] + (end[1] - start[1]) * i // 40)
             time.sleep(0.03)
         time.sleep(0.3)   # rest at the end: 4.x reads a release while still moving as a flick back
         q.cmd("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
@@ -177,6 +177,7 @@ def main():
     ap.add_argument("--product-version", help="sound selector (default: selected device lock, else 3.2.2)")
     ap.add_argument("--guest-package", help="current guest-agent offer for a legacy prepared image")
     a = ap.parse_args()
+    itqmp.W, itqmp.H = 1024, 768
     a.nand = a.nand or os.path.join(a.device, "nand")
     spec = importlib.util.spec_from_file_location("audio_regress", os.path.join(HERE, "regress.py"))
     rg = importlib.util.module_from_spec(spec)
