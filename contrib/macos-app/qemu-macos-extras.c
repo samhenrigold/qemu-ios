@@ -21,6 +21,9 @@
 #include "hw/arm/ipod-attitude.h"
 #include "qapi/qapi-commands-qom.h"
 #include "qobject/qnum.h"
+#include "qemu/thread.h"
+#include "qobject/qjson.h"
+#include "qobject/qdict.h"
 #include "qapi/qapi-commands-control.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-commands-misc.h"
@@ -446,6 +449,112 @@ bool qemu_ios_ui_orientation(int value)
 bool qemu_ios_ui_usb_charger(bool high_power)
 {
     return set_machine_prop("usb-charger", g_strdup(high_power ? "on" : "off"));
+}
+
+/* The modem: writes go through a BH; reads come from a snapshot a BH refreshes. */
+static QemuMutex modem_lock;
+static char *modem_snapshot;                     /* JSON, or NULL before the first refresh */
+static char *modem_error;                        /* the last write's refusal, until the next write */
+static bool modem_refresh_queued;
+
+static Object *modem_object(void)
+{
+    return object_resolve_path_component(OBJECT(qdev_get_machine()), "baseband-modem");
+}
+
+static void __attribute__((constructor)) modem_lock_init(void)
+{
+    qemu_mutex_init(&modem_lock);
+}
+
+struct modem_write { char *name, *value; };
+
+static void modem_write_bh(void *opaque)
+{
+    struct modem_write *w = opaque;
+    Object *modem = modem_object();
+    Error *err = NULL;
+
+    if (modem) {
+        object_property_parse(modem, w->name, w->value, &err);
+    }
+    qemu_mutex_lock(&modem_lock);
+    g_free(modem_error);
+    modem_error = err ? g_strdup(error_get_pretty(err)) : NULL;
+    qemu_mutex_unlock(&modem_lock);
+    error_free(err);
+    g_free(w->name);
+    g_free(w->value);
+    g_free(w);
+}
+
+bool qemu_ios_ui_modem_set(const char *property, const char *value)
+{
+    Object *modem;
+
+    if (!property || !value || !qemu_ios_ui_ready() || !(modem = modem_object()) ||
+        !object_property_find(modem, property)) {
+        return false;
+    }
+    struct modem_write *w = g_new(struct modem_write, 1);
+    *w = (struct modem_write){ g_strdup(property), g_strdup(value) };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), modem_write_bh, w);
+    return true;
+}
+
+static void modem_refresh_bh(void *opaque)
+{
+    static const char *const strs[] = {
+        "carrier", "mcc-mnc", "call-state", "last-dialed", "last-mo-sms",
+    };
+    static const char *const bools[] = { "registered", "sim-present" };
+    static const char *const ints[] = { "signal-dbm", "mo-sms-count" };
+    Object *modem = modem_object();
+    QDict *d = qdict_new();
+    GString *json;
+
+    for (int i = 0; modem && i < ARRAY_SIZE(strs); i++) {
+        g_autofree char *v = object_property_get_str(modem, strs[i], NULL);
+        qdict_put_str(d, strs[i], v ? v : "");
+    }
+    for (int i = 0; modem && i < ARRAY_SIZE(bools); i++) {
+        qdict_put_bool(d, bools[i], object_property_get_bool(modem, bools[i], NULL));
+    }
+    for (int i = 0; modem && i < ARRAY_SIZE(ints); i++) {
+        qdict_put_int(d, ints[i], object_property_get_int(modem, ints[i], NULL));
+    }
+    qemu_mutex_lock(&modem_lock);
+    if (modem_error) {
+        qdict_put_str(d, "error", modem_error);
+    }
+    json = qobject_to_json(QOBJECT(d));
+    g_free(modem_snapshot);
+    modem_snapshot = modem ? g_string_free(json, false) : (g_string_free(json, true), NULL);
+    modem_refresh_queued = false;
+    qemu_mutex_unlock(&modem_lock);
+    qobject_unref(d);
+}
+
+char *qemu_ios_ui_modem_status(void)
+{
+    char *copy;
+
+    if (!qemu_ios_ui_ready() || !modem_object()) {
+        return NULL;
+    }
+    qemu_mutex_lock(&modem_lock);
+    copy = g_strdup(modem_snapshot);
+    if (!modem_refresh_queued) {
+        modem_refresh_queued = true;
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), modem_refresh_bh, NULL);
+    }
+    qemu_mutex_unlock(&modem_lock);
+    return copy;
+}
+
+void qemu_ios_ui_modem_free(char *status)
+{
+    g_free(status);
 }
 
 static void paste_bh(void *opaque)

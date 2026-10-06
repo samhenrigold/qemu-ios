@@ -16,7 +16,7 @@
  * mcc-mnc, signal-dbm, registered, sim-present, battery-percent (wired by the
  * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms; the actions
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
- * the observables call-state, last-dialed and last-mo-sms.
+ * the observables call-state, last-dialed, last-mo-sms and mo-sms-count.
  *
  * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
  * framing, docs/baseband/commcenter-4.2.1-3gs.md): with ifx-version 1/2 and
@@ -370,6 +370,10 @@ STR_PROP(mcc_mnc, plmn)
 
 static void iosbb_set_carrier_reg(Object *obj, const char *value, Error **errp)
 {
+    if (!value || !ios_bb_carrier_ok(value)) {
+        error_setg(errp, "carrier: \"%s\" must be 1-32 printable characters without '\"'", value ? : "");
+        return;
+    }
     iosbb_set_carrier(obj, value, errp);
     ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
     iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
@@ -377,6 +381,10 @@ static void iosbb_set_carrier_reg(Object *obj, const char *value, Error **errp)
 
 static void iosbb_set_mcc_mnc_reg(Object *obj, const char *value, Error **errp)
 {
+    if (!value || !ios_bb_plmn_ok(value)) {
+        error_setg(errp, "mcc-mnc: \"%s\" must be 5 or 6 digits (MCC + MNC)", value ? : "");
+        return;
+    }
     iosbb_set_mcc_mnc(obj, value, errp);
     ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
     iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
@@ -508,6 +516,14 @@ static char *iosbb_get_call_state(Object *obj, Error **errp)
 static char *iosbb_get_last_dialed(Object *obj, Error **errp)
 {
     return g_strdup(IOS_BASEBAND(obj)->bb.last_dialed);
+}
+
+static void iosbb_get_mo_sms_count(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    int64_t val = IOS_BASEBAND(obj)->bb.mo_count;
+
+    visit_type_int(v, name, &val, errp);
 }
 
 static char *iosbb_get_last_mo_sms(Object *obj, Error **errp)
@@ -877,6 +893,9 @@ static void iosbb_instance_init(Object *obj)
         "idle, dialing, alerting, incoming, active or held (first live call)");
     object_property_add_str(obj, "last-dialed", iosbb_get_last_dialed, NULL);
     object_property_add_str(obj, "last-mo-sms", iosbb_get_last_mo_sms, NULL);
+    object_property_add(obj, "mo-sms-count", "int", iosbb_get_mo_sms_count, NULL, NULL, NULL);
+    object_property_set_description(obj, "mo-sms-count",
+        "SMS the guest has sent this boot: a change means a new last-mo-sms");
 }
 
 /* Board data: the DT spi2 node's protocol-version and max-data-size. */

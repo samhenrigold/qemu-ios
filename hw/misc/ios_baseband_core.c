@@ -1167,6 +1167,7 @@ static void sms_parse_submit(IosBbCore *bb, const uint8_t *p, unsigned n)
                        sizeof(bb->last_mo_text));
         break;
     }
+    bb->mo_count++;
 }
 
 /* ------------------------------------------------------------------- the AT engine */
@@ -1671,6 +1672,36 @@ bool ios_bb_sms_sender_ok(const char *number)
     for (const char *p = number; *p; p++) {
         if (*p < '0' || *p > '9') {
             return false;                        /* alphanumeric senders not modelled */
+        }
+    }
+    return true;
+}
+
+bool ios_bb_plmn_ok(const char *plmn)
+{
+    size_t n = strlen(plmn);
+
+    if (n != 5 && n != 6) {                      /* MCC (3) + MNC (2 or 3) */
+        return false;
+    }
+    for (const char *p = plmn; *p; p++) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ios_bb_carrier_ok(const char *name)
+{
+    size_t n = strlen(name);
+
+    if (!n || n >= sizeof(((IosBbCore *)0)->operator_long)) {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f || *p == '"') {   /* it goes out inside "..." in +COPS/+XCOPS */
+            return false;
         }
     }
     return true;

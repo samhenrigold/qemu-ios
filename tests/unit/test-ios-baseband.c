@@ -857,6 +857,14 @@ static void test_outgoing_sms(void)
 
     check_str(ios_bb_last_mo_sms_number(&bb), "14155550100", "MO number");
     check_str(ios_bb_last_mo_sms_text(&bb), "Hi", "MO text");
+    CHECK(bb.mo_count == 1);                     /* mo-sms-count: the host sees each send */
+
+    /* The host panel's network fields, validated as the modem's setters do. */
+    CHECK(ios_bb_plmn_ok("00101") && ios_bb_plmn_ok("310410") && !ios_bb_plmn_ok("0010") &&
+          !ios_bb_plmn_ok("0010123") && !ios_bb_plmn_ok("00a01") && !ios_bb_plmn_ok(""));
+    CHECK(ios_bb_carrier_ok("Test Network") && ios_bb_carrier_ok("12345678901234567890123456789012") &&
+          !ios_bb_carrier_ok("123456789012345678901234567890123") && !ios_bb_carrier_ok("") &&
+          !ios_bb_carrier_ok("a\"b") && !ios_bb_carrier_ok("a\nb"));
 }
 
 /* A text the default alphabet cannot carry goes out as UCS2 (DCS 08). */

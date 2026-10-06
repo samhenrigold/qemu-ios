@@ -58,6 +58,17 @@ bool qemu_ios_ui_compass(int heading_deg);
  * "usb-charger": the iPad charges); applies at the next USB enumeration.
  * false where the machine has no such control. */
 bool qemu_ios_ui_usb_charger(bool high_power);
+/* The cellular modem (the machine's "baseband-modem" child: -M iPhone-2G, or
+ * baseband=on on iPhone-4/n88). modem_set writes one of its properties from its
+ * string form on the QEMU thread (carrier, mcc-mnc, registered, sim-present,
+ * signal-dbm, incoming-call, remote-answer, remote-hangup, incoming-sms); false
+ * when there is no modem or no such property. A property's own refusal (a bad
+ * number, no channel to ring on) shows as "error" in the next status.
+ * modem_status: a JSON object of the modem's state as of the last refresh, which
+ * this call schedules (so poll it); NULL without a modem. Free it with modem_free. */
+bool qemu_ios_ui_modem_set(const char *property, const char *value);
+char *qemu_ios_ui_modem_status(void);
+void qemu_ios_ui_modem_free(char *status);
 /* Set the accelerometer's orientation vector outright (machine
  * "accel-orientation", 1-6), rather than stepping it like
  * qemu_ios_ui_rotate: the machine itself moves it (the iPad's power-off

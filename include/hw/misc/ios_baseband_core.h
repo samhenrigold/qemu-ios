@@ -156,6 +156,7 @@ typedef struct IosBbCore {
     int sms_mr;                /* last reference given out by +CMGS */
     char last_mo_num[32];      /* destination of the last guest send */
     char last_mo_text[512];    /* decoded text of it */
+    unsigned mo_count;         /* guest sends so far (mo-sms-count: a new one even with the same text) */
     IosBbSms store[IOS_BB_SMS_STORE];
     unsigned store_next;
 
@@ -193,6 +194,9 @@ const char *ios_bb_call_state(const IosBbCore *bb);
 
 /* A sender incoming-sms takes: 1-20 digits, optionally after a "+" (always sent as international). */
 bool ios_bb_sms_sender_ok(const char *number);
+/* mcc-mnc: 5 or 6 digits (MCC + 2- or 3-digit MNC). carrier: 1-32 printable bytes, no '"'. */
+bool ios_bb_plmn_ok(const char *plmn);
+bool ios_bb_carrier_ok(const char *name);
 
 /* Network-side SMS: deliver a 23.040 SMS-DELIVER as +CMT on DLCI 3. */
 bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text);
