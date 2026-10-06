@@ -13,6 +13,8 @@ DIR holds DeveloperDiskImage.dmg and its .signature (Xcode's DeviceSupport/<vers
   attach  com.apple.debugserver through lockdown (idevicedebugserverproxy) and lldb (imgtools/lldb/dsattach.py):
           attach, a breakpoint where the main thread's mach_msg returns (woken by a touch), backtrace into the app,
           continue, detach; the app must still be running afterwards
+  --expect-refused  the negative case: the IPA signed without get-task-allow (ldid -S, no entitlements);
+          debugserver must refuse the attach ("attach failed") and the app must keep running
 """
 import argparse, ctypes, ctypes.util, importlib.util, os, re, shutil, subprocess, sys, time, zipfile
 
@@ -59,7 +61,7 @@ def mount_image(mux_port, udid, signature):
     return e, (xml.value or b"").decode(errors="replace")
 
 
-def dev_signed(ipa, out):
+def dev_signed(ipa, out, debuggable=True):
     """A copy of `ipa` whose executable carries get-task-allow; (path, bundle id, host copy of the executable)."""
     import plistlib
     work = os.path.join(out, "ipa")
@@ -71,7 +73,7 @@ def dev_signed(ipa, out):
     exe = os.path.join(app, info["CFBundleExecutable"])
     ent = os.path.join(out, "get-task-allow.plist")
     open(ent, "wb").write(GET_TASK_ALLOW)
-    subprocess.run(["ldid", "-S" + ent, exe], check=True)
+    subprocess.run(["ldid", "-S" + ent if debuggable else "-S", exe], check=True)   # -S alone: no entitlements
     signed = os.path.join(out, "dev-signed.ipa")
     if os.path.exists(signed):
         os.unlink(signed)
@@ -98,6 +100,9 @@ def main():
                     "usr/lib/dyld); without it lldb reads every library from guest memory (about 100 s)")
     ap.add_argument("--ipa", default=HARNESS)
     ap.add_argument("--port", type=int, default=23970)
+    ap.add_argument("--expect-refused", action="store_true",
+                    help="the negative case: the IPA signed without get-task-allow; debugserver must refuse the attach "
+                    "and the app must keep running")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rg.itqmp.W, rg.itqmp.H = rg.ipad1_boot.MACHINES[a.machine]
@@ -132,6 +137,15 @@ def main():
         ok, det = b.wait_lock_screen(timeout=500)
         if not step("lock", ok, det):
             return 1
+        if major >= 7:
+            # 7.x: it_boot starts the guest agent (the unlock asks it), and file creation on the data volume
+            # (lockdownd's pairing escrow keybag, AFC's staging file) can stall until it has run
+            t0 = time.time()
+            while time.time() - t0 < 240 and "it_boot: package" not in open(b.serial, errors="replace").read():
+                time.sleep(3)
+            if not step("it_boot", "it_boot: package" in open(b.serial, errors="replace").read(),
+                        "reported %.0f s after the lock screen" % (time.time() - t0)):
+                return 1
         front, hello = "", False
         for _ in range(4):
             b.press("home"); time.sleep(1.5); b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(4)
@@ -147,15 +161,6 @@ def main():
             return 1
         if hello or front == "com.apple.purplebuddy":     # Setup Assistant: SpringBoard launches no app while it is up
             if not step("setup", *ai.walk_setup(b, step)):
-                return 1
-        if major >= 7:
-            # 7.x: file creation on the data volume (lockdownd's pairing escrow keybag, AFC's staging file) can stall
-            # until the guest's it_boot has run
-            t0 = time.time()
-            while time.time() - t0 < 240 and "it_boot: package" not in open(b.serial, errors="replace").read():
-                time.sleep(3)
-            if not step("it_boot", "it_boot: package" in open(b.serial, errors="replace").read(),
-                        "reported %.0f s after unlock" % (time.time() - t0)):
                 return 1
         if not step("lockdown", b.wait_mux(timeout=300), "ProductVersion %s, udid %s" % (a.product_version, b.udid)):
             return 1
@@ -174,7 +179,7 @@ def main():
             return 1
 
         # launch
-        ipa, bundle, exe = dev_signed(a.ipa, a.out)
+        ipa, bundle, exe = dev_signed(a.ipa, a.out, debuggable=not a.expect_refused)
         r = b.run(["ideviceinstaller", "install", ipa], timeout=600)
         if not step("install", "Complete" in r.stdout, (r.stdout + r.stderr).strip().splitlines()[-1:]):
             return 1
@@ -213,6 +218,13 @@ def main():
         out = open(os.path.join(b.dir, "lldb.log"), errors="replace").read()
         ds = dict((m.group(1), m.group(2)) for m in re.finditer(r"^ds: (\w+) (.*)$", out, re.M))
         frames = re.findall(r"^ds: frame \d+ frame #\d+: 0x[0-9a-f]+ (\S*)`", out, re.M)
+        if a.expect_refused:
+            att = ds.get("attach", "none")
+            step("refused", "attach failed" in att.lower() and not att.startswith("ok"), att)
+            time.sleep(3)
+            alive = pid()
+            step("alive", alive == app, "pid %s after the refused attach (was %s)" % (alive, app))
+            return 0 if all(ok for _, ok, _ in results) else 1
         step("attach", ds.get("attach", "").startswith("ok"), ds.get("attach", "none"))
         step("break", ds.get("stop", "").startswith("stopped at-breakpoint") and os.path.basename(exe) in frames,
              "%s; frames %s" % (ds.get("stop"), " > ".join(frames)))
