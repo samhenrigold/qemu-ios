@@ -281,3 +281,8 @@ documented quirk/patch, S stub.
     early; the harness waits for `guest-shutdown-confirmed`.
 11. **Unlock timing.** The lock screen darkens about 8 s after waking. The harness's first slide can land
     on a dark panel after usbmux attaches; its retry handles it.
+12. **GL on 6.0 beta 1 (10A5316k).** The beta's shared-cache OpenGLES carries no `__GLIFunctionDispatchRec`
+    @encode, which the GL front end reads its macro-context dispatch layout from on 6.x, so FirmwareKit's fit check
+    refuses `ca_ogl` ("QuartzCore or CoreImage asks for a macro context ...") and the beta runs software
+    CoreAnimation with no GL app (n81ap/n90ap-10A5316k: ca_ogl off). Needs a layout source other than the @encode
+    (e.g. the stock trampolines alone, as the 914-field record's slots are already named from them).
