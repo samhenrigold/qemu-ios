@@ -168,7 +168,7 @@ def main():
         a.boot_timeout = 1400 if a.major >= 7 else 560
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
-    gl = a.gl_tap if a.gl_tap is not None else (",".join(map(str, GL_TAP[a.machine])) if a.ipa == HARNESS else "")
+    gl = a.gl_tap if a.gl_tap is not None else (",".join(map(str, GL_TAP[a.machine])) if bundle == "com.qemuios.harness" else "")
     steps = []
 
     def step(name, ok, detail):

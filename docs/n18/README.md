@@ -137,7 +137,6 @@ d = '$F/userland-app/pristine'
 with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
     r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
 # ipad1_nand.py build ... --out $F/userland-app/nand; dev3 = a copy + erased NOR; ipad1_keybag.py --board n18
-cc -o build/ipad1-tools/sbicons tests/ipad1/sbicons.c $(pkg-config --cflags --libs libimobiledevice-1.0)
 tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-nov.bin --nor $F/dev3/nor.bin \
     --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```

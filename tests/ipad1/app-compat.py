@@ -247,6 +247,21 @@ def _load_regress():
 
 
 SBICONS = os.path.join(ROOT, "build/ipad1-tools/sbicons")
+SBICONS_SRC = os.path.join(HERE, "sbicons.c")
+
+
+def sbicons():
+    """SBICONS, built here from sbicons.c when missing or stale: a worktree without it used to read as "no slot"."""
+    if not os.path.exists(SBICONS) or os.path.getmtime(SBICONS) < os.path.getmtime(SBICONS_SRC):
+        os.makedirs(os.path.dirname(SBICONS), exist_ok=True)
+        flags = subprocess.run(["pkg-config", "--cflags", "--libs", "libimobiledevice-1.0"],
+                               capture_output=True, text=True, check=True).stdout.split()
+        staged = "%s.%d" % (SBICONS, os.getpid())
+        cc = subprocess.run(["cc", "-o", staged, SBICONS_SRC] + flags, capture_output=True, text=True)
+        if cc.returncode:
+            raise RuntimeError("sbicons compiler failed: " + cc.stderr)
+        os.replace(staged, SBICONS)
+    return SBICONS
 
 
 def icon_slot(b, bundle):
@@ -255,9 +270,7 @@ def icon_slot(b, bundle):
     sbservices icon state is [dock, page1, page2, ...]; each page is rows of 4 cells
     (a cell is a dict with displayIdentifier/bundleIdentifier, or False for empty).
     home_page is 1-based (page1 = first shown home screen, needs 0 swipes)."""
-    if not os.path.exists(SBICONS):
-        return None
-    p = b.run([SBICONS], timeout=45)
+    p = b.run([sbicons()], timeout=45)
     if p.returncode != 0 or not p.stdout:
         return None
     try:
@@ -299,9 +312,7 @@ def pin_to_page1(b, bundle, rows=5):
     set_icon_state, so launching needs no page swipe. Returns (1, row, col) or None.
     rows: the page's height (5 on the iPad, 4 on the 320x480 iPhone/iPod): a full page is left alone,
     since 4.0 beta 1's SpringBoard takes a fifth row on a 4-row page and drops the icon."""
-    if not os.path.exists(SBICONS):
-        return None
-    p = b.run([SBICONS], timeout=45)
+    p = b.run([sbicons()], timeout=45)
     if p.returncode != 0 or not p.stdout:
         return None
     try:
@@ -327,7 +338,7 @@ def pin_to_page1(b, bundle, rows=5):
                 row.append(False)
             if row[c] is False:
                 row[c] = cell
-                q = subprocess.run([SBICONS, "set"], input=plistlib.dumps(state), env=b.env(),
+                q = subprocess.run([sbicons(), "set"], input=plistlib.dumps(state), env=b.env(),
                                    capture_output=True, timeout=45)
                 if q.returncode != 0:
                     return None
