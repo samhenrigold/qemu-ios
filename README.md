@@ -2,34 +2,34 @@
 
 Built with use from agentic coding products.
 
-This is a fork of [devos50/qemu-ios](https://github.com/devos50/qemu-ios) that emulates two legacy
-Apple devices well enough to run their stock iOS to the home screen, install and run App Store apps of
-the era (including OpenGL ES games through a host GL bridge), talk to `libimobiledevice` over an
-emulated USB link, and persist guest writes across reboots -- and a third, the iPod touch 1G, as far as
-its home screen:
+QEMU-iOS emulates legacy Apple devices well enough to run their stock firmware: from the boot ROM or a
+kernel bundle to the home screen, with touch, buttons, display, audio, Wi-Fi, USB (usbmux/AFC through
+libimobiledevice), persistent storage, a fake cellular network on the iPhones, and OpenGL ES through a
+host GL bridge. It is the emulator inside [Light Touch](https://github.com/samhenrigold/LightTouchMac).
 
-| Machine | Device | SoC | Models | Firmwares reached |
-|---|---|---|---|---|
-| `-M iPod-Touch` | iPod touch 2G (n72ap) | S5L8720 | `hw/arm/ipod_touch_2g.c`, `hw/arm/ipod_touch_*.c` | iOS 3.1.3 (7E18), 4.2.1 (8C148); 2.1.1 (5F138) with the host setting the clock |
-| `-M ipad1` | iPad 1 (k48ap) | S5L8930 (A4) | `hw/arm/ipad1.c`, `hw/arm/s5l8930_*.c`, `include/hw/arm/s5l8930.h` | iOS 3.2 (7B367), 3.2.2 (7B500), 4.2.1 (8C148), through the real iBoot chain |
-| `-M iPod-Touch-4G` | iPod touch 4G (n81ap) | S5L8930 (A4) | the iPad's machine and models, board `a4_n81` in `hw/arm/ipad1.c`; `docs/n81/README.md` | iOS 4.2.1 (8C148) to the home screen with touch, usbmux/AFC, Wi-Fi, clean power-off, from a direct kernel bundle (no iBoot yet) |
-| `-M iPhone-4` | iPhone 4 GSM (n90ap) | S5L8930 (A4) | board `a4_n90` in `hw/arm/ipad1.c`; `docs/n90/README.md` | iOS 4.2.1 (8C148) to the home screen ("No Service": baseband pending) with touch, Wi-Fi, usbmux/AFC, clean power-off, from a direct kernel bundle |
-| `-M iPod-Touch-1G` | iPod touch 1G (n45ap) | S5L8900 | `hw/arm/ipod_touch_1g.c`, `hw/arm/s5l8900_*.c`, the `ipod_touch_*.c` models with `s5l8900`/variant properties; `docs/ipod1g/README.md` | iPhone OS 1.1 (3A101a) to the home screen with touch, through the real bootrom and iBoot-204 (devos50's public n45ap assets), LayerKit composited through the host GL bridge on a prepared device; no app or USB work yet |
+| Machine (`-M`) | Device | SoC | Board docs |
+|---|---|---|---|
+| `iPod-Touch-1G` | iPod touch (1st gen, n45ap) | S5L8900 | `docs/ipod1g/README.md` |
+| `iPhone-2G` | iPhone (m68ap) | S5L8900 | `docs/m68/README.md` |
+| `iPod-Touch` | iPod touch (2nd gen, n72ap) | S5L8720 | `docs/capabilities.md`, `docs/ipod/` |
+| `n18` | iPod touch (3rd gen, n18ap) | S5L8922 | `docs/n18/README.md` |
+| `n88` | iPhone 3GS (n88ap) | S5L8920 | `docs/n88/README.md` |
+| `iPod-Touch-4G` | iPod touch (4th gen, n81ap) | A4 (S5L8930) | `docs/n81/README.md` |
+| `iPhone-4` | iPhone 4 GSM (n90ap) | A4 (S5L8930) | `docs/n90/README.md` |
+| `ipad1` | iPad (k48ap) | A4 (S5L8930) | `docs/ipad1/README.md` |
+
+Which firmware builds each board runs, and how well, is tracked in Light Touch's firmware catalog
+(`LightTouchMac/Resources/firmware-catalog.json`): every build is prepared from Apple's stock IPSW.
 
 Shared between the boards: the host GL executor (`hw/arm/gles-host*.c`), the guest-service hypercalls
-(`hw/arm/guest-services.c`, `guest-gles.c`, `guest-pasteboard.c`, `guest-package.c`) and the typed guest
-agent RPC (`hw/arm/ipod-agent.c`).
+(`hw/arm/guest-services.c`, `guest-gles.c`, `guest-pasteboard.c`, `guest-package.c`), the typed guest
+agent RPC (`hw/arm/ipod-agent.c`) and the baseband model (`hw/misc/ios_baseband*.c`, `docs/baseband/`).
 
-The fork is one third of Light Touch. The native macOS app is the sibling
-[LightTouchMac](https://github.com/samhenrigold/LightTouchMac) repository; it links this emulator as
-`libqemu-arm.dylib`, ships the guest tools built from `contrib/`, and its Swift preparer (`firmwarekit`)
-is checked against the Python pipeline here. The third part is the
-[usbmuxd fork](https://github.com/samhenrigold/usbmuxd) (branch `qemu-zlp`) that carries the emulated
-USB device to libimobiledevice; `docs/tcp-usb-protocol.md` is the wire contract between the two.
-
-**Project status lives in LightTouchMac's `docs/STATUS.md`** (branch `multidevice`): what is done,
-what is running, what is left, and how each line was checked. This README is only the map of this
-repository.
+Light Touch is three repositories: this emulator; the macOS app
+[LightTouchMac](https://github.com/samhenrigold/LightTouchMac), which links it as `libqemu-arm.dylib`
+and ships the guest tools built from `contrib/`; and a [usbmuxd fork](https://github.com/samhenrigold/usbmuxd)
+(branch `idle-poll`) that carries the emulated USB device to libimobiledevice (`docs/tcp-usb-protocol.md`
+is the wire contract).
 
 ## What is where
 
@@ -68,8 +68,7 @@ mkdir build && cd build
 The app's library is a relink of the same objects: `contrib/macos-app/make-dylib-macos.sh BUILD_DIR`
 writes `BUILD_DIR/libqemu-arm.dylib`, exporting only the `qemu_ios_*` ABI. LightTouchMac's
 `Configuration/Shared.xcconfig` points `QEMU_IOS_DIR`/`QEMU_BUILD_DIR` at a checkout and such a build
-directory. The multi-device app needs the dylib from this `ipad1` line (the iPod-only `ipod_touch_2g`
-branch lacks the iPad exports).
+directory.
 
 **The contract with LightTouchMac** is `contrib/export-guest-artifacts.sh OUT [BUILD_DIR]`: it builds every
 guest component from a copy of `contrib/*` (through `contrib/guest-package/build.sh`, so the checkout is
@@ -147,10 +146,15 @@ and validates the staged tree against `manifest.json`; a pin bump is a LightTouc
 stages for LightTouchMac (moving them out of `docs/` is on another track). `docs/ipad1/screens/`
 holds the iPad evidence screenshots; put new evidence in `qemu-ios-files` instead.
 
-## Upstream
+## Upstream and licence
 
-QEMU-iOS started as devos50's emulator for the iPod touch 1G and 2G. Its write-ups are still the best
-introduction to the S5L8720 peripherals:
+QEMU-iOS is built on [QEMU](https://www.qemu.org) and grew out of devos50's
+[qemu-ios](https://github.com/devos50/qemu-ios), the emulator for the iPod touch 1G and 2G. devos50's
+write-ups are still the best introduction to the S5L8720 peripherals:
 [running the iPod touch 1G](https://devos50.github.io/blog/2022/ipod-touch-qemu-pt2/) and
 [the reverse-engineering process](https://devos50.github.io/blog/2022/ipod-touch-qemu/). `RUNNING.md`
 is upstream's iPod touch 2G guide, kept with a note on what still applies.
+
+Like QEMU, this repository is licensed under the GNU General Public License version 2 (`COPYING`); some
+files carry other compatible licences in their headers (`LICENSE` explains QEMU's licensing). No Apple
+firmware is part of the repository.
