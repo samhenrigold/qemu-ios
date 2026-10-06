@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='ipad-regress-inputs-') as tmp:
         R.device_args(a);assert a.activated is want
     for strict,want in ((False,0),(True,1)):
         argv=['regress.py','--checks','appinstall','--out',tmp]+(['--require-inputs'] if strict else [])
-        with patch.object(R.sys,'argv',argv),patch.object(R,'device_args'),patch.object(ffmpeg_guard,'check',return_value=None),contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(R.sys,'argv',argv),patch.object(R,'device_args',side_effect=lambda a:setattr(a,'major',3)),patch.object(ffmpeg_guard,'check',return_value=None),contextlib.redirect_stdout(io.StringIO()):
             assert R.main()==want
 print('PASS current/legacy activation records and strict skipped-check acceptance')
 
