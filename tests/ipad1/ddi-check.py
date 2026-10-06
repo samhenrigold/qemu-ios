@@ -2,10 +2,10 @@
 """Apple's debugserver on a kboot board, from a real DeveloperDiskImage (docs/guest-debug.md).
 
     tests/ipad1/ddi-check.py --machine iPod-Touch-4G --device DEV --product-version 6.1.6 \\
-        --ddi DIR [--overlay OVL] [--ipa IPA] --out OUT
+        --ddi DIR [--overlay OVL] [--sysroot ROOT] [--ipa IPA] --out OUT
 
-DIR holds DeveloperDiskImage.dmg and its .signature (Xcode's DeviceSupport/<version>). OVL: an overlay already past
-Setup Assistant (SpringBoard launches no app while Setup is up); without one the device must need no Setup (4.x).
+DIR holds DeveloperDiskImage.dmg and its .signature (Xcode's DeviceSupport/<version>). Setup Assistant is walked
+(app-install.py's walk_setup) when it is up; SpringBoard launches no app until it is done.
 
   mount   the DDI through mobile_image_mounter with its signature (iOS < 7: uploaded over AFC, then MountImage)
   launch  the IPA (default the Harness) signed with get-task-allow, as Xcode signs a development build, installed
@@ -22,6 +22,10 @@ HARNESS = os.path.join(ROOT, "contrib/it-harness/build/Harness.ipa")
 spec = importlib.util.spec_from_file_location("ipad1_regress", os.path.join(HERE, "regress.py"))
 rg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rg)
+spec = importlib.util.spec_from_file_location("ipad1_app_install", os.path.join(HERE, "app-install.py"))
+ai = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ai)
+ai.rg = rg                     # walk_setup scales its taps by this module's panel size
 GET_TASK_ALLOW = b"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>get-task-allow</key><true/></dict></plist>
@@ -88,7 +92,10 @@ def main():
     ap.add_argument("--product-version", required=True)
     ap.add_argument("--boot-timeout", type=int, default=1500)
     ap.add_argument("--ddi", required=True)
-    ap.add_argument("--overlay")
+    ap.add_argument("--overlay", help="a NAND overlay used in place (kept, shut down cleanly at the end): the first run "
+                    "on a new one walks Setup, later runs start past it")
+    ap.add_argument("--sysroot", help="host libraries for lldb (dsc_extract.py of the build's shared cache, plus "
+                    "usr/lib/dyld); without it lldb reads every library from guest memory (about 100 s)")
     ap.add_argument("--ipa", default=HARNESS)
     ap.add_argument("--port", type=int, default=23970)
     ap.add_argument("--out", required=True)
@@ -112,23 +119,44 @@ def main():
         return ok
 
     b = rg.Boot(a, "ddi", overlay=a.overlay, usb=True)
+    if a.overlay:
+        # The host's pair records live next to the overlay: a device that paired once asks 7.x's "Trust This
+        # Computer?" again for a new host, and nothing answers it here
+        conf = os.path.abspath(a.overlay).rstrip("/") + ".conf"
+        os.makedirs(conf, exist_ok=True)
+        shutil.rmtree(os.path.join(b.dir, "conf"), ignore_errors=True)
+        os.symlink(conf, os.path.join(b.dir, "conf"))
     proxy = None
     try:
         b.start()
         ok, det = b.wait_lock_screen(timeout=500)
         if not step("lock", ok, det):
             return 1
-        front = ""
+        front, hello = "", False
         for _ in range(4):
             b.press("home"); time.sleep(1.5); b.drag(rg.UNLOCK_FROM, rg.UNLOCK_TO); time.sleep(4)
             st, out = rg.itqmp.agent(b.qmp, "frontmost")
             front = out.decode(errors="replace").split("\n")[0]
             st, lock = rg.itqmp.agent(b.qmp, "lockstatus")
-            if b"locked=0" in lock:
+            # 7.x's Setup starts on a Hello screen that lockstatus calls locked; its slide opens the language page
+            hello = major >= 7 and b"locked=0" not in lock and "English" in ai.ocr_upright(b.shot("opened"))
+            if b"locked=0" in lock or hello:
                 break
-        if not step("unlock", b"locked=0" in lock and front != "com.apple.purplebuddy",
-                    "front %s, %s" % (front, lock.decode(errors="replace").strip())):
+        if not step("unlock", b"locked=0" in lock or hello,
+                    "front %s, %s%s" % (front, lock.decode(errors="replace").strip(), ", Hello slid" if hello else "")):
             return 1
+        if hello or front == "com.apple.purplebuddy":     # Setup Assistant: SpringBoard launches no app while it is up
+            if not step("setup", *ai.walk_setup(b, step)):
+                return 1
+        if major >= 7:
+            # 7.x: file creation on the data volume (lockdownd's pairing escrow keybag, AFC's staging file) can stall
+            # until the guest's it_boot has run
+            t0 = time.time()
+            while time.time() - t0 < 240 and "it_boot: package" not in open(b.serial, errors="replace").read():
+                time.sleep(3)
+            if not step("it_boot", "it_boot: package" in open(b.serial, errors="replace").read(),
+                        "reported %.0f s after unlock" % (time.time() - t0)):
+                return 1
         if not step("lockdown", b.wait_mux(timeout=300), "ProductVersion %s, udid %s" % (a.product_version, b.udid)):
             return 1
 
@@ -137,9 +165,10 @@ def main():
             r = b.run(["ideviceimagemounter", "mount", dmg, dmg + ".signature"], timeout=600)
             detail = (r.stdout + r.stderr).strip().splitlines()[-1:]
         else:
-            b.run(["ideviceimagemounter", "mount", dmg, dmg + ".signature"], timeout=600)   # the AFC upload
+            r = b.run(["ideviceimagemounter", "mount", dmg, dmg + ".signature"], timeout=600)   # the AFC upload
             e, xml = mount_image(b.mux_port, b.udid, dmg + ".signature")
-            detail = ["MountImage %d %s" % (e, " ".join(re.findall(r"<string>([^<]*)</string>", xml)))]
+            detail = ["ideviceimagemounter: %s; MountImage %d %s" % ((r.stdout + r.stderr).strip().splitlines()[-1:], e,
+                                                                     " ".join(re.findall(r"<string>([^<]*)</string>", xml)))]
         listing = b.run(["ideviceimagemounter", "list"], timeout=60).stdout
         if not step("mount", "ImagePresent: true" in listing, "; ".join(detail) + "; " + " ".join(listing.split()[:6])):
             return 1
@@ -168,12 +197,12 @@ def main():
         wake = os.path.join(b.dir, "wake")
         if os.path.exists(wake):
             os.unlink(wake)
-        env = dict(os.environ, DSPORT=str(a.port), DSPID=app, DSEXE=exe, DSWAKE=wake)
+        env = dict(os.environ, DSPORT=str(a.port), DSPID=app, DSWAKE=wake, DSLOG=os.path.join(b.dir, "gdb-remote.log"), DSSYSROOT=a.sysroot or "")
         log = open(os.path.join(b.dir, "lldb.log"), "w")
         lldb = subprocess.Popen(["lldb", "-b", "-o", "command script import " + os.path.join(ROOT, "imgtools/lldb/dsattach.py")],
                                 env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         t0 = time.time()
-        while lldb.poll() is None and time.time() - t0 < 480:
+        while lldb.poll() is None and time.time() - t0 < 300:
             if os.path.exists(wake):
                 os.unlink(wake)
                 time.sleep(1)
@@ -185,7 +214,8 @@ def main():
         ds = dict((m.group(1), m.group(2)) for m in re.finditer(r"^ds: (\w+) (.*)$", out, re.M))
         frames = re.findall(r"^ds: frame \d+ frame #\d+: 0x[0-9a-f]+ (\S*)`", out, re.M)
         step("attach", ds.get("attach", "").startswith("ok"), ds.get("attach", "none"))
-        step("break", ds.get("stop", "").startswith("stopped breakpoint"), "%s; frames %s" % (ds.get("stop"), " > ".join(frames)))
+        step("break", ds.get("stop", "").startswith("stopped at-breakpoint") and os.path.basename(exe) in frames,
+             "%s; frames %s" % (ds.get("stop"), " > ".join(frames)))
         step("detach", ds.get("detach", "").startswith("ok"), "continue %s, detach %s" % (ds.get("continue"), ds.get("detach")))
         time.sleep(3)
         alive = pid()
@@ -194,6 +224,8 @@ def main():
     finally:
         if proxy:
             proxy.kill()
+        if a.overlay and getattr(b, "qmp", None):
+            b.powerdown()     # a clean shutdown: the overlay keeps Setup's result for the next run
         b.stop()
         for name, ok, det in results:
             print("%s  %-8s %s" % ("PASS" if ok else "FAIL", name, det))
