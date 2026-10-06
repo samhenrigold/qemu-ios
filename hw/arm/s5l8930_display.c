@@ -98,6 +98,17 @@ struct S5L8930DisplayState {
     size_t front_size;
     uint32_t front_key[4];   /* w, h, fmt, stride of the latched frame */
     bool front_valid;
+    /*
+     * What the console surface holds, so a refresh that has nothing new skips the 3 MiB copy and the
+     * update (the panel's front buffer is redrawn only by a latch, and a quiet panel relatches every
+     * VBL): front_gen counts latches that changed the picture; shown_* is what display_update drew.
+     * Anything else (live layers before the first swap, a new surface, the panel going dark) draws.
+     */
+    uint8_t *front_next;     /* the relatch's scratch: kept only if it differs */
+    uint64_t front_gen;
+    uint64_t shown_gen;
+    DisplaySurface *shown_surface;
+    int shown;               /* 0 nothing known, 1 the latched front at shown_gen, 2 dark */
     unsigned quiet_vbls;     /* VBLs since the last swap */
     uint32_t swaps;          /* swaps latched since reset: frames the panel showed ("swaps") */
     FrameTimeline ftl;       /* per-vsync latched-frame ring in guest-virtual time */
@@ -423,6 +434,7 @@ static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned 
 
 static void display_invalidate(void *opaque)
 {
+    ((S5L8930DisplayState *)opaque)->shown = 0;     /* the next refresh draws */
 }
 
 /* Panel size: +0x1030, or the default before the kernel programs it. */
@@ -594,9 +606,21 @@ static void front_latch(S5L8930DisplayState *s)
     need = (size_t)w * h * 4;
     if (need > s->front_size) {
         s->front = g_realloc(s->front, need);
+        s->front_next = g_realloc(s->front_next, need);
         s->front_size = need;
     }
-    s->front_valid = compose(s, w, h, (uint32_t *)s->front, s->front_key);
+    uint32_t key[4];
+    bool valid = compose(s, w, h, (uint32_t *)s->front_next, key);
+    /* Swap in the new picture only when it differs: an unchanged relatch leaves front_gen alone. */
+    if (valid != s->front_valid || memcmp(key, s->front_key, sizeof(key)) ||
+        (valid && memcmp(s->front_next, s->front, need))) {
+        uint8_t *t = s->front;
+        s->front = s->front_next;
+        s->front_next = t;
+        memcpy(s->front_key, key, sizeof(key));
+        s->front_valid = valid;
+        s->front_gen++;
+    }
 }
 
 /* ponytail: full redraw every host refresh (~30 Hz, 3 MiB), add dirty
@@ -616,6 +640,7 @@ static void display_update(void *opaque)
     if (surface_width(surface) != w || surface_height(surface) != h) {
         qemu_console_resize(s->con, w, h);
         surface = qemu_console_surface(s->con);
+        s->shown = 0;
     }
     if (surface_bits_per_pixel(surface) != 32) {
         return;
@@ -626,6 +651,11 @@ static void display_update(void *opaque)
     lit = compose(s, w, h, NULL, key);
     if (lit && s->front_valid && !memcmp(key, s->front_key, sizeof(key))) {
         img = (const uint32_t *)s->front;
+        if (s->shown == 1 && s->shown_gen == s->front_gen && s->shown_surface == surface) {
+            return;     /* the surface already holds this latched frame */
+        }
+        s->shown = 1;
+        s->shown_gen = s->front_gen;
     } else if (lit) {
         live = g_new(uint32_t, (size_t)w * h);
         compose(s, w, h, live, NULL);
@@ -633,6 +663,15 @@ static void display_update(void *opaque)
     } else {
         img = NULL;     /* no layer: the panel is off (ApplePinotLCD _lcdEnable 0) */
     }
+    if (!img) {
+        if (s->shown == 2 && s->shown_surface == surface) {
+            return;     /* still dark */
+        }
+        s->shown = 2;
+    } else if (img == live) {
+        s->shown = 0;   /* live layers: drawn every refresh, as they may change without a swap */
+    }
+    s->shown_surface = surface;
     for (unsigned y = 0; y < h; y++) {
         uint8_t *d = surface_data(surface) + y * surface_stride(surface);
 
@@ -666,6 +705,7 @@ static void s5l8930_display_reset(DeviceState *dev)
     memset(s->tvout, 0, sizeof(s->tvout));
     memset(&s->dart, 0, sizeof(s->dart));
     s->front_valid = false;
+    s->shown = 0;
     s->swaps = 0;
     frame_timeline_reset(&s->ftl);
 
