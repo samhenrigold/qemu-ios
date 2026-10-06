@@ -182,6 +182,41 @@ theapplewiki's SundanceVail 10A5316k (iPhone3,1) keys verify 18 of 18; BuildMani
 and iPhone3,1. With the clock pinned (`rtc-epoch`, 2012-06-16): regress usbmux, afc, persist PASS; app-install
 (Setup walked, install, launch, power-off) PASS; ca_ogl off and no GL app, as N81's beta.
 
+## iOS 7.0 beta 1 (11A4372q)
+
+FirmwareKit `n90ap-11A4372q` (LightTouchMac n90-7b1; 11D257's recipe plus `rtc_epoch` 1371297600, 2013-06-15 12:00
+UTC; status user_ipsw). IPSW: archive.org iOS_Firmware_Exhibit_Collection `iPhone3,1_7.0_11A4372q_Restore.ipsw`,
+SHA-1 86d8140538bc715a81f6eb1b84d1fc647f115f67 (1,147,045,272 bytes; BetaArchive's copy in Apple_iPhone_Firmware has
+the same SHA-1); theapplewiki keys verify 17 of 17; BuildManifest names 11A4372q, 7.0, iPhone3,1, n90ap.
+app-install (`--boot-timeout 1400 --gl-tap 0.5,0.165`): mux, install, lock, Setup walk, icon, launch, GL, power-off
+PASS; also from a saved post-Setup overlay. The guest clock stays at 2013-06-15 throughout. regress persist, usbmux,
+afc PASS; boot fails here only on the 7.x it_boot line (`it_boot: package 16 (read-only root)`, minutes into the
+boot), which fw-a4-n90-7's d1531148e6/35714b76d2 handle: with that regress, boot PASS (Setup's first page, lockdown
+7.0 FactoryActivated).
+
+What differs from 7.1.2:
+- **It expires.** lockdownd's `check_build_expired` compares `time()` with 0x51ef1901 (2013-07-23 23:55 UTC) on a
+  Beta ReleaseType. Past it the state is Expired, the brick goes on, and `expiration_callback` ("This milk smells
+  bad") makes installation_proxy answer ServiceProhibited. `rtc-epoch` pins the D1815 clock and the agent's clock
+  offset (op 0x165), as on 6.0 beta 1.
+- **timed.** With Set Automatically on, timed took NTP over Wi-Fi to 2026. FirmwareKit seeds com.apple.timed
+  `TMAutomaticTimeOnlyEnabled` false (7.x's key) and `TMAutomaticTimeEnabled` false (6.x's key, which 7.0's timed
+  migrates to `TMAutomaticTimeZoneEnabled`) for a dated recipe. timed still asks time.apple.com, and does not set it.
+  6.0 beta 1's timed (CoreTime-77) has the same NTP fetch and keeps Set Automatically as `TMAutomaticTimeEnabled`
+  (its pref-key table); its rows get the same seed when re-created.
+- **Activation.** lockdownd turns the brick state on for a data ark without `-BrickState` and lifts it only for a
+  valid activation record ("not a valid product for Factory Action"); Setup's `isBricked` then sends it online to
+  activate. FirmwareKit seeds `-BrickState` false for a dated recipe ("factoryactivation unbricks by default").
+- **GL.** OpenGLES exports glDrawArraysInstancedAPPLE, glDrawElementsInstancedAPPLE and glVertexAttribDivisorAPPLE
+  (export entries only; they map to the EXT rows).
+- **Setup.** With live internet the Apple ID page sometimes ignored "Skip This Step" while its spinner ran (one run
+  in three). app-install walks a dated device's Setup offline (restrict=on): Setup says once there is no connection
+  (Continue) and shows no Apple ID page. The harness's Wi-Fi has no web proxy at 10.0.2.100:3128 (the PAC's first
+  choice), so the guest ARPs for it before every direct connection; the app serves that proxy.
+- **First boot.** A data-migration bar for 3-4 min before Hello; app-install uses regress's 7.x colour floor.
+- "Sandbox: ... application requires container but none set" lines for system apps (Mail) appear on every 7.0b1
+  boot, passing runs included; they do not stop the Harness.
+
 ## Guest debugging
 
 7.1.2 11D257: gdbstub + lldb with kernel and userland symbols PASS (`tests/ipad1/debug-check.py`; the cache's local symbols are `<redacted>` on 7.x). No debugserver: iOS ships none, and the 7.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
