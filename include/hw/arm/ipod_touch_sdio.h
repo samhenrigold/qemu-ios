@@ -192,6 +192,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
 #define BDC_HDRLEN_STD      4
 #define BDC_MAX_HDRLEN      6
 #define BDC_PROTO_VER       2
+#define TOE_TX_CSUM_OL      0x00000001   /* wlioctl.h: toe_ol bit, the dongle checksums transmitted TCP/UDP */
 
 #define ETHER_TYPE_BRCM     0x886c
 #define BCMETH_SUBTYPE      0x8001
@@ -373,6 +374,9 @@ typedef struct IPodTouchSDIOState
     bool host_netif;         /* the host set mcast_list: its network interface is attached */
     QEMUTimer *join_timer;   /* auto-join clock, armed once the host is up and has a netif */
     unsigned tx_log;
+    /* The TCP offload engine the host enabled ("toe", "toe_ol"). With TOE_TX_CSUM_OL the host leaves the IPv4 header
+     * and TCP/UDP checksums to the dongle (6.x's AppleBCMWLAN does), which fills them in before the frame goes out. */
+    uint32_t toe, toe_ol;
     unsigned host_rx_log;
 
     BCMSDIOChip chip;
