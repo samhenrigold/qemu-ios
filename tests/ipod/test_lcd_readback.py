@@ -37,6 +37,8 @@ typedef struct {
     uint32_t w1_display_depth_info, w1_framebuffer_base;
     uint32_t w1_hspan, w1_display_resolution_info;
     uint32_t pw, ph;
+    bool ctrl_readback;
+    uint32_t fb_base;
 } IPodTouchLCDState;
 #define LCD_FB_WIDTH  320
 #define LCD_FB_HEIGHT 480

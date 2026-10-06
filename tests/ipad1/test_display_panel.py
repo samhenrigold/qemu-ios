@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Display panel= size (issue #21): iBoot's native 1024x768 geometry words read back as the panel's.
+"""Display panel= size (issue #21): iBoot's native geometry words (the board's panel) read back as the panel's.
 
 AppleDisplayPipe/AppleCLCD adopt the panel geometry iBoot programmed (size, UI layer source/end,
 stride, CLCD timing size). With panel=WxH those words must read as the panel's; on the shipped
@@ -24,10 +24,13 @@ code = r'''
 #include <stdint.h>
 #include <stdio.h>
 typedef uint64_t hwaddr;
+typedef struct { uint32_t panel, native; } DisplayPipe;
 ''' + defines + '\n' + m.group() + r'''
 int main(void)
 {
     const uint32_t native = 1024u << 16 | 768, tall = 1280u << 16 | 768;
+    DisplayPipe k48 = { 0, native }, k48t = { tall, native };
+#define panel_word(pn, a, v) panel_word((pn) ? &k48t : &k48, a, v)
     hwaddr geometry[] = { DP_SIZE, DP_UI_BASE(0) + DP_UI_SRC_SIZE, DP_UI_BASE(0) + DP_UI_DST_END,
                           DP_UI_BASE(1) + DP_UI_SRC_SIZE, DP_UI_BASE(1) + DP_UI_DST_END };
     for (unsigned i = 0; i < sizeof(geometry) / sizeof(geometry[0]); i++) {
@@ -40,7 +43,15 @@ int main(void)
     assert(panel_word(tall, DP_UI_BASE(0) + DP_UI_STRIDE, 4096 << 4 | 2) == (4096 << 4 | 2));
     assert(panel_word(tall, CLCD_SIZE, 1023u << 16 | 767) == (1279u << 16 | 767));
     assert(panel_word(tall, 0x1038, native) == native);                  /* not a geometry word */
-    puts("PASS: panel= geometry words read as the panel's; the shipped panel reads raw");
+#undef panel_word
+    const uint32_t n90 = 640u << 16 | 960, big = 768u << 16 | 1024;
+    DisplayPipe p = { big, n90 }, q = { 0, n90 };
+    assert(panel_word(&p, DP_SIZE, n90) == big);
+    assert(panel_word(&p, DP_SIZE, native) == native);                  /* K48's geometry is not N90's */
+    assert(panel_word(&q, DP_SIZE, n90) == n90);
+    assert(panel_word(&p, DP_UI_BASE(0) + DP_UI_STRIDE, 640 * 4 | 2) == (768 * 4 | 2));
+    assert(panel_word(&p, CLCD_SIZE, 639u << 16 | 959) == (767u << 16 | 1023));
+    puts("PASS: panel= geometry words read as the panel's (K48 and a portrait board); unset reads raw");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='display-panel-') as d:

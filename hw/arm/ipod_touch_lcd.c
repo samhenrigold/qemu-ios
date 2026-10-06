@@ -359,7 +359,7 @@ static uint64_t ipod_touch_lcd_read(void *opaque, hwaddr addr, unsigned size)
              */
             return s->fb_base ? 3 : 2;
         case 0x1b24:
-            return s->fb_base ? (319u << 16) | 479u : 0;
+            return s->fb_base ? ((s->pw - 1) << 16) | (s->ph - 1) : 0;
 	case 0x1b14:
 	    return 0x3;
         default:
