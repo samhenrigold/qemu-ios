@@ -199,11 +199,14 @@ What differs from 7.1.2:
   Beta ReleaseType. Past it the state is Expired, the brick goes on, and `expiration_callback` ("This milk smells
   bad") makes installation_proxy answer ServiceProhibited. `rtc-epoch` pins the D1815 clock and the agent's clock
   offset (op 0x165), as on 6.0 beta 1.
-- **timed.** With Set Automatically on, timed took NTP over Wi-Fi to 2026. FirmwareKit seeds com.apple.timed
-  `TMAutomaticTimeOnlyEnabled` false (7.x's key) and `TMAutomaticTimeEnabled` false (6.x's key, which 7.0's timed
-  migrates to `TMAutomaticTimeZoneEnabled`) for a dated recipe. timed still asks time.apple.com, and does not set it.
-  6.0 beta 1's timed (CoreTime-77) has the same NTP fetch and keeps Set Automatically as `TMAutomaticTimeEnabled`
-  (its pref-key table); its rows get the same seed when re-created.
+- **timed.** timed took NTP over Wi-Fi to 2026. FirmwareKit seeds com.apple.timed for a dated recipe:
+  `TMAutomaticTimeEnabled` and `TMAutomaticTimeOnlyEnabled` false (Settings' switch, 6.x's and 7.x's key) and
+  `DisableAutomaticTime` true. The switch alone is not enough: timed (6.0b1 CoreTime-77) honours it only once its
+  cache says the clock was set (TMSystemTimeSet), so a fresh unit took NTP at Setup's TMSetupTime regardless;
+  `DisableAutomaticTime` is checked before every change. Measured on 6.0 beta 1 (N90 and N81, guest agent off, NTP
+  answered with 2026 by a host responder): seeded, timed fetches and leaves the clock at 2012-06-16; without the
+  seed it sets 2026. With the agent running its clock sync (op 0x165, about once a second) puts the pinned date
+  back, which had hidden this.
 - **Activation.** lockdownd turns the brick state on for a data ark without `-BrickState` and lifts it only for a
   valid activation record ("not a valid product for Factory Action"); Setup's `isBricked` then sends it online to
   activate. FirmwareKit seeds `-BrickState` false for a dated recipe ("factoryactivation unbricks by default").
