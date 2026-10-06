@@ -151,6 +151,15 @@ As N81, plus:
 | Baseband (spi2, GPIOs) | DT node unmatched by `baseband=off`; the controller with nothing on it | P (until the cell stream's modem) | S |
 | Compass | AK8973 at the DT's 0x1e node (the unit has AK8975B at 0x0c/0x0d) | variant | H |
 
+## iOS 6.0 beta 1 (10A5316k)
+
+Prepared by FirmwareKit as N81's beta (docs/n81 "iOS 6.0 beta 1"; LightTouchMac guestdev-n81-6b1 row n90ap-10A5316k,
+recipe 1, the modem on as every n90 boot): IPSW SHA-1 adc3ec213dd10dad9e6cf5f89029a4e6aa115a35 (890,697,287 bytes)
+inside archive.org's Apple_iPhone_Firmware "Apple iPhone 3.1 Firmware 6.0 (6.0.10A5316k) (beta)/media_ipsw.rar";
+theapplewiki's SundanceVail 10A5316k (iPhone3,1) keys verify 18 of 18; BuildManifest and Restore.plist name 10A5316k
+and iPhone3,1. With the clock pinned (`rtc-epoch`, 2012-06-16): regress usbmux, afc, persist PASS; app-install
+(Setup walked, install, launch, power-off) PASS; ca_ogl off and no GL app, as N81's beta.
+
 ## Guest debugging
 
 7.1.2 11D257: gdbstub + lldb with kernel and userland symbols PASS (`tests/ipad1/debug-check.py`; the cache's local symbols are `<redacted>` on 7.x). No debugserver: iOS ships none, and the 7.1 DeveloperDiskImage is not on this host. See [../guest-debug.md](../guest-debug.md).
