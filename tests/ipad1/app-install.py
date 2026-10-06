@@ -180,7 +180,11 @@ def main():
         shutil.rmtree(overlay, ignore_errors=True)
         os.makedirs(os.path.dirname(overlay), exist_ok=True)
         subprocess.run(["cp", "-cR", a.overlay, overlay], check=True)   # a clone on APFS; the original stays as it was
-    b = rg.Boot(a, "install", usb=True, overlay=overlay)
+    # A dated device (a beta's lock, rtc-epoch) walks Setup without internet, as regress's 5.x gles walk does: with
+    # it, 7.0 beta 1's Apple ID page sometimes ignored "Skip This Step" for minutes while its spinner ran (a guest at
+    # 2013 talking to today's servers); offline, Setup says so once (Continue) and has no Apple ID page.
+    offline = ["-netdev", "user,id=wifi0,restrict=on"] if a.rtc_epoch else []
+    b = rg.Boot(a, "install", usb=True, overlay=overlay, extra=offline)
     try:
         b.start()
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
