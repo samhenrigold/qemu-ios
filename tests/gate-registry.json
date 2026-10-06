@@ -139,6 +139,7 @@
     {"name": "tests/ipod/test_uart_rx_transitions.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_ui_buttons.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_ui_frame_startup.py", "tier": "quick", "prerequisites": []},
+    {"name": "tests/ipod/test_ui_frame_dedupe.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_vic_daisy.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_wdt_config.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_wdt_reset.py", "tier": "quick", "prerequisites": []},
