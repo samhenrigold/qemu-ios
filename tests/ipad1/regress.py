@@ -322,6 +322,13 @@ def booted(cfg, tag, r, **kw):
     if b.usb and not b.wait_mux():
         r.set(False, "lock screen but usbmux never attached")
         return b, None
+    if b.usb and cfg.major >= 7 and cfg.package_seed is not None:
+        # 7.x stalls the data volume for 1-3 minutes after lockdown answers, and it_boot reports at the end of
+        # that window; an AFC request inside it goes unanswered for 60 s (persist's readback failed so).
+        # app-install waits the same way. Bounded: a missing report is check_boot's to judge.
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline and "it_boot: package" not in open(b.serial, errors="replace").read():
+            time.sleep(3)
     return b, detail
 
 
