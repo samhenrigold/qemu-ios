@@ -272,6 +272,8 @@ static unsigned defaults(void)
     const void **feature = mc ? dlsym(mc, "MCFeatureAutoLockTime") : 0;
     void (*live)(float);
     void (*changed)(const void *, const void *);
+    unsigned long (*type)(void);
+    void (*init)(void);
     float full = 1;
     int never = -1;
     unsigned i;
@@ -298,6 +300,10 @@ static unsigned defaults(void)
     if (!sync(sb))
         say("com.apple.springboard not saved: CFPreferencesAppSynchronize failed", "", "");
     gs = dlopen("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices", 2);
+    /* 2.x registers the GSEvent class only in GSInitialize (UIApplication calls it); without it the
+     * GSEvent GSEventSetBacklightLevel creates has type ID 0 and CoreFoundation halts (SIGTRAP). */
+    if (gs && (type = dlsym(gs, "GSEventGetTypeID")) && !type() && (init = dlsym(gs, "GSInitialize")))
+        init();
     if (gs && (live = dlsym(gs, "GSEventSetBacklightLevel")))
         live(full);
     if (gs && !(feature && *feature) && (changed = dlsym(gs, "GSSendAppPreferencesChanged")))
