@@ -46,7 +46,26 @@ try:
         else: raise AssertionError("invalid attitude accepted: %s=%r" % (name, value))
     put("x", 1 << 40); assert get("x") == 127
     put("shake", True)
-    print("PASS: the 1G takes accel-orientation, -pitch/-roll/-pose, raw axes and shake, as the app sends them")
+    d.qmp.close(); d.qmp = None; p.stop_all()
+    # The iPhone (M68): the same controls, its part turned 180 degrees about Z to the N45's (DT orientation 0
+    # where the N45's is 3, which negates x and y), so Home right (3) reads +x where the 1G's reads -x. With the
+    # N45's mapping 1.0 turned its UI upside down in landscape (Sam, 10-06).
+    import subprocess, sys
+    sys.path.insert(0, str(root / "imgtools")); import itqmp
+    sock = out + "/m68.qmp"
+    m68 = subprocess.Popen([cfg.qemu, "-S", "-M", "iPhone-2G,bootrom=%s,iboot=%s,nand=%s,nand-overlay=%s,baseband=off"
+                            % (cfg.bootrom, cfg.direct_iboot, cfg.base_nand, cfg.overlay), "-drive", "if=pflash,format=raw,readonly=on,file=" + cfg.nor,
+                            "-display", "none", "-audio", "driver=none", "-serial", "null", "-qmp", "unix:%s,server,nowait" % sock])
+    try:
+        [time.sleep(0.5) for _ in range(40) if not os.path.exists(sock)]; q = itqmp.QMP(sock, timeout=30)
+        assert vector() == (0, 64, 0), vector()
+        put("orientation", 3); assert vector() == (64, 0, 0) and get("roll") == 90, vector()
+        put("orientation", 4); assert vector() == (-64, 0, 0)
+        put("pose", "flat"); put("roll", 0); assert vector() == (0, 0, -64), vector()
+        q.close()
+    finally:
+        m68.kill(); m68.wait()
+    print("PASS: the 1G takes accel-orientation, -pitch/-roll/-pose, raw axes and shake, as the app sends them; the M68 reads x and y turned")
 finally:
     if d.qmp: d.qmp.close()
     p.stop_all()

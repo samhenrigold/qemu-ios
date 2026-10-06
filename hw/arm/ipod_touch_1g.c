@@ -115,6 +115,10 @@ static const S5L8900Board m68_board = {
     .voldown_gpio = M68_GPIO_BUTTON_VOLDOWN, .voldown_irq = M68_GPIO_BUTTON_VOLDOWN_IRQ,
     .ring_gpio = M68_GPIO_RING_SWITCH, .ring_irq = M68_GPIO_RING_SWITCH_IRQ,
     .nand_banks = 4,
+    /* DT accelerometer orientation 0 (none), where the N45's is 3: AppleLIS302DL negates x for bit 0 and y
+     * for bit 1, so the N45's part sits turned 180 degrees about Z to the M68's. The model reads as the
+     * N45's part; on the M68 each axis reads the negated device x and y. */
+    .accel_mount = "-1,-2,3",
     /* 1.0 builds its "slide to power off" sheet slowly (up 13 s into a hold,
      * guest time, where 1.1's is up in 3-4 s); a release before it locks instead. */
     .pwroff_hold_ms = 20000, .pwroff_settle_ms = 3000,
@@ -1054,7 +1058,13 @@ static void n45_machine_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, n45_irq(s, i ? N45_I2C1_IRQ : N45_I2C0_IRQ));
         i2c[i] = IPOD_TOUCH_I2C(dev)->bus;
     }
-    s->accel = LIS302DL(i2c_slave_create_simple(i2c[0], "lis302dl", 0x1D));
+    dev = DEVICE(i2c_slave_new("lis302dl", 0x1D));
+    if (s->board->accel_mount) {
+        qdev_prop_set_string(dev, "mount", s->board->accel_mount);
+    }
+    i2c_slave_realize_and_unref(I2C_SLAVE(dev), i2c[0], &error_fatal);
+    s->accel = LIS302DL(dev);
+    lis302dl_apply_orientation(s->accel, 1);   /* init ran before the mount was set */
     /* The host's controls, the same names as the 2G and the iPad: UIDeviceOrientation 1-6
      * (lis302dl_apply_orientation also turns the LCD's presented picture, as the 2G's), raw
      * counts, a shake; accel-pitch/-roll/-pose are machine properties. Without them the app's

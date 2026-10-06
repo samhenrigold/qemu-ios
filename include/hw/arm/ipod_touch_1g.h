@@ -104,6 +104,7 @@ typedef struct S5L8900Board {
     uint32_t volup_gpio, volup_irq, voldown_gpio, voldown_irq;   /* 0: none */
     uint32_t ring_gpio, ring_irq;                                 /* 0: none */
     unsigned nand_banks;             /* chip enables populated (the DT disk's reg mask) */
+    const char *accel_mount;         /* the LIS302DL's "mount" (NULL: the N45's) */
     unsigned pwroff_hold_ms;         /* system_powerdown: how long Hold is held */
     unsigned pwroff_settle_ms;       /* system_powerdown: Hold released to the knob drag (the sheet's build time) */
 } S5L8900Board;
