@@ -1038,6 +1038,27 @@ static void scts_from_ms(int64_t now_ms, uint8_t out[7])
     }
 }
 
+/*
+ * NITZ, as a network sends it on registration: +CTZV: <tz>,"yy/MM/dd,hh:mm:ss", tz the host's offset
+ * from UTC in quarter hours (DST included), the time UTC. 1.0's CommCenter (0x2a6e0) reads tz as
+ * field 0 (x15 minutes) and the time as field 1 at offsets 0,3,6,9,12,15, then points /var/db/localtime
+ * at Etc/GMT<offset>: the only way 1.x learns a zone (its lockdownd has no TimeZone).
+ */
+static void nitz_report(IosBbCore *bb)
+{
+    time_t secs = (bb->now_ms + bb->wall_offset_ms) / 1000;
+    struct tm utc, local;
+
+    if (!bb->nitz || !bb->ctzr_on || !bb->ch[bb->ctzr_ch].open) {
+        return;
+    }
+    gmtime_r(&secs, &utc);
+    localtime_r(&secs, &local);
+    chan_printf(bb, bb->ctzr_ch, "\r\n+CTZV: %ld,\"%02d/%02d/%02d,%02d:%02d:%02d\"\r\n",
+                (long)(local.tm_gmtoff / 900), utc.tm_year % 100, utc.tm_mon + 1, utc.tm_mday,
+                utc.tm_hour, utc.tm_min, utc.tm_sec);
+}
+
 /* --------------------------------------------------------------- SMS PDU assembly */
 
 /* Build a full SMS-DELIVER hex PDU (SCA included). Returns octet count, 0 on error. */
@@ -1496,6 +1517,7 @@ static void reg_tick(IosBbCore *bb)
     if (bb->reg_step == 2) {
         chan_printf(bb, ch, "\r\n+CREG: 1,%X,%X\r\n", bb->lac, bb->ci);
         bb->last_creg = 1;
+        nitz_report(bb);
         if (bb->cgreg_n > 0) {
             chan_printf(bb, ch, "\r\n+CGREG: 1\r\n");
         }
@@ -2250,12 +2272,17 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         at_ok(bb, ch);                          /* PDU-mode CNMA takes no parameters */
         return;
     }
+    if ((arg = arg_after(cmd, "ctzr=", NULL))) {
+        bb->ctzr_on = atoi(arg) > 0;
+        bb->ctzr_ch = ch;
+        at_ok(bb, ch);
+        return;
+    }
     if ((arg = arg_after(cmd, "cmms=", NULL)) ||
         (arg = arg_after(cmd, "cnmi=", NULL)) ||
         (arg = arg_after(cmd, "cscb=", NULL)) ||
         (arg = arg_after(cmd, "xtesm=", NULL)) ||
         (arg = arg_after(cmd, "xmer=", NULL)) ||
-        (arg = arg_after(cmd, "ctzr=", NULL)) ||
         (arg = arg_after(cmd, "ctzu=", NULL)) ||
         (arg = arg_after(cmd, "xcallstat=", NULL)) ||
         (arg = arg_after(cmd, "clip=", NULL)) ||
@@ -2770,7 +2797,7 @@ void ios_bb_reset(IosBbCore *bb)
     char imei[16], imsi[16], iccid[21];
     int signal_dbm = bb->signal_dbm, battery = bb->battery, answer_delay_ms = bb->answer_delay_ms;
     unsigned lac = bb->lac, ci = bb->ci;
-    bool registered = bb->registered, sim_present = bb->sim_present;
+    bool registered = bb->registered, sim_present = bb->sim_present, nitz = bb->nitz;
     IosBbOutFn out = bb->out, data_out = bb->data_out;
     void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
     int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
@@ -2808,6 +2835,7 @@ void ios_bb_reset(IosBbCore *bb)
     bb->data_opaque = data_opaque;
     bb->now_ms = now_ms;
     bb->wall_offset_ms = wall_offset_ms;
+    bb->nitz = nitz;
 
     /* The FCS/CRC tables are lazy-initialized on first use; the mux rx path
      * can run before anything is ever sent, so make sure they exist. */

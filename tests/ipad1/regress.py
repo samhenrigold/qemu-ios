@@ -1046,7 +1046,7 @@ def check_audio(cfg, r):
         time.sleep(15)   # the boot sound comes ~35 s after SpringBoard starts
         expect = ac.capture_references(b.qmp, os.path.join(b.dir, "references"),
                                        cfg.product_version, getattr(cfg, "sound_reference_root", None))
-        ac.play_sounds(b.qmp)
+        ac.play_sounds(b.qmp, UNLOCK_FROM, UNLOCK_TO)
         b.qmp.cmd("quit")
         b.qemu.wait(timeout=30)                       # the WAV header is written at exit
     finally:

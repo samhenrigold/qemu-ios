@@ -1085,7 +1085,16 @@ static void amc_decode_tick(void *opaque)
     }
 #endif
     amc_update_irq(s);
-    timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
+    /*
+     * The tick runs while a stream does. With no decoder and no decode DMA queued it has nothing to move
+     * and no state to change, so it stops (it was 1,000 wake-ups a second on an idle device); the next
+     * register write, which is how a stream starts, brings it back (ipod_touch_amc_write).
+     */
+#ifdef IT_HAVE_AVCODEC
+    if (s->decoder || (AMC_REG(0x100) & 3)) {
+        timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
+    }
+#endif
 }
 
 /* Returns the controller index for a per-controller register, or -1. */
@@ -1261,6 +1270,9 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
             if (!amc_engine0(s, val)) {
                 warn_report("AMC: engine 0 command list rejected");
             }
+        }
+        if (!timer_pending(s->decode_timer)) {
+            timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
         }
     }
     amc_update_irq(s);

@@ -109,6 +109,7 @@ static int64_t qemu_clock_get_ns(int clock) { return 1000; }
 static void timer_mod(void *timer, int64_t ns) {
     assert(ns == 1001000); timer_starts++;
 }
+static bool timer_pending(void *timer) { return true; }   /* the tick is running, as during a stream */
 static void qemu_set_irq(int irq, bool level) { irq_level = level; }
 static void amc_log_caller(hwaddr addr, uint32_t value) {}
 static void amc_write_result_block(IPodTouchAMCState *s) {}

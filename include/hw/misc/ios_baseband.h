@@ -26,6 +26,7 @@ struct IosBasebandState {
     /* SPI transport (3GS/iPhone 4): ifx-version 1 or 2; 0 = UART chardev (M68). */
     int ifx_version;
     int ifx_max_data;
+    bool nitz;                    /* property: send the host's time zone on registration */
     IosBbIfx ifx;
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
     bool srdy_level;

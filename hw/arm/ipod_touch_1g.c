@@ -80,8 +80,7 @@ static const S5L8900Board n45_board = {
     .name = "n45",
     .pmu_i2c = 1,
     /* i2s1: dma-parent dmac1, TX config 0x884 (peripheral 2), interrupts <0xaa> */
-    .codec_i2s_base = N45_IIS1_BASE, .codec_i2s_dmac = 1, .codec_i2s_dma_req = N45_I2S1_DMA_REQ_ID,
-    .codec_i2s_ready_irq = 0xaa, .codec_host_output = false,
+    .codec_i2s = { N45_IIS1_BASE, 1, N45_I2S1_DMA_REQ_ID, 0xaa, .host_output = false },
     .i2s_ram_bases = { N45_IIS0_BASE, N45_IIS2_BASE },
     .piezo = true,
     .touch = "multitouch", .touch_atn_irq = 0x9b, .touch_cs_gpio = -1,
@@ -94,16 +93,20 @@ static const S5L8900Board n45_board = {
 /*
  * m68ap 1A543a's device tree: PMU and codec on i2c0; the codec's samples on
  * i2s0 (0x3ca00000, dmac0, TX config 0x800: peripheral 0, interrupts <0x86>),
- * i2s1 the baseband's; no buzzer (the codec plays the clicks); the Zephyr1
+ * i2s1 the baseband's voice port; no buzzer (the codec plays the clicks); the Zephyr1
  * (multi-touch,z1, interrupts <0xa3>, spi_cs0 GPIO 0x0705); buttons,m68; the
  * flash disk's reg 0x0f, four chip enables.
  */
 static const S5L8900Board m68_board = {
     .name = "m68",
     .pmu_i2c = 0,
-    .codec_i2s_base = N45_IIS2_BASE, .codec_i2s_dmac = 0, .codec_i2s_dma_req = 0,
-    .codec_i2s_ready_irq = 0x86, .codec_host_output = true,
-    .i2s_ram_bases = { N45_IIS0_BASE, N45_IIS1_BASE },
+    .codec_i2s = { N45_IIS2_BASE, 0, 0, 0x86, .host_output = true },
+    /*
+     * i2s1 (audio-data,baseband): dmac1, TX config 0x884 (peripheral 2), interrupts <0xaa>, the N45 codec's
+     * wiring. The speaker's path: 1.0's mediaserverd routes every system sound (clicks, lock, ringer) here.
+     */
+    .bb_i2s = { N45_IIS1_BASE, 1, N45_I2S1_DMA_REQ_ID, 0xaa, .host_output = true },
+    .i2s_ram_bases = { N45_IIS0_BASE },
     .piezo = false,
     .touch = TYPE_S5L8900_MULTITOUCH_Z1, .touch_atn_irq = 0xa3, .touch_cs_gpio = 0x0705,
     .home_gpio = M68_GPIO_BUTTON_HOME, .home_irq = M68_GPIO_BUTTON_HOME_IRQ,
@@ -696,6 +699,24 @@ static void m68_modem_battery(void *opaque)
 
 /* ---- machine ----------------------------------------------------------- */
 
+
+/* One S5L8900 I2S controller (the 2G's model, the same AppleS5L8900XI2SController driver) at its DT wiring. */
+static void n45_i2s_port(IPodTouch1GMachineState *s, MemoryRegion *sysmem, PL080State **dmac,
+                         const S5L8900I2SPort *port)
+{
+    DeviceState *dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
+
+    IPOD_TOUCH_I2S(dev)->sysic = s->sysic;
+    IPOD_TOUCH_I2S(dev)->dmac = dmac[port->dmac];
+    IPOD_TOUCH_I2S(dev)->dma_req_id = port->dma_req;
+    qdev_prop_set_uint32(dev, "ready-gpio-group", port->ready_irq / 32);
+    qdev_prop_set_uint32(dev, "ready-gpio-bit", port->ready_irq % 32);
+    qdev_prop_set_bit(dev, "host-output", port->host_output);
+    pl080_attach_paced_peripheral(dmac[port->dmac], port->dma_req);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    memory_region_add_subregion(sysmem, port->base, &IPOD_TOUCH_I2S(dev)->iomem);
+}
+
 static void n45_machine_init(MachineState *machine)
 {
     IPodTouch1GMachineState *s = IPOD_TOUCH_1G_MACHINE(machine);
@@ -760,6 +781,9 @@ static void n45_machine_init(MachineState *machine)
     allocate_ram(sysmem, "watchdog", N45_WATCHDOG_BASE, 0x10000);
     for (int i = 0; i < 2; i++) {
         hwaddr b = s->board->i2s_ram_bases[i];
+        if (!b) {
+            continue;
+        }
         allocate_ram(sysmem, b == N45_IIS0_BASE ? "iis0" : b == N45_IIS1_BASE ? "iis1" : "iis2", b, 0x10000);
     }
     allocate_ram(sysmem, "mpvd", N45_MPVD_BASE, 0x70000);
@@ -892,6 +916,8 @@ static void n45_machine_init(MachineState *machine)
         if (s->imei && s->imei[0]) {
             object_property_set_str(OBJECT(dev), "imei", s->imei, &error_fatal);
         }
+        /* 1.x takes its time zone only from the network: lockdownd has no TimeZone to set. */
+        qdev_prop_set_bit(dev, "nitz", true);
         qdev_realize_and_unref(dev, NULL, &error_fatal);
         for (int i = 0; i < ARRAY_SIZE(controls); i++) {
             object_property_add_alias(OBJECT(machine), controls[i], OBJECT(dev), controls[i]);
@@ -1073,12 +1099,6 @@ static void n45_machine_init(MachineState *machine)
      * one Buzz per 10 s respawn.
      */
     const S5L8900Board *bd = s->board;
-    dev = qdev_new(TYPE_IPOD_TOUCH_I2S);
-    IPOD_TOUCH_I2S(dev)->sysic = s->sysic;
-    IPOD_TOUCH_I2S(dev)->dmac = dmac[bd->codec_i2s_dmac];
-    IPOD_TOUCH_I2S(dev)->dma_req_id = bd->codec_i2s_dma_req;
-    qdev_prop_set_uint32(dev, "ready-gpio-group", bd->codec_i2s_ready_irq / 32);
-    qdev_prop_set_uint32(dev, "ready-gpio-bit", bd->codec_i2s_ready_irq % 32);
     /*
      * N45: no host voice. The WM8758's analogue side (the headphone jack) is
      * not modelled, and the guest's Beep PCM here replays the ring's tail every
@@ -1086,10 +1106,15 @@ static void n45_machine_init(MachineState *machine)
      * an N45 with nothing in the jack plays. The M68 has no piezo: its clicks
      * and ringer are this PCM, so the host plays it.
      */
-    qdev_prop_set_bit(dev, "host-output", bd->codec_host_output);
-    pl080_attach_paced_peripheral(dmac[bd->codec_i2s_dmac], bd->codec_i2s_dma_req);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-    memory_region_add_subregion(sysmem, bd->codec_i2s_base, &IPOD_TOUCH_I2S(dev)->iomem);
+    n45_i2s_port(s, sysmem, dmac, &bd->codec_i2s);
+    /*
+     * The M68's baseband voice port, which carries what the speaker plays. With the window plain RAM,
+     * AppleBasebandOutput's DMA start failed (device not ready), mediaserverd's StartIO with it, and the
+     * device played nothing at all.
+     */
+    if (bd->bb_i2s.base) {
+        n45_i2s_port(s, sysmem, dmac, &bd->bb_i2s);
+    }
 
     /*
      * MBX: the 2G's model, the same PowerVR MBX Lite and the same AppleMBX driver. The id stub it

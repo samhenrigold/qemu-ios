@@ -30,6 +30,8 @@
 #include "target/arm/cpu.h"
 #include "target/arm/cpregs.h"
 #include "exec/memory.h"
+#include "exec/tb-flush.h"
+#include "qemu/bswap.h"
 #include "hw/arm/s5l8930.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
@@ -55,6 +57,7 @@ struct S5L8930IOPCoreState {
     MemoryRegion periph;
     MemoryRegion fw;            /* firmware image at 0, made at run() */
     bool fw_mapped;
+    bool idle_scanned;          /* iop_core_find_idle_loop has run for this firmware */
     ARMCPU *cpu;
     DeviceState *vic[IOP_VIC_COUNT];
     uint32_t fw_base, fw_size;
@@ -68,6 +71,8 @@ void s5l8930_iop_core_set_iop(DeviceState *dev, DeviceState *iop)
     S5L8930_IOP_CORE(dev)->iop = iop;
 }
 
+static void iop_core_find_idle_loop(S5L8930IOPCoreState *s);
+
 static uint64_t ap_vic_tap_read(void *opaque, hwaddr off, unsigned size)
 {
     return address_space_ldl_le(&address_space_memory, S5L8930_VIC_BASE(0) + off,
@@ -78,6 +83,12 @@ static void ap_vic_tap_write(void *opaque, hwaddr off, uint64_t val, unsigned si
 {
     S5L8930IOPCoreState *s = opaque;
 
+    if (off == 0x18 && s->fw_mapped && !s->idle_scanned) {
+        /* Its first doorbell (the startup ping): the image is the running firmware by now. At CTRL=1
+         * the region does not yet hold it in the shape it runs in. */
+        s->idle_scanned = true;
+        iop_core_find_idle_loop(s);
+    }
     if (off == 0x18 && s->iop) {        /* SOFTINT: the firmware has answered something */
         s5l8930_iop_trace_rings(s->iop);
     }
@@ -143,6 +154,35 @@ static const ARMCPRegInfo iop_cp_reginfo[] = {
       .access = PL1_W, .type = ARM_CP_NOP | ARM_CP_OVERRIDE },
 };
 
+/*
+ * EmbeddedIOP's idle task is `for (;;) yield();`, and yield() returns at once when no task is runnable: the
+ * firmware has no WFI on its idle path (its WFI routine is never called), so the idle core spun at full host
+ * speed. The loop is found by its shape, the image's one `bl yield; b <the bl>` (7B500 0x7a4, 8C148 0x7a4,
+ * 8L1 0x804, 9B206 0xb48), and its back branch becomes an idle hint (ArchCPU::idle_loop_pc): with nothing
+ * pending the core sleeps until an interrupt, the only thing that can make a task runnable. The firmware runs
+ * unmodified. No unique match (another build's shape): no hint, the core spins as before.
+ */
+static void iop_core_find_idle_loop(S5L8930IOPCoreState *s)
+{
+    g_autofree uint8_t *fw = g_malloc(s->fw_size);
+    uint32_t found = 0;
+    int hits = 0;
+
+    /* As the core sees it: the image at its address 0. */
+    address_space_read(CPU(s->cpu)->as, 0, MEMTXATTRS_UNSPECIFIED, fw, s->fw_size);
+    for (uint32_t off = 0; off + 8 <= s->fw_size; off += 4) {
+        if ((uint32_t)ldl_le_p(fw + off) >> 24 == 0xeb && (uint32_t)ldl_le_p(fw + off + 4) == 0xeafffffd) {
+            found = off + 4;
+            hits++;
+        }
+    }
+    found = hits == 1 ? found : 0;
+    if (s->cpu->idle_loop_pc != found) {
+        s->cpu->idle_loop_pc = found;
+        tb_flush(CPU(s->cpu));      /* translations at the old/new address carry the hint or not */
+    }
+}
+
 qemu_irq s5l8930_iop_core_irq(DeviceState *dev, int irq)
 {
     S5L8930IOPCoreState *s = S5L8930_IOP_CORE(dev);
@@ -171,8 +211,12 @@ void s5l8930_iop_core_run(DeviceState *dev, uint32_t fw_base, uint32_t fw_size)
     s->fw_mapped = true;
     s->fw_base = fw_base;
     s->fw_size = fw_size;
+    s->idle_scanned = false;
     qemu_log_mask(LOG_UNIMP, "iop-core: run firmware 0x%08x+0x%x\n", fw_base, fw_size);
     cpu_reset(cs);
+    /* Powered on, as CTRL=1 does: a core left PSCI_OFF (start-powered-off) reads as having no work, so a
+     * halt (the idle loop below) would never end however many interrupts were pending. */
+    s->cpu->power_state = PSCI_ON;
     cs->halted = 0;
     qemu_cpu_kick(cs);
 }
@@ -274,6 +318,8 @@ static int iop_core_post_load(void *opaque, int version_id)
         memory_region_init_alias(&s->fw, OBJECT(s), "iop.fw", s->dram,
                                  s->fw_base - S5L8930_DRAM_BASE, s->fw_size);
         memory_region_add_subregion_overlap(&s->mem, 0, &s->fw, 1);
+        s->idle_scanned = true;
+        iop_core_find_idle_loop(s);
     }
     return 0;
 }

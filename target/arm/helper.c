@@ -10892,6 +10892,9 @@ void arm_cpu_do_interrupt(CPUState *cs)
 
     assert(!arm_feature(env, ARM_FEATURE_M));
 
+    if (cs->exception_index == EXCP_IRQ || cs->exception_index == EXCP_FIQ) {
+        cpu->irqs_taken++;          /* ArchCPU::idle_loop_pc */
+    }
     arm_log_exception(cs);
     qemu_log_mask(CPU_LOG_INT, "...from EL%d to EL%d\n", arm_current_el(env),
                   new_el);

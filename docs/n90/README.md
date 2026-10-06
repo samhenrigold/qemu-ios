@@ -27,6 +27,9 @@ with persistence all work.
   binary (SHA-256 60597aa3...).
 - Power-off: N81's knob (SpringBoard is portrait-only). The halt comes 18-40 s after the request, so the
   board's watch is 60 s (`pwroff_watch_ms`).
+- Sound: the ring/silent switch rests at ring. GPIO inputs idle high, and on this board high is silent, so until
+  2026-10-06 every system sound was muted (no PCM ever reached i2s0, on 4.2.1 and 6.0b1 alike).
+  `regress.py --machine iPhone-4 --checks audio` hears the boot beep, unlock, lock and unlock (8C148 and 10A5316k).
 - I2C: PMU (0x74, IRQ 0x0d), CS42L61 (CS42L58 register file, 0x4a), AK8973 (0x1e, the DT's `compass`
   node), Mikey (0x39) on i2c0; LIS331DLH (0x19) on i2c2.
 
@@ -170,6 +173,7 @@ As N81, plus:
 | DRAM 512 MiB | board `dram_size`; CDMA `dram-size`; IOP core window from its `dram` link | variant (board data) | R |
 | HDQ gas gauge (uart5) | the iPad's bq27545 model, 1420 mAh | variant | H |
 | CS42L61 + Mikey | the iPad's | shared | H |
+| Ring/silent switch (buttons/ringerab, GPIO 0x004) | an active-high pad (its DT function flags 0x100; K48's are active low) held at ring; `ring-switch=on` is silent, settable at run time | board data | R |
 | Baseband (spi2, GPIOs) | DT node unmatched by `baseband=off`; the controller with nothing on it | P (until the cell stream's modem) | S |
 | Compass | AK8973 at the DT's 0x1e node (the unit has AK8975B at 0x0c/0x0d) | variant | H |
 
