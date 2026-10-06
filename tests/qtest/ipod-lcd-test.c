@@ -54,14 +54,14 @@ static void readback(QTestState *q, bool option)
 static void default_readback(void)
 {
     QTestState *q = start_board("", false);
-    readback(q, false);
+    readback(q, true);
     qtest_quit(q);
 }
 
 static void option_readback(void)
 {
-    QTestState *q = start_board(",lcd-planes=on", false);
-    readback(q, true);
+    QTestState *q = start_board(",lcd-planes=off", false);
+    readback(q, false);
     qtest_quit(q);
 }
 
