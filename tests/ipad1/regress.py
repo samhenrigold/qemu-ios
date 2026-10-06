@@ -309,6 +309,13 @@ class Boot:
             time.sleep(0.15)
 
     def powerdown(self):
+        if self.cfg.major >= 7 and self.qmp:
+            # Shut down through it_agent, which the guest package starts: on 7.x it comes up with the throttled
+            # daemons (docs/n90 debt 6), and the fallback gesture shutdown in the middle of that backlog took
+            # longer than its 180 s confirmation (7.1.1 persist, boot 1 at 89 s).
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline and not itqmp.agent_alive(self.qmp):
+                time.sleep(3)
         try:
             return itqmp.guest_powerdown(self.qmp, self.qemu, self.tag, log, charging_halt=True)
         finally:
