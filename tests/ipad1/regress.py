@@ -506,6 +506,8 @@ def check_boot_5(cfg, r, b, detail):
         found, front = ocr(ppm), frontmost(b)
     if "English" in found and page_title(found) is None and front in (None, "com.apple.purplebuddy"):
         shown = "Setup Assistant's first page"
+    elif cfg.major >= 7 and front == "com.apple.purplebuddy":
+        shown = "Setup Assistant (7.x's Hello screen; the slide did not take)"   # the agent names it
     elif "Safari" in found and front in (None, "com.apple.springboard"):
         shown = "the home screen"
     else:
