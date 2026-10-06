@@ -23,6 +23,7 @@
     {"name": "tests/ipod/test_agent_proto.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_amc_aac.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_amc_snapshot.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
+    {"name": "tests/ipod/test_m68_audio.py", "tier": "manual", "prerequisites": ["qemu", "device-image"], "reason": "native emulator check: supply the device inputs documented by this test"},
     {"name": "tests/ipod/test_app_control.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_app_ledger.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipod/test_armv6_toolchain.py", "tier": "quick", "prerequisites": []},

@@ -86,7 +86,8 @@ the 1G's row, unchanged.
 | GPIO | `fsel-offset=0x320` (both machines): the 1.x kernel drives output pads through it (the 2G's is 0x1e0) | property | R |
 | PMU, WM8758 | on I2C0 (the 1G's are on I2C1) | board data | H |
 | Codec data | I2S0 at 0x3CA00000, dmac0 request 0, ready GPIO-IC 0x86, host output on (no piezo on the M68) | board data | R |
-| I2S1 (baseband audio), I2S at 0x3D400000 | RAM windows | — | S |
+| I2S1 (baseband voice port, 0x3CD00000) | the codec port's model: dmac1 request 2, ready GPIO-IC 0xaa; host output on (1.0 routes every system sound through it: `tests/ipod/test_m68_audio.py`) | board data | R |
+| I2S at 0x3D400000 | RAM window | — | S |
 | Buttons | menu 0x1600, volume up/down 0x1601/0x1602 (active low: the GPIO block's `rest-high-*` keeps them high at rest), Hold 0x1605, ring switch 0x1603; GPIO-IC 0x28-0x2d, interrupting by the polarity and type the driver programs; a press lasts at least 150 ms of guest time | board data / SYSIC | R |
 | Zephyr1 | `s5l8900.multitouch-z1`, subtype of the shared `ipodtouch.multitouch` (host input, frames and ATN shared; the Zephyr2 unchanged), chip select on GPIO 0x0705, ATN GPIO-IC 0xa3 | new | H (firmware) / R (wire) |
 | NAND | FMC `banks=4` (ID reads answer only populated chip enables); ADM firmware-14's transfer block (found by its data-section pointers, 0x824 into data2) and page list at +0x444 | property / variant | R / H |

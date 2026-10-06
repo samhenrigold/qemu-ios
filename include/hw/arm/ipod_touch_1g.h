@@ -82,15 +82,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouch1GMachineState, IPOD_TOUCH_1G_MACHINE)
  * PMU and codec hang, which I2S carries the codec's samples, the digitizer
  * and its lines, the buttons, how many NAND chip enables are populated.
  */
+/* An I2S controller's DT wiring: its window, DMA controller and request line (dma-channels), and the
+ * GPIO-IC line its driver's DMA start waits on (interrupts). */
+typedef struct S5L8900I2SPort {
+    hwaddr base;
+    unsigned dmac, dma_req, ready_irq;
+    bool host_output;                /* the Mac plays its samples */
+} S5L8900I2SPort;
+
 typedef struct S5L8900Board {
     const char *name;                /* "n45", "m68" */
     unsigned pmu_i2c;                /* the bus of the PCF50635 (0x73) and the WM8758 (0x1A) */
-    hwaddr codec_i2s_base;           /* the WM8758's data port */
-    unsigned codec_i2s_dmac;         /* its DMA controller ... */
-    unsigned codec_i2s_dma_req;      /* ... and request line (the DT's dma-channels) */
-    unsigned codec_i2s_ready_irq;    /* GPIO-IC line the driver's DMA start waits on */
-    bool codec_host_output;          /* the codec is what the user hears (no piezo) */
-    hwaddr i2s_ram_bases[2];         /* the other I2S windows: RAM, unmodelled */
+    S5L8900I2SPort codec_i2s;        /* the WM8758's data port */
+    S5L8900I2SPort bb_i2s;           /* the baseband's voice port (base 0: none) */
+    hwaddr i2s_ram_bases[2];         /* the other I2S windows: RAM, unmodelled (0: none) */
     bool piezo;                      /* /arm-io/timer/buzzer */
     const char *touch;               /* the SPI2 peripheral: Zephyr2 or Zephyr1 */
     unsigned touch_atn_irq;          /* GPIO-IC line of the digitizer's ATN */
