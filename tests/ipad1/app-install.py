@@ -162,6 +162,8 @@ def main():
         if rg.itqmp.W < rg.itqmp.H:
             rg.portrait_layout()
     rg.device_args(a)
+    if a.major >= 7:
+        rg.MIN_COLOURS = 16   # regress main's floor: 7.x's Setup "Hello" between words is white and a status bar
     rg.ipod.START = time.time()
     bundle, exe = bundle_of(a.ipa)
     gl = a.gl_tap if a.gl_tap is not None else (",".join(map(str, GL_TAP[a.machine])) if a.ipa == HARNESS else "")
