@@ -135,6 +135,8 @@ typedef struct IosBbCore {
     bool cops_detached;        /* +COPS=2 */
     int creg_n, creg_ch;
     int xreg_n;                /* +XREG (4.x data bearer) URCs enabled; they ride creg_ch */
+    bool xsigstr_on;           /* +xsigstr=1 (iOS 6): +XSIGSTR signal reports instead of +xcgedpage polls */
+    int xsigstr_ch;
     int cgreg_n, cgreg_ch;
     int xciev_ch, xsim_ch, call_ch, sms_ch;   /* learnt from where each is enabled */
     int s0;                    /* auto-answer register (at s0=n) */

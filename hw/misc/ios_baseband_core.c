@@ -1395,6 +1395,25 @@ int ios_bb_rssi(const IosBbCore *bb)
     return n < 0 ? 0 : n;
 }
 
+/*
+ * +XSIGSTR: <rat>,<levels> (iOS 6 enables it with +xsigstr=1 and stops polling +xcgedpage).
+ * The levels are 3GPP's reported ranges: UTRAN (rat 2) CPICH RSCP_LEV 0-91 (-116..-25 dBm)
+ * and Ec/No_LEV 0-49 (-24..0 dB, TS 25.133); GSM (rat 0) RXLEV 0-63 (-110..-48 dBm,
+ * TS 45.008). The network is UTRAN (+XREG's bearer), so UTRAN levels; Ec/No a steady -4 dB.
+ */
+static int reg_stat(const IosBbCore *bb);
+
+static void emit_xsigstr(IosBbCore *bb)
+{
+    int rscp = bb->signal_dbm + 116;
+
+    if (!bb->xsigstr_on || !bb->ch[bb->xsigstr_ch].open || reg_stat(bb) != 1) {
+        return;
+    }
+    rscp = rscp < 0 ? 0 : rscp > 91 ? 91 : rscp;
+    chan_printf(bb, bb->xsigstr_ch, "\r\n+XSIGSTR: 2,%d,%d\r\n", rscp, 49 - 4);
+}
+
 static void emit_xciev(IosBbCore *bb)
 {
     int rssi = ios_bb_rssi(bb);
@@ -1406,6 +1425,7 @@ static void emit_xciev(IosBbCore *bb)
     bb->last_rssi = rssi;
     bb->last_batt = batt;
     chan_printf(bb, bb->xciev_ch, "\r\n+XCIEV: %d,%d\r\n", rssi, batt);
+    emit_xsigstr(bb);
 }
 
 /* Schedule the searching -> registered URC burst on DLCI 2. */
@@ -1500,8 +1520,14 @@ void ios_bb_changed(IosBbCore *bb)
     int rssi = ios_bb_rssi(bb);
     int batt = bb->battery < 1 ? 1 : bb->battery > 100 ? 100 : bb->battery;
 
-    if (bb->ch[bb->xciev_ch].open && (rssi != bb->last_rssi || batt != bb->last_batt)) {
-        emit_xciev(bb);
+    if (rssi != bb->last_rssi || batt != bb->last_batt) {
+        if (bb->ch[bb->xciev_ch].open) {
+            emit_xciev(bb);                      /* and +XSIGSTR */
+        } else {
+            bb->last_rssi = rssi;
+            bb->last_batt = batt;
+            emit_xsigstr(bb);
+        }
     }
     if (bb->cfun == 1 && bb->ch[bb->creg_ch].open && reg_stat(bb) != bb->last_creg) {
         reg_schedule(bb);
@@ -1873,11 +1899,19 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
             bb->call_ch = ch;
         } else if (strncmp(cmd, "cnmi=", 5) == 0) {
             bb->sms_ch = ch;
+        } else if (strncmp(cmd, "xsigstr=", 8) == 0) {
+            bb->xsigstr_ch = ch;
         } else if (strncmp(cmd, "xsimstate=", 10) == 0) {
             bb->xsim_ch = ch;
         }
     }
 
+    if ((arg = arg_after(cmd, "xsigstr=", NULL))) {
+        bb->xsigstr_on = atoi(arg) == 1;
+        at_ok(bb, ch);
+        emit_xsigstr(bb);                        /* the current level at once, as on a change */
+        return;
+    }
     if ((arg = arg_after(cmd, "xdrv=5,16,", NULL))) {
         /*
          * Temperature notifications (3GS: +xdrv=5,16,20). CommCenter arms a watchdog of
@@ -2605,9 +2639,14 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
         reg_tick(bb);
     }
     if (bb->temp_due_ms && now_ms >= bb->temp_due_ms) {
-        /* 5,17: temperature; then readings in degrees C (the parser takes them as ints). */
+        /*
+         * 5,17: one temperature reading, <0>,<sensor>,<value>,<value>. iOS 6's battery model
+         * (CommCenterClassic) takes field 3 as a sensor id and asserts it is 0-5 (0 RFTemp,
+         * 1 BBChipTemp, 2 BatteryTemp, 3 BoardTemp, 4 RefTemp, 5 APCPUTemp); 4.x only needs
+         * the URC to arrive. The modem reports its own chip.
+         */
         if (bb->ch[bb->temp_ch].open || bb->temp_ch == 0) {
-            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,25,25,25,25,25\r\n");
+            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,1,25,25\r\n");
         }
         bb->temp_due_ms = now_ms + bb->temp_period_ms;
     }

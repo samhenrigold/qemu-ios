@@ -1076,11 +1076,28 @@ static void test_ifx(void)
     }
     CHECK(!(miso[1] & 0x10));
 
+    /* iOS 6 signal: +xsigstr=1 -> +XSIGSTR: 2,<RSCP_LEV 0-91>,<Ec/No_LEV 0-49> (TS 25.133). */
+    c.signal_dbm = -70;
+    ifx_frame(&x, &c, "at+xsigstr=1\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    CHECK(strstr(got, "+XSIGSTR: 2,46,45") != NULL);   /* -70 dBm = RSCP_LEV 46 */
+    c.signal_dbm = -200;                         /* clamped to the range */
+    ios_bb_changed(&c);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    CHECK(strstr(got, "+XSIGSTR: 2,0,45") != NULL);
+    c.signal_dbm = -60;
+
     /* 3GS temperature notifications: +xdrv=5,16,<s> then +XDRVI: 5,17 every <s> seconds. */
     ifx_frame(&x, &c, "at+xdrv=5,16,20\r", miso, 0x7fc, got);
     ios_bb_tick(&c, c.now_ms + 1500);
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     CHECK(strstr(got, "+XDRVI: 5,17,") != NULL);
+    {
+        /* iOS 6 asserts field 3 (the sensor id) is 0-5 and then reads two values. */
+        int f2 = -1, sensor = -1, v1 = -1, v2 = -1;
+        CHECK(sscanf(strstr(got, "+XDRVI: 5,17,"), "+XDRVI: 5,17,%d,%d,%d,%d", &f2, &sensor, &v1, &v2) == 4);
+        CHECK(sensor >= 0 && sensor <= 5);
+    }
 
     /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
     ifx_frame(&x, &c, "at+cmux=0,0,0,1500\r", miso, 0x7fc, got);
