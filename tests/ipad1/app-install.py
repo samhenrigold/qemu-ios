@@ -190,8 +190,8 @@ def main():
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
             return 1
         if a.major >= 7:
-            # 7.x's launchd starts the guest jobs about 100 s after lockdown answers; it_ethlink then brings USB
-            # Ethernet up, which an AFC upload running at that moment did not survive. Install after it_boot reports.
+            # 7.x's data volume can stall file creation for 1-3 minutes after lockdown answers; it_boot's report
+            # comes at the end of that window. An AFC upload sent into it went unanswered, then afc_file_open failed.
             deadline = time.monotonic() + 300
             while time.monotonic() < deadline and "it_boot: package" not in open(b.serial, errors="replace").read():
                 time.sleep(3)
