@@ -13,7 +13,7 @@
  * MMIO trace, off unless MBX_TRACE=1 is in the emulator's environment.
  *
  * The guest PC is logged with every access: AppleMBX.kext is carved out at
- * /Users/shg/Developer/ipod2g-re/kexts/com.apple.driver.AppleMBX.macho with
+ * ~/Developer/ipod2g-re/kexts/com.apple.driver.AppleMBX.macho with
  * __text at 0xc04e4000, so a PC in that range maps straight onto a disassembly
  * line and tells you which driver routine touched the register.
  */

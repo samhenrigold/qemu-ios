@@ -13,7 +13,7 @@ Independently captured N72 7E18 command words and the eight-root raw-page GART
 agree with this decoder in prior sanitizer replay. The old RAM capture was
 after a stall: it does not establish live pixel accuracy or EVM semantics.
 See the bounded prior receipts in
-`/Users/shg/Developer/ltm-evidence/mbx-reuse-2026-10-01`.
+`~/Developer/ltm-evidence/mbx-reuse-2026-10-01`.
 
 The operation admitted here is exactly the captured full-screen opaque-black
 BGRA8 fill: 320x480, 1280-byte stride, one freshly written 16-word packet,

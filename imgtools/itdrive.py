@@ -17,8 +17,8 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from itqmp import QMP, abs_xy, tap, swipe, finger, pinch, key, shot, normalize  # noqa: F401
 
-QEMU = "/Users/shg/Developer/qemu-ios/build/qemu-system-arm"
-FILES = "/Users/shg/Developer/qemu-ios-files"
+QEMU = os.path.expanduser("~/Developer/qemu-ios/build/qemu-system-arm")
+FILES = os.path.expanduser("~/Developer/qemu-ios-files")
 W, H = 320, 480
 
 

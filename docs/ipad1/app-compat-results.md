@@ -1,6 +1,6 @@
 # iPad 1 / 3.2.2 app-compat results
 
-Store: `/Users/shg/Developer/qemu-ios-files/ipad1/userland/golden-appsync`. 49 apps tested.
+Store: `~/Developer/qemu-ios-files/ipad1/userland/golden-appsync`. 49 apps tested.
 
 Verdicts: INSTALL-FAIL 1, PASS-INSTALL 48
 

@@ -22,7 +22,7 @@
 set -eu
 
 GUEST_ARCH="${GUEST_ARCH:-armv6}"
-ARMV6_SDK="${ARMV6_SDK:-/Users/shg/Downloads/OldSDK/iPhoneOS3.1.3.sdk}"
+ARMV6_SDK="${ARMV6_SDK:-${HOME}/Downloads/OldSDK/iPhoneOS3.1.3.sdk}"
 GUEST_API_VERSION="${GUEST_API_VERSION:-5.0}"
 case "$GUEST_API_VERSION" in 2.0|5.0) ;; *) echo "unsupported compiler API target: $GUEST_API_VERSION" >&2; return 1 2>/dev/null || exit 1 ;; esac
 ARMV6_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

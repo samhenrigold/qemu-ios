@@ -50,13 +50,13 @@ not a native ROM execution or ROM trust-anchor qualification. The stock leaf
 certificate signature also verifies under the included Apple Secure Boot CA.
 All thirteen original 7E18 all_flash Img3 SHSH signatures independently match
 their signed spans, including iBoot and DeviceTree; metadata is retained in
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72-stock-allflash-signatures.json`.
+`~/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72-stock-allflash-signatures.json`.
 
 Creating new Apple-trusted signatures requires private signing material unavailable
 to this project; catalog GID decryption keys are a separate issue.
 
 Reproducible local diagnostic metadata (no private keys or firmware payload exports):
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72_fuse_cert_proof.py` and
+`~/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72_fuse_cert_proof.py` and
 `n72-fuse-cert-proof.json`. Source model test
 `tests/ipod/test_n72_security_profile.py` exercises actual production transformation
 under ASan/UBSan across all SDOM values and both oscillator/secure-input values.
@@ -116,7 +116,7 @@ MMU-off physical entry is `08069040`, using the same conversion as the existing
 keybag diagnostic. The bounded native probe can use `--kernel-pc 0x08069040`.
 The filesystem contains userland additions, but this kernel and the NOR signed
 spans remain original. Durable reproducible metadata is
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-security-profile-candidate/kernel-proof.json`.
+`~/Developer/ltm-fidelity/evidence/ltm-n72-security-profile-candidate/kernel-proof.json`.
 A prepared breakpoint recipe is not proof that the native chain reaches it.
 
 ## Actual stock verification controls
@@ -130,7 +130,7 @@ one changed LLB SHSH byte returns R0=`ffffffff`, with the same signed digest
 and altered signature hash. This proves actual ROM crypto refusal; the earlier
 timeout in its subsequent RAM-flag wait alone did not establish rejection.
 
-Durable receipts: `/Users/shg/Developer/ltm-fidelity/evidence/secure-dev-dsim-positive/result.json`
-and `/Users/shg/Developer/ltm-fidelity/evidence/secure-dev-verify-bad-retry/result.json`.
+Durable receipts: `~/Developer/ltm-fidelity/evidence/secure-dev-dsim-positive/result.json`
+and `~/Developer/ltm-fidelity/evidence/secure-dev-verify-bad-retry/result.json`.
 The profile remains opt-in. Complete ROM→LLB→iBoot→kernel, stock restore and
 durable restored boot remain pending; no preferred host boot route changes.

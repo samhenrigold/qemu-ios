@@ -58,7 +58,7 @@ uses DT clock ID2, the cached AppleS5L8720XIO table entry populated from cpu0
 `bus-frequency`. It is not a direct read of the modeled root PCLK. This mapping
 is established for7E18 only; actual bootloader publication/gating, CNT movement,
 kick/reload/disable semantics and overflow still require independent observation.
-Evidence: `/Users/shg/Developer/ltm-evidence/watchdog-provider-2026-10-01`.
+Evidence: `~/Developer/ltm-evidence/watchdog-provider-2026-10-01`.
 
 Timed watchdog expiry has **not** been enabled. The exact immediate-reset command
 retains its prior behavior. Making a new expiry timer run against an invented
@@ -78,12 +78,12 @@ full tags, one song after duplicate import and MediaPlayer-decoded artwork.
 
 Retained local evidence:
 
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-clock-rom-trace2`: baseline SecureROM/LLB register trace.
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-clock-rom-candidate`: candidate trace and register captures.
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-wdt-clock-trace`: native direct-iBoot clock/feed trace.
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-clock-qtest.log`: lock, frequency and migration contracts.
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-overnight-models-clock.log`: registered model tier.
-- `/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-clock-native`: fresh/reopened native media proof.
+- `~/Developer/ltm-fidelity/evidence/ltm-n72-clock-rom-trace2`: baseline SecureROM/LLB register trace.
+- `~/Developer/ltm-fidelity/evidence/ltm-n72-clock-rom-candidate`: candidate trace and register captures.
+- `~/Developer/ltm-fidelity/evidence/ltm-n72-wdt-clock-trace`: native direct-iBoot clock/feed trace.
+- `~/Developer/ltm-fidelity/evidence/ltm-n72-clock-qtest.log`: lock, frequency and migration contracts.
+- `~/Developer/ltm-fidelity/evidence/ltm-overnight-models-clock.log`: registered model tier.
+- `~/Developer/ltm-fidelity/evidence/ltm-n72-clock-native`: fresh/reopened native media proof.
 
 ## Later stock clock-publication evidence (2026-10-02)
 
@@ -113,7 +113,7 @@ existing DT snapshot at the earlier serial-write stage contains zero clock
 fields and is not a qualified final handoff observation.
 
 Bounded diagnostic instructions and hashes are retained locally in
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72-clock-bypass-proof.json`; no new native
+`~/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72-clock-bypass-proof.json`; no new native
 run or model change was performed for this investigation. Stock iBoot's SDIV
 arithmetic also needs comparison with the existing main-PLL-before-SDIV
 assumption before extending that behavior beyond the captured late SDIV=0
@@ -149,7 +149,7 @@ uses current clock/board objects. Old native media/clock receipts above describe
 the previous candidate only.
 
 The current-clock private AES/CoreAnimation artifact used by
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-next-notes-host-native` reaches the 2.1 home screen and passes
+`~/Developer/ltm-fidelity/evidence/ltm-next-notes-host-native` reaches the 2.1 home screen and passes
 identity, activation, AFC/install, two guest-confirmed PMU shutdowns and cold
 persistence. Its separate Notes keyboard gate fails, so this is qualified
 2.1 lifecycle evidence rather than a complete application/UI pass. Current
@@ -161,7 +161,7 @@ previous bfac 7E18 full gate linked different clock/board objects; its old
 The subsequent current-clock combined artifact
 `742448356ef29bc50aca6c356bc2456de60ad5d7d5c2c271870276129de9bbac`
 passes all eight native 7E18 checks in
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-next-current-hardware-ios313`,
+`~/Developer/ltm-fidelity/evidence/ltm-next-current-hardware-ios313`,
 including two guest-PMU-confirmed host shutdowns, cold persistence and fsck0.
 This qualifies the reference correction in the existing direct-iBoot/default
 graphics path. It does not qualify strict GPU execution, stock restore, or the

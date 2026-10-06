@@ -5,8 +5,9 @@ Separates the two candidates for the ~2.17 s stall inside the preactivate-push
 handler at 0x11b80: the status-bar update, or animateApplicationActivation:.
 Markers: 0x11 = about to call updateStatusBar:, 0x22 = it returned.
 """
+import os
 import sys, shutil, struct
-sys.path.insert(0, '/Users/shg/Developer/qemu-ios/imgtools')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import Macho
 import capstone
 

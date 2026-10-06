@@ -29,7 +29,7 @@ Verification: actual-source ASan/UBSan FIFO/reset suite passes, including both
 compatibility states. Dedicated actual-board `ipod-dsim-test` passes4/4: cold
 and direct reset/read-only/read-stability, warm reset, migration before and after
 software reset. Durable logs are under
-`/Users/shg/Developer/ltm-fidelity/evidence/ltm-n72-security-profile-candidate/`:
+`~/Developer/ltm-fidelity/evidence/ltm-n72-security-profile-candidate/`:
 `dsim-build.log`, `dsim-board-test.log`, and `dsim-authentic-artifacts/receipt.json`.
 The private artifact replaces only AES with pinned suppression-free f81b; no
 native result is implied by its successful build. The native authentic ROM→LLB→iBoot control progressed past the original

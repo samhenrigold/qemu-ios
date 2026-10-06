@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dumpvol
 import packvol
 
-GOLDEN = "/Users/shg/Developer/qemu-ios-files/nand"
+GOLDEN = os.path.expanduser("~/Developer/qemu-ios-files/nand")
 
 
 def run(cmd, **kw):

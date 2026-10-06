@@ -99,8 +99,8 @@ def search(blob, needle, limit=50):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--nand", default="/Users/shg/Developer/qemu-ios-files/nand")
-    ap.add_argument("--blob", default="/Users/shg/Developer/qemu-ios-files/nand.blob")
+    ap.add_argument("--nand", default=os.path.expanduser("~/Developer/qemu-ios-files/nand"))
+    ap.add_argument("--blob", default=os.path.expanduser("~/Developer/qemu-ios-files/nand.blob"))
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--spare", default=None)

@@ -42,7 +42,7 @@ import subprocess
 import sys
 import tempfile
 
-IMGTOOLS = "/Users/shg/Developer/qemu-ios/imgtools"
+IMGTOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, IMGTOOLS)
 from ftlmap import predict
 

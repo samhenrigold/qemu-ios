@@ -62,9 +62,9 @@ BLOCK = 4096
 SECTOR = 512
 BLANK_SPARE = b"\x00" * 8 + b"\xff\x00\xff\x00" + b"\x00" * 52
 
-GOLDEN = "/Users/shg/Developer/qemu-ios-files/nand"
-DEFAULT_TEMPLATE = "/Users/shg/Developer/qemu-ios-files/nand-canonical"
-DEFAULT_DMGTOOL = "/Users/shg/Downloads/OldSDK/dmg"
+GOLDEN = os.path.expanduser("~/Developer/qemu-ios-files/nand")
+DEFAULT_TEMPLATE = os.path.expanduser("~/Developer/qemu-ios-files/nand-canonical")
+DEFAULT_DMGTOOL = os.path.expanduser("~/Downloads/OldSDK/dmg")
 
 KC_DIR = "System/Library/Caches/com.apple.kernelcaches"
 KC_NAME = "kernelcache.s5l8720x"
