@@ -189,6 +189,12 @@ def main():
         b.start()
         if not step("mux", b.wait_mux(), "lockdown answers ProductVersion %s" % a.product_version):
             return 1
+        if a.major >= 7:
+            # 7.x's launchd starts the guest jobs about 100 s after lockdown answers; it_ethlink then brings USB
+            # Ethernet up, which an AFC upload running at that moment did not survive. Install after it_boot reports.
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline and "it_boot: package" not in open(b.serial, errors="replace").read():
+                time.sleep(3)
         ins = b.run(["ideviceinstaller", "install", a.ipa], timeout=240)
         listed = bundle in b.run(["ideviceinstaller", "list"], timeout=90).stdout
         out = (ins.stdout + ins.stderr).strip().splitlines()
