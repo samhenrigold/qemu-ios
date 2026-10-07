@@ -96,7 +96,7 @@ typedef struct {
     void *decoder, *decode_timer; uint32_t pending, regs[0x3000/4], int_mask[2];
     bool codec_decode, state_handshake, irq_armed; int irq; uint64_t buf_base;
     uint32_t dram_base, dram_size; bool rev21; uint32_t result_offset, dma_done;
-    uint32_t xfers, xfer[AMC_XFER_QUEUE * 3]; uint8_t port[AMC_PORT_BYTES];
+    uint32_t xfers, xfer[AMC_XFER_QUEUE * 3], e0_resume; uint8_t port[AMC_PORT_BYTES];
     uint32_t port_len; void (*port_kick)(void *); void *port_opaque;
 } IPodTouchAMCState;
 static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
@@ -455,10 +455,14 @@ int main(void) {
     d=a.decoder; assert(d && d->pcm->len && !a.regs[0x100/4]);
     assert(!lduw_le_p(aperture+AMC_RESULT_OFFSET+0xa));      /* nothing at the 2.0 block */
     assert(!a.port_len && !(a.pending & 4));                   /* no frame without a job */
+    /* iOS 7's shape (n90ap 11D257): job, commit, completion, the slot status copied out (to 0x344d0), then
+     * cleared. 7B500's has no copy-out. Engine 0 runs it in order: what follows the job runs once the frame moved. */
     static const uint32_t list[] = {
         0x34438,0x00140101,0x3448c,0x303060, 0x34454,0x00040001,0x344a0,0x303060,
-        0x34470,0x00040009,0x344a4,0xc48,    0,0x00080005,0x344a8,0x18008 };
+        0x34470,0x00040009,0x344a4,0xc48,    0x34700,0x00080005,0x18008,0x344d0 };
     for (unsigned i=0;i<16;i++) stl_le_p(aperture+0x3441c+(i/4)*0x1c+(i%4)*4,list[i]);
+    static const uint32_t clear[] = { 0,0x00080005,0x344a8,0x18008 };
+    for (unsigned i=0;i<4;i++) stl_le_p(aperture+0x34700+i*4,clear[i]);
     static const uint32_t job[] = { 0, 4096, 0x18100, 0, AMC_PORT_LOCAL_21, 3, 4, 0, 0 };
     for (unsigned i=0;i<9;i++) stl_le_p(aperture+0x3448c+i*4,job[i]);
     ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x3441e, 4);
@@ -466,9 +470,21 @@ int main(void) {
     amc_decode_tick(&a);
     assert(!a.xfers && a.port_len == 4096);
     assert(!memcmp(a.port, aperture+0x18100, 4096));
-    assert(lduw_le_p(aperture+0x18000+0xc) == 1024);           /* the 2.1 block */
+    assert(lduw_le_p(aperture+0x344d0+4) == 1024);             /* the copied-out 2.1 block: this frame's */
+    assert(!lduw_le_p(aperture+0x18000+0xc) && !a.e0_resume);  /* then cleared; the list is done */
     unsigned loud=0; for (unsigned i=0;i<4096;i++) loud+=a.port[i]!=0;
     assert(loud>100);
+    /* iOS 7 (n90ap 11D257) chains several frames' commands into one list, 16 links and more: every link runs. */
+    for (unsigned i=0;i<18;i++) {
+        uint32_t at=0x34600+i*0x1c;
+        stl_le_p(aperture+at, i<17 ? at+0x1c : 0);
+        stl_le_p(aperture+at+4,0x00040005);                    /* 4 bytes to engine-local memory */
+        stl_le_p(aperture+at+8,0x34800);
+        stl_le_p(aperture+at+12,0x34900+i*4);
+    }
+    stl_le_p(aperture+0x34800,0x5a5a0000);
+    ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x34602, 4);
+    assert(ldl_le_p(aperture+0x34900+17*4)==0x5a5a0000);       /* the 18th link ran */
     amc_decoder_close(&a);
     puts("PASS: AMC 2.1 layout, engine-local input and engine 0 collection into the output port");
     puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");
