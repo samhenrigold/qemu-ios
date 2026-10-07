@@ -1,0 +1,734 @@
+#!/usr/bin/env python3
+"""Shared QMP client for driving the emulated iPod touch.
+
+One transport, used by everything that used to hand-roll its own: the CLI
+(`contrib/ipod-touch-qmp.py`), the recorder (`imgtools/record.py`), the kernel
+log dumper (`imgtools/klog.py`), and `contrib/it-poweroff.sh`. Five copies of
+the same ~20-line QMP handshake had already drifted: only one had multitouch,
+only one had hardware buttons, only one retried the connect while QEMU is
+still starting up.
+
+LOCAL CLIENT, NOT upstream `python/qemu/qmp/`: that library is asyncio-based,
+and every consumer here is a small blocking script (a CLI one-liner, a
+screendump loop, a shell-invoked subcommand) that wants a synchronous
+request/reply call, not an event loop. Wrapping each in asyncio would be more
+code than this file, for no capability gained. This client has no external
+dependency.
+
+The LCD device registers a legacy absolute mouse handler
+(`ipod_touch_lcd_mouse_event`, 0..0x7fff on both axes) and a multi-touch
+handler ("mtt") for pinch/rotate. Hardware buttons sit behind the host
+Command modifier so plain keys stay free for text entry (see `button()`).
+"""
+
+import base64
+import uuid
+import json
+import math
+import os
+import socket
+import subprocess
+import sys
+import time
+
+W, H = 320, 480
+ABS_MAX = 0x7FFF
+RAM_BASE = 0x08000000
+RAM_SIZE = 128 * 1024 * 1024
+
+
+class QMP:
+    """Blocking QMP client. Accepts (host, port) or a single "host:port" /
+    unix-socket-path target string (the shapes `it-poweroff.sh` needs)."""
+
+    def __init__(self, host, port=None, timeout=180, read_timeout=None):
+        if port is None:
+            if isinstance(host, int):
+                host, port = "127.0.0.1", host
+            elif ":" in host and not host.startswith("/"):
+                host, port_s = host.rsplit(":", 1)
+                port = int(port_s)
+            else:
+                self.s = self._connect_unix(host, timeout)
+        if port is not None:
+            self.s = self._connect_tcp(host, port, timeout)
+        self.s.settimeout(timeout)
+        self.f = self.s.makefile("rwb")
+        self.shutdown_event = None
+        self.reset_count = 0
+        try:
+            self._read()  # greeting
+            self.cmd("qmp_capabilities")
+            if read_timeout is not None:
+                if read_timeout <= 0: raise ValueError("read_timeout must be positive")
+                self.s.settimeout(read_timeout)
+        except BaseException:
+            self.close()
+            raise
+
+    def shot(self, path):
+        """Raw PPM for native checks; CLI shot() separately normalizes to PNG."""
+        return shot_ppm(self, path, W * H * 3)
+
+    def tap(self, x, y, hold=0.15):
+        tap(self, x, y, hold=hold)
+
+    def swipe(self, x1, y1, x2, y2, steps=12, dwell=0.05):
+        swipe(self, x1, y1, x2, y2, steps=steps, dt=dwell)
+
+    def home(self):
+        button(self, "home")
+
+    @staticmethod
+    def _connect_tcp(host, port, timeout):
+        deadline = time.time() + timeout
+        while True:
+            try:
+                return socket.create_connection((host, port), 5)
+            except OSError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.5)
+
+    @staticmethod
+    def _connect_unix(path, timeout):
+        deadline = time.time() + timeout
+        while True:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                s.connect(path)
+                return s
+            except OSError:
+                s.close()
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.5)
+
+    def _read_message(self):
+        line = self.f.readline()
+        if not line:
+            raise EOFError("QMP closed without a guest shutdown confirmation")
+        msg = json.loads(line)
+        if msg.get("event") == "SHUTDOWN" and self.shutdown_event is None:
+            self.shutdown_event = msg
+        if msg.get("event") == "RESET":
+            self.reset_count += 1
+        return msg
+
+    def _read(self):
+        while True:
+            msg = self._read_message()
+            if "event" not in msg:
+                return msg
+
+    def wait_for_guest_shutdown(self, timeout):
+        """Require QEMU's guest-origin shutdown event, never EOF or exit status.
+
+        This is a terminal wait: after a read timeout, socket.makefile cannot
+        safely resume reading, so callers must close the connection.
+        """
+        deadline = time.monotonic() + timeout
+        old_timeout = self.s.gettimeout()
+        try:
+            while self.shutdown_event is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("timed out waiting for guest SHUTDOWN event")
+                self.s.settimeout(remaining)
+                self._read_message()
+            data = self.shutdown_event.get("data", {})
+            if data.get("guest") is not True or data.get("reason") != "guest-shutdown":
+                raise RuntimeError("shutdown was not guest-confirmed: %s" % data)
+            return True
+        finally:
+            self.s.settimeout(old_timeout)
+
+    def cmd(self, name, **args):
+        req = {"execute": name}
+        if args:
+            req["arguments"] = args
+        self.f.write((json.dumps(req) + "\n").encode())
+        self.f.flush()
+        r = self._read()
+        if "error" in r:
+            raise RuntimeError("%s: %s" % (name, r["error"]))
+        return r.get("return")
+
+    def close(self):
+        try:
+            self.f.close()
+        except OSError:
+            pass
+        finally:
+            self.s.close()
+
+
+def agent_alive(q):
+    """False on a machine without the guest agent (no agent-status property)."""
+    try:
+        return q.cmd("qom-get", path="/machine", property="agent-status") == "alive"
+    except RuntimeError:
+        return False
+
+
+def gles_rejects(q):
+    """{name: count}: every refusal the GL bridge has made so far (the machine's gles-rejects
+    property: a surface format, a texture format/type, a dispatch slot...); {} on a build without it."""
+    try:
+        text = q.cmd("qom-get", path="/machine", property="gles-rejects")
+    except RuntimeError:
+        return {}
+    return {name: int(count) for name, _, count in (l.partition("\t") for l in text.splitlines()) if count}
+
+
+def magenta_fraction(ppm, step=1):
+    """Fraction of a screendump's pixels that are magenta, against the frame's own maximum (the
+    backlight scales pixels). gles-debug=on paints what the GL bridge refused that colour, and
+    nothing in the iOS UI is that colour; the GLTest fixtures are, so not for their screens."""
+    _, _, pix = read_ppm(ppm)
+    hi = max(pix) or 1
+    lo, up = 0.3 * hi, 0.7 * hi
+    n = sum(1 for i in range(0, len(pix) - 2, 3 * step) if pix[i] >= up and pix[i + 2] >= up and pix[i + 1] <= lo)
+    return n / max(1, len(pix) // (3 * step))
+
+
+AGENT_REQUEST_MAX = 256 * 1024      # include/hw/arm/ipod-agent.h: header line + body
+AGENT_RESPONSE_MAX = 1024 * 1024
+AGENT_PART = AGENT_REQUEST_MAX - 4097   # beside the longest header (4096 + newline)
+GUEST_EFBIG = -27                    # Darwin's EFBIG
+
+
+def agent(q, op, args="", body=b"", timeout=65):
+    """Local RPC; returns (exit_status, binary_output).
+
+    `put` and `get` take files of any size: a put over one request goes as v3
+    `putpart` chunks (atomic on the guest: the last one renames the part file into
+    place), and a get the agent refuses as over 1 MiB is read back by `getrange`.
+    A put that needs chunks raises RuntimeError on an agent without `putpart`.
+    """
+    if op == "put" and len(body) > AGENT_PART:
+        return _agent_put_parts(q, args, body, timeout)
+    status, output = _agent_one(q, op, args, body, timeout)
+    if op == "get" and status == GUEST_EFBIG:
+        return _agent_get_ranges(q, args, timeout)
+    return status, output
+
+
+def _agent_put_parts(q, args, body, timeout):
+    path, _, mode = args.rpartition(" ")
+    status, hello = _agent_one(q, "ping", "", b"", timeout)
+    if status or b"putpart" not in hello.split():
+        found = hello.split(b"\n", 1)[0].decode("ascii", "replace") if not status else "ping status %d" % status
+        raise RuntimeError("guest agent (%s) has no putpart, and this %d-byte put is over its %d-byte "
+                           "request limit: upgrade it_agent to v3" % (found, len(body), AGENT_REQUEST_MAX))
+    for offset in range(0, len(body), AGENT_PART):
+        part = body[offset:offset + AGENT_PART]
+        final = offset + len(part) == len(body)
+        status, output = _agent_one(q, "putpart", "%d %d %s %s" % (offset, final, mode, path), part, timeout)
+        if status:
+            return status, output
+    return 0, b""
+
+
+def _agent_get_ranges(q, path, timeout):
+    # ponytail: not a snapshot; a file rewritten mid-read can tear. Fine for staged files.
+    data = bytearray()
+    while True:
+        status, output = _agent_one(q, "getrange", "%d %d %s" % (len(data), AGENT_RESPONSE_MAX, path),
+                                    b"", timeout)
+        if status:
+            return status, output
+        data += output
+        if len(output) < AGENT_RESPONSE_MAX:
+            return 0, bytes(data)
+
+
+def _agent_one(q, op, args, body, timeout):
+    """One request. A timeout is an unknown execution outcome, never a reason to retry
+    a mutation. Results for other callers are retained on this QMP connection. Use one
+    shared client per machine; competing QMP connections cannot consume each other's RPCs.
+    """
+    if any(c in op + args for c in "\r\n") or not op or " " in op:
+        raise ValueError("invalid agent header")
+    request_id = uuid.uuid4().hex
+    header = request_id + " " + op + (" " + args if args else "")
+    request = header + "\n" + base64.b64encode(body).decode("ascii")
+    q.cmd("qom-set", path="/machine", property="agent-request", value=request)
+    deadline = time.monotonic() + timeout
+    pending = getattr(q, "_agent_results", None)
+    if pending is None:
+        pending = q._agent_results = {}
+    completed = False
+    try:
+        while time.monotonic() < deadline:
+            result = q.cmd("qom-get", path="/machine", property="agent-result")
+            if result:
+                header, encoded = result.split("\n", 1)
+                identifier, status = header.split(" ", 1)
+                value = (int(status), base64.b64decode(encoded, validate=True))
+                if identifier == request_id:
+                    completed = True
+                    return value
+                if len(pending) >= 64:
+                    pending.pop(next(iter(pending)))
+                pending[identifier] = value
+            else:
+                time.sleep(0.25)
+        raise TimeoutError("agent request %s timed out; execution outcome unknown" % request_id)
+    finally:
+        if not completed:
+            try:
+                q.cmd("qom-set", path="/machine", property="agent-cancel", value=request_id)
+            except (OSError, EOFError, RuntimeError):
+                pass  # Preserve the original failure; never replay the command.
+
+
+
+def spawn(q, argv, timeout=65):
+    """Agent v2 `spawn`: run argv (argv[0] absolute) with no shell; (exit_status, stdout+stderr)."""
+    return agent(q, "spawn", "", b"".join(a.encode() + b"\0" for a in argv), timeout)
+
+
+# ---------------------------------------------------------------------------
+# Touch: single contact (tap/swipe) via the legacy absolute mouse handler.
+# ---------------------------------------------------------------------------
+
+
+def abs_xy(x, y):
+    """Screen pixels -> the 0..0x7fff absolute axis values the LCD expects.
+
+    Scaled against (W-1)/(H-1) so the last pixel reaches full scale exactly -
+    touch is timing- and precision-sensitive near the screen edges (status
+    bar taps, edge swipes), so this is not just int(x / W * 0x8000).
+    """
+    ax = int(x * ABS_MAX / (W - 1))
+    ay = int(y * ABS_MAX / (H - 1))
+    return max(0, min(ABS_MAX, ax)), max(0, min(ABS_MAX, ay))
+
+
+def move(q, x, y):
+    ax, ay = abs_xy(x, y)
+    q.cmd("input-send-event", events=[
+        {"type": "abs", "data": {"axis": "x", "value": ax}},
+        {"type": "abs", "data": {"axis": "y", "value": ay}}])
+
+
+def tap(q, x, y, hold=0.12):
+    move(q, x, y)
+    time.sleep(0.05)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"down": True, "button": "left"}}])
+    time.sleep(hold)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"down": False, "button": "left"}}])
+
+
+def swipe(q, x1, y1, x2, y2, steps=12, dt=0.02):
+    move(q, x1, y1)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"down": True, "button": "left"}}])
+    for i in range(1, steps + 1):
+        move(q, x1 + (x2 - x1) * i // steps, y1 + (y2 - y1) * i // steps)
+        time.sleep(dt)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"down": False, "button": "left"}}])
+
+
+# ---------------------------------------------------------------------------
+# Hardware buttons and raw keys.
+# ---------------------------------------------------------------------------
+
+# As the machine maps them (hw/arm/ipod_touch_2g.c).
+BUTTONS = {
+    "home":    ["meta_l", "shift", "h"],
+    "power":   ["meta_l", "l"],
+    "voldown": ["meta_l", "minus"],
+    "volup":   ["meta_l", "equal"],
+}
+
+
+def button(q, name, hold_ms=300):
+    """Press a hardware button as ORDERED key down/ups, NOT a chord.
+
+    `send-key` presses the whole combination at once, and on an unlocked
+    device the guest's keyboard sees the letter before the modifier has
+    established that this is a button: a chord typed "Mm" into Spotlight
+    instead of going Home. Pressing modifiers first, holding, then releasing
+    in reverse order is what the machine's GPIO sampling actually expects -
+    these are levels the guest polls, not edges, so the hold has to be long
+    enough to be seen. Do not "simplify" this back into a single send-key.
+    """
+    keys = BUTTONS[name] if isinstance(name, str) else name
+    down = [{"type": "key",
+             "data": {"down": True, "key": {"type": "qcode", "data": k}}}
+            for k in keys]
+    up = [{"type": "key",
+           "data": {"down": False, "key": {"type": "qcode", "data": k}}}
+          for k in reversed(keys)]
+    q.cmd("input-send-event", events=down)
+    time.sleep(hold_ms / 1000.0)
+    q.cmd("input-send-event", events=up)
+
+
+def key(q, name, hold_ms=250):
+    """Send a raw qcode key - NOT a hardware button, see `button()`.
+
+    Plain 'h' types the letter h; a verification run once lost its whole
+    sequence inside Safari's bookmarks over this exact confusion.
+    """
+    q.cmd("send-key", keys=[{"type": "qcode", "data": name}], **{"hold-time": hold_ms})
+
+
+# ---------------------------------------------------------------------------
+# Multi-touch: pinch/rotate need two simultaneous contacts, which the legacy
+# mouse handler can't describe. The LCD also registers QEMU's "mtt" event
+# kind, carrying a slot and tracking id per contact.
+#
+# Two-phase protocol: DATA events carry a slot's X/Y, then a following
+# begin/update/end commits them. All five fields are mandatory in the QAPI
+# schema even where ignored, hence the axis/value on the commit.
+# ---------------------------------------------------------------------------
+
+
+def _mtt(kind, slot, x=0, y=0):
+    tid = slot + 1
+    if kind == "data":
+        return [
+            {"type": "mtt", "data": {"type": "data", "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "x", "value": x}},
+            {"type": "mtt", "data": {"type": "data", "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "y", "value": y}},
+        ]
+    return [{"type": "mtt", "data": {"type": kind, "slot": slot,
+                                     "tracking-id": tid,
+                                     "axis": "x", "value": x}}]
+
+
+def finger(q, slot, x, y, phase):
+    """Put contact `slot` at screen pixel (x, y). phase: begin/update/end."""
+    ax, ay = abs_xy(x, y)
+    q.cmd("input-send-event",
+          events=_mtt("data", slot, ax, ay) + _mtt(phase, slot, ax, ay))
+
+
+def pinch(q, cx, cy, r0, r1, steps=24, dt=0.03, angle=0.0, settle=0.3):
+    """Two-finger pinch about (cx, cy), from separation 2*r0 to 2*r1 pixels.
+
+    Both contacts are placed and committed before any motion: iPhone OS
+    decides a gesture is a pinch from two contacts existing at once, and a
+    first frame carrying only one finger reads as a drag that a second
+    finger joined later, which is a different recogniser.
+    """
+    def pos(r):
+        dx, dy = math.cos(angle) * r, math.sin(angle) * r
+        return (cx - dx, cy - dy), (cx + dx, cy + dy)
+
+    (ax, ay), (bx, by) = pos(r0)
+    finger(q, 0, ax, ay, "begin")
+    finger(q, 1, bx, by, "begin")
+    time.sleep(settle)
+    for i in range(1, steps + 1):
+        r = r0 + (r1 - r0) * i / steps
+        (ax, ay), (bx, by) = pos(r)
+        finger(q, 0, ax, ay, "update")
+        finger(q, 1, bx, by, "update")
+        time.sleep(dt)
+    time.sleep(settle)
+    finger(q, 0, ax, ay, "end")
+    finger(q, 1, bx, by, "end")
+
+
+# ---------------------------------------------------------------------------
+# Screenshots and kernel RAM.
+# ---------------------------------------------------------------------------
+
+
+def shot_ppm(q, path, min_bytes=1, timeout=6):
+    """Capture raw guest pixels and reject missing or incomplete output."""
+    q.cmd("screendump", filename=str(path))
+    deadline = time.monotonic() + timeout
+    while True:
+        if os.path.exists(path) and os.path.getsize(path) >= min_bytes:
+            return str(path)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("incomplete guest screendump: %s" % path)
+        time.sleep(0.1)
+
+
+def shot(q, path):
+    """screendump + normalise. Returns (path, max_sample, nonzero_fraction).
+
+    The panel scales every pixel by the guest-programmed backlight, so a raw
+    dump of a dim screen is faithful and illegible; normalize() rescales it.
+    """
+    ppm = path + ".ppm"
+    shot_ppm(q, ppm, 1001)
+    return normalize(ppm, path)
+
+
+def read_ppm(path):
+    """Read one complete 8-bit P6 frame; malformed/truncated headers never spin."""
+    with open(path, "rb") as source:
+        data = source.read()
+    tokens, offset = [], 0
+    while len(tokens) < 4:
+        while offset < len(data) and data[offset:offset + 1].isspace():
+            offset += 1
+        if data[offset:offset + 1] == b"#":
+            end = data.find(b"\n", offset)
+            if end < 0:
+                raise ValueError("unterminated PPM comment")
+            offset = end + 1
+            continue
+        start = offset
+        while offset < len(data) and not data[offset:offset + 1].isspace() and data[offset:offset + 1] != b"#":
+            offset += 1
+        if start == offset:
+            raise ValueError("incomplete PPM header")
+        tokens.append(data[start:offset])
+    if tokens[0] != b"P6" or not all(token.isdigit() for token in tokens[1:]):
+        raise ValueError("invalid PPM header")
+    width, height, maximum = map(int, tokens[1:])
+    if width <= 0 or height <= 0 or not 1 <= maximum <= 255 or not data[offset:offset + 1].isspace():
+        raise ValueError("unsupported PPM dimensions/sample size")
+    # Consume only the header delimiter: whitespace or '#' can be a pixel byte.
+    offset += 2 if data[offset:offset + 2] == b"\r\n" else 1
+    pixels = data[offset:]
+    if len(pixels) != width * height * 3:
+        raise ValueError("incomplete or extra PPM raster")
+    return width, height, bytearray(pixels)
+
+
+def normalize(ppm, png):
+    w, h, pix = read_ppm(ppm)
+    hi = max(pix) if pix else 0
+    if 0 < hi < 255:
+        scale = 255.0 / hi
+        pix = bytearray(min(255, int(v * scale)) for v in pix)
+    out = b"P6\n%d %d\n255\n" % (w, h) + bytes(pix)
+    tmp = png + ".norm.ppm"
+    with open(tmp, "wb") as f:
+        f.write(out)
+    subprocess.run(["sips", "-s", "format", "png", tmp, "--out", png],
+                   check=True, capture_output=True)
+    os.remove(tmp)
+    nz = sum(1 for v in pix if v) / max(1, len(pix))
+    return png, hi, nz
+
+
+def pmemsave(q, path, base=RAM_BASE, size=RAM_SIZE):
+    """Dump guest RAM to `path` (for klog.py's msgbuf search)."""
+    q.cmd("pmemsave", val=base, size=size, filename=path)
+
+
+# ---------------------------------------------------------------------------
+# CLI - contrib/ipod-touch-qmp.py is a thin wrapper around this.
+# ---------------------------------------------------------------------------
+
+USAGE = """\
+itqmp.py <port-or-target> <action> [args...]
+
+  shot <out.ppm>
+  tap <x> <y>                       # 0..319 x, 0..479 y
+  swipe <x1> <y1> <x2> <y2>
+  button <home|power|voldown|volup>
+  key <qcode>                       # raw key, reaches the guest as text
+  finger <slot> <x> <y> <begin|update|end>
+  pinch <cx> <cy> <r0> <r1>
+  agent <operation> [args]          # binary body from stdin for exec/put
+  cmd <qmp-command> [k=v ...]       # e.g. cmd system_powerdown
+
+<port-or-target> is a TCP port, "host:port", or a unix socket path.
+"""
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) < 2:
+        sys.stderr.write(USAGE)
+        sys.exit("need a target and an action")
+    target, action, rest = argv[0], argv[1], argv[2:]
+    if action == "button" and (not rest or rest[0] not in BUTTONS):
+        sys.exit("unknown button %r; try one of: %s"
+                 % (rest[0] if rest else None, ", ".join(sorted(BUTTONS))))
+
+    q = QMP(int(target) if target.isdigit() else target)
+    if action == "agent":
+        if not rest: sys.exit("agent operation required")
+        body = sys.stdin.buffer.read() if rest[0] in ("exec", "put") and not sys.stdin.isatty() else b""
+        status, output = agent(q, rest[0], " ".join(rest[1:]), body)
+        sys.stdout.buffer.write(output)
+        q.close()
+        return 0 if status == 0 else 1
+    elif action == "shot":
+        print(shot(q, rest[0]))
+    elif action == "tap":
+        tap(q, int(rest[0]), int(rest[1]))
+        print("tapped")
+    elif action == "swipe":
+        swipe(q, *(int(a) for a in rest[:4]))
+        print("swiped")
+    elif action == "button":
+        button(q, rest[0])
+        print("%s pressed" % rest[0])
+    elif action == "key":
+        key(q, rest[0])
+        print("key sent")
+    elif action == "finger":
+        finger(q, int(rest[0]), int(rest[1]), int(rest[2]), rest[3])
+        print("finger sent")
+    elif action == "pinch":
+        pinch(q, *(float(a) for a in rest[:4]))
+        print("pinched")
+    elif action == "cmd":
+        args = {}
+        for kv in rest[1:]:
+            k, _, v = kv.partition("=")
+            args[k] = v
+        print(q.cmd(rest[0], **args))
+    else:
+        # Unknown action must fail loudly: a typo'd action otherwise silently
+        # exits 0 while doing nothing, which has cost a full boot cycle to
+        # debug before.
+        sys.stderr.write(USAGE)
+        sys.exit("unknown action %r" % action)
+
+
+def poweroff_sequence(qmp, knob_y=68):
+    """Host UI gesture; generic QMP owns all timing in guest virtual time.
+
+    Only the measured 320x480 iPod panels are supported here. No fallback to
+    wall-clock sleeps, guest patches or a successful-input shutdown verdict.
+    """
+    machine = qmp.cmd("qom-get", path="/machine", property="type")
+    if machine not in ("iPod-Touch-machine", "iPod-Touch-1G-machine"):
+        raise RuntimeError("host power gesture is unqualified for %s" % machine)
+    if not isinstance(knob_y, int) or not 0 <= knob_y < 480:
+        raise ValueError("power-off knob row must lie within the iPod panel")
+    first_generation = machine == "iPod-Touch-1G-machine"
+    release = 8650 if first_generation else 6150
+    events = []
+    def hardware(name, down, at):
+        keys = BUTTONS[name] if down else reversed(BUTTONS[name])
+        events.extend({"type": "key", "at-ms": at, "key": k, "down": down} for k in keys)
+    hardware("home", True, 0)
+    hardware("home", False, 150)
+    hardware("power", True, 2650)
+    hardware("power", False, release)
+    start = release + 1500
+    events.append({"type": "touch", "at-ms": start, "phase": "begin",
+                   "x": 65 / 320, "y": knob_y / 480})
+    for step in range(1, 25):
+        x = 65 + (295 - 65) * step // 24
+        events.append({"type": "touch", "at-ms": start + step * 80,
+                       "phase": "end" if step == 24 else "update",
+                       "x": x / 320, "y": knob_y / 480})
+    ident = uuid.uuid4().int & ((1 << 64) - 1) or 1
+    qmp.cmd("input-send-sequence", id=ident, events=events)
+    return ident, first_generation
+
+
+def finish_poweroff_sequence(qmp, ident, first_generation, timeout=180):
+    """Observe input delivery/backlight; actual guest SHUTDOWN stays the gate."""
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            state = qmp.cmd("query-input-sequence", id=ident)["status"]
+            if state not in ("running", "completed"):
+                raise RuntimeError("power gesture input %s" % state)
+            if state == "completed":
+                if first_generation:
+                    return
+                if qmp.cmd("qom-get", path="/machine", property="display-sleeping") is True:
+                    qmp.cmd("qom-set", path="/machine", property="usb-attached", value=False)
+                    return
+            time.sleep(0.1)  # observation only; event deadlines remain virtual
+        raise TimeoutError("host power gesture did not complete/backlight remained on")
+    except EOFError:
+        qmp.wait_for_guest_shutdown(0)
+    except BaseException:
+        try: qmp.cmd("input-cancel-sequence", id=ident)
+        except (EOFError, OSError, RuntimeError): pass
+        raise
+
+
+def guest_powerdown(qmp, process, tag, log=print, charging_halt=False, prefer_gesture=False, host_gesture=False):
+    """Require guest-origin SHUTDOWN plus process exit; SIGTERM also exits 0."""
+    if qmp is None:
+        log("%s: no QMP connection to confirm guest shutdown" % tag)
+        return False
+    try:
+        if not prefer_gesture and agent_alive(qmp):
+            try:
+                status, response = agent(qmp, "halt", timeout=30)
+            except (RuntimeError, TimeoutError):
+                # A charging restart can complete the halt but discard the
+                # agent's pending reply. Do not retry the mutation: inspect
+                # the PMU evidence on the still-live QMP connection instead.
+                if not charging_halt:
+                    raise
+                status = 0
+            except (EOFError, BrokenPipeError, ConnectionResetError):
+                # A guest shutdown can beat the RPC reply (or the next poll's
+                # write). The retained PMU SHUTDOWN event below remains the
+                # acceptance gate.
+                status = 0
+            if status:
+                raise RuntimeError("agent halt failed: %d %r" % (status, response))
+            timeout = 60
+        else:
+            log("%s: gesture shutdown" % tag)
+            try:
+                if host_gesture:
+                    ident, first = poweroff_sequence(qmp)
+                    finish_poweroff_sequence(qmp, ident, first)
+                else:
+                    qmp.cmd("system_powerdown")
+            except EOFError:
+                # An immediate shutdown may precede the command response;
+                # the retained SHUTDOWN event must still prove its origin.
+                pass
+            timeout = 180
+        if charging_halt:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    confirmed = qmp.cmd("qom-get", path="/machine", property="guest-shutdown-confirmed")
+                except EOFError:
+                    qmp.wait_for_guest_shutdown(0)
+                    break
+                except (BrokenPipeError, ConnectionResetError):
+                    # QEMU exited between polls and the write failed first: its SHUTDOWN event is
+                    # still unread in the socket.
+                    qmp.wait_for_guest_shutdown(2)
+                    break
+                except RuntimeError:
+                    # No such property (n18): the machine has no charging loop and exits on the
+                    # guest's power-off, so the SHUTDOWN event is the evidence.
+                    qmp.wait_for_guest_shutdown(max(1, deadline - time.monotonic()))
+                    break
+                if confirmed is True:
+                    # The guest unmounted and halted; the cable keeps iBoot
+                    # running to charge. Quit only after that hardware evidence.
+                    try: qmp.cmd("quit")
+                    except EOFError: pass
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("guest PMU did not confirm shutdown")
+                time.sleep(0.2)
+        else:
+            qmp.wait_for_guest_shutdown(timeout)
+        rc = process.wait(timeout=10)
+        log("%s: guest-confirmed shutdown, qemu exit=%d" % (tag, rc))
+        return rc == 0
+    except (OSError, EOFError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        log("%s: shutdown not confirmed: %s" % (tag, exc))
+        return False
+    finally:
+        qmp.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

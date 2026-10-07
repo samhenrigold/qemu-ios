@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Missing GLTest must select Harness without silently replacing guest graphics."""
+import os
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch, Mock
+import regress as R
+
+with tempfile.TemporaryDirectory() as directory:
+    cfg = SimpleNamespace(out=directory, install_timeout=30, stage_gles_shim=False, gles_front_end=False)
+    dev = SimpleNamespace(dir=directory, qmp=Mock(), serial_text=lambda: '')
+    dev.qmp.shot.return_value = 'frame.ppm'
+    response = SimpleNamespace(returncode=0, stdout='', stderr='')
+    for signature, expected in (((.3, .3, 0), True), ((0, 0, 0), False)):
+        result = R.Result('gles')
+        with patch.object(R.os.path, 'exists', side_effect=lambda p: not str(p).endswith('GLTest.app')), \
+             patch.object(R, 'prepare_app_control', return_value=123), \
+             patch.object(R, 'app_is_installed', return_value=True), \
+             patch.object(R, 'unlock', return_value=(True, '')), \
+             patch.object(R, 'springboard', return_value=response) as launch, \
+             patch.object(R, 'foreground_is', return_value=True), \
+             patch.object(R, 'stop_app', return_value=response), \
+             patch.object(R, 'guest_file', return_value=b''), \
+             patch.object(R.itqmp, 'agent') as rpc, \
+             patch.object(R.itqmp, 'gles_rejects', return_value={}), \
+             patch.object(R, 'quad_signature', return_value=signature), \
+             patch.object(R, 'lit_count', return_value=(255, 200000)), \
+             patch.object(R, 'to_png'), patch.object(R.time, 'sleep'), patch.object(R, 'log'):
+            assert R.check_gles(cfg, None, dev, result) is expected, result.detail
+            launch.assert_called_once_with(cfg, 123, 'com.qemuios.harness')
+            dev.qmp.tap.assert_called_with(150, 79)
+            assert all(call.args[1] != 'put' for call in rpc.call_args_list)
+print('PASS: Harness fallback drives GL row, rejects absent colors, preserves baked renderer')

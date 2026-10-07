@@ -1,0 +1,25 @@
+== md 0xbf500000 4
+bf500000: 31800387
+bf500004: 80758000
+bf500008: <unit die-id word 2>
+bf50000c: <unit die-id word 3>
+== md 0xbf106000 1
+bf106000: 01020001
+== md 0xbf100000 4
+== md 0xbf100040 4
+== md 0xbf101010 4
+== md 0xbf102000 2
+== md 0xbf102000 2
+== md 0xbfa00000 4
+== md 0xbf200000 4
+== md 0x5ff00000 4
+== md 0x4ff00000 4
+== md 0xbf500000 1
+bf500000: 31800387
+== md 0x5ff00000 4
+5ff00000: ea00000e
+5ff00004: e59ff018
+5ff00008: e59ff018
+5ff0000c: e59ff018
+== md 0x4ff00000 4
+== md 0x4ff00000 4  -> no answer; iBEC hung (VA not mapped by iBEC; physical mirror still unknown)

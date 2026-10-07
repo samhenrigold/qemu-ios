@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Starts the pasteboard bridge at boot.
+
+  Install to /System/Library/LaunchDaemons/com.qemu.it-agent.plist, OWNED BY
+  ROOT: launchd silently ignores a plist it does not see as root-owned, and
+  imgtools/editimg.py creates files as uid 501. The daemon itself goes to
+  /usr/local/bin/it_agent.
+
+  Runs as root deliberately. pasteboardd runs as mobile but accepts clients
+  from either, and root is what an ssh session gives us, so development and
+  production use the same identity.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.qemu.it-agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/it_agent</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/it_agent.log</string>
+</dict>
+</plist>

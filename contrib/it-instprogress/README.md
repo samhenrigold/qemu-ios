@@ -1,0 +1,333 @@
+# The App Store download UI on iOS 3.1.3, and how much of it an outside process can drive
+
+Goal: when an `.ipa` is dropped on the QEMU window, show what a real App Store
+download shows — a placeholder icon on the home screen straight away, with a
+progress bar that fills as the install runs, replaced by the real icon at the
+end.
+
+**Shipped: the placeholder, end to end.** Drop an `.ipa` on the QEMU window and
+a placeholder appears on the home screen while the install runs, then the real
+icon takes its place — `docs/screenshots/DELIVERABLE-2-placeholder-during-install.png`
+and `docs/screenshots/DELIVERABLE-3-real-icon-after-install.png` are two frames of one Epicurious
+install, the same slot before and after. No injection and no entitlement.
+
+**Not shipped: the filling progress bar.** It is fed only by an `ISDownload`
+object that arrives from `itunesstored` over a launchd-owned Mach service, and
+the only ways in are in-process. The bar is drawn but stays empty and the label
+is SpringBoard's own "Waiting…", which is what iOS 3 really shows — so nothing
+here is faked. The rest of this file is the evidence and the routes left. The
+half-built `isprogress.c` dylib, the `probe_insert.c` probe and `sbunlock` were
+deleted (they are in git history); only `sbdlicon` is built and shipped.
+
+## Using it
+
+Nothing new to invoke: `imgtools/install-ipa.sh` does it. That script is what
+the Cocoa window runs when an `.ipa` is dropped on it *and* what you run from a
+terminal, so a headless install behaves exactly like a drop and the two cannot
+drift. The placeholder goes up before `ideviceinstaller` starts and comes down
+when it finishes **whether or not it succeeded**; Ctrl-C takes it down too.
+Both directions were tested against a live guest, by page-indicator dot.
+
+By hand, on the device:
+
+    sbdlicon add    <unique-id> [<bundle-id>]
+    sbdlicon cancel <unique-id>
+
+## The classes, and where each one lives
+
+All addresses are file offsets in the armv6 slice of 3.1.3 (7E18) SpringBoard.
+The 3.1.3 SDK's `System/Library/CoreServices/SpringBoard.app/SpringBoard`
+armv6 slice is **byte-identical** to the one on the device's root filesystem, so
+static analysis of it is analysis of the real thing — checked with `cmp`, worth
+re-checking on any other binary before trusting an address.
+
+| Class | Role |
+| --- | --- |
+| `SBDownloadingIcon` | the placeholder icon. Subclass of `SBIcon`; `initWithDisplayIdentifier:` always builds an `SBDownloadingProgressBar` subview |
+| `SBDownloadingProgressBar` | `setProgress:` takes a float 0..1; `updateFill` redraws |
+| `SBDownloadController` | `sharedInstance`, owns an `ISDownloadQueue` and is its delegate |
+| `SBIconModel` | `addDownloadingIconForDisplayIdentifier:`, `addNewIconToDesignatedLocation:animate:scrollToList:saveIconState:`, `replaceDownloadingDisplayIdentifiers:withDisplayIdentifiers:` |
+| `SBIconController` | `noteDownloadStateChanged`, `setIconToInstall:` |
+| `ISDownload` / `ISDownloadStatus` / `ISDownloadMetadata` | `iTunesStore.framework` (private). The download itself |
+
+### How progress is expressed
+
+Not a percentage. `-[SBDownloadingIcon downloadStatusChanged:]` computes
+
+    progress = [[status progress] normalizedCurrentValue] / [[status progress] normalizedMaxValue]
+
+as a float, from two 64-bit integers, and hands it to `setProgress:`. The state
+shown under the icon comes from `-[SBDownloadingIcon displayName]`, which is a
+localized SpringBoard string chosen by the status, **not** the app's name:
+
+* `[status isFailed]` -> `[download title]` (the only case that shows a name)
+* `[status isPaused]` -> `PAUSED_ICON_LABEL`
+* no status, or `[status progress] == nil` -> `WAITING_ICON_LABEL`
+* `_installing` (set when `[progress operationType] == 1`) -> `INSTALLING_ICON_LABEL`
+* otherwise -> `DOWNLOADING_ICON_LABEL`
+
+So "waiting / downloading / installing / paused / failed" are all already there
+and need no invention; the app's own name never appears on the placeholder.
+Artwork comes from the download (`-[ISDownload loadArtworkImage]` ->
+`-[SBDownloadingIcon download:loadedArtworkImage:]`), so an icon with no
+download draws the generic dark placeholder.
+
+## What normally drives it: a distributed notification, from one specific process
+
+`-[SBDownloadController downloadQueue:changedWithRemovals:disappearances:]` is
+the whole placement path. For each download in the queue it does
+
+    [download loadArtworkImage]
+    displayID = +[SBDownloadingIcon displayIdentifierForDownload:download]
+    existing  = [iconModel iconForDisplayIdentifier:displayID]
+    icon      = [iconModel addDownloadingIconForDisplayIdentifier:displayID]
+    [icon setDownload:download]
+    if (!existing && ![displayID isEqual:iconController.iconToInstall.displayIdentifier])
+        [iconModel addNewIconToDesignatedLocation:icon animate:… scrollToList:… saveIconState:…]
+
+and on removal `replaceDownloadingDisplayIdentifiers:withDisplayIdentifiers:`
+followed by `-[SBApplicationController loadApplicationsAndIcons:reveal:popIn:]`
+— which is exactly the "the real icon replaces the placeholder" step.
+
+That delegate is called by `ISDownloadQueue`, which is a **client** of a
+`CPDistributedNotificationCenter` (AppSupport) named
+`com.apple.iTunesStore.daemon-notifications`. The protocol is fully specified:
+
+| Notification | userInfo |
+| --- | --- |
+| `ISNotificationDownloadsAdded` | `param` = keyed archive of `NSArray<ISDownload>`, `indexSet` = keyed archive of `NSIndexSet` |
+| `ISNotificationDownloadStatusChanged` | `item-id` = `NSNumber` (`unsignedLongLongValue`), `param` = keyed archive of `ISDownloadStatus` |
+| `ISNotificationDownloadsChanged` | `param` = keyed archive of the downloads |
+| `ISNotificationDownloadsReplaced` | `indexSet` + `param` |
+| `ISNotificationDownloadsRemoved` | `param` (read with plain `objectForKey:`) |
+
+(The keys are the exported constants `ISParameterKey` = `@"param"`,
+`ISIndexSetParameterKey` = `@"indexSet"`, `ISItemIdentifierParameterKey` =
+`@"item-id"`; values go through `ISGetUnarchivedParameter`, i.e.
+`NSKeyedArchiver`.)
+
+### Why an outside process cannot post them
+
+`-[CPDistributedNotificationCenter postNotificationName:userInfo:]` raises
+**"Must be running %@ '%@' server to send post notifications"** unless the
+caller is the center's *server*. A client's only outbound call is a check-in.
+
+Becoming the server means owning the Mach name. `runServerOnCurrentThread`
+tries `bootstrap_check_in` first and falls back to
+`mach_port_allocate` + `bootstrap_register2` — so on **2.1.1** the name is
+free (its `com.apple.itunesstored.plist` declares only
+`com.apple.iTunesStore.daemon`) and anyone could claim it. On **3.1.3 the plist
+declares it**, alongside `.daemon`, `.daemon.public` and
+`.daemon.notifications.public`, so launchd holds the receive right and hands it
+only to the job labelled `com.apple.itunesstored`. `bootstrap_register2` on a
+launchd-declared name fails. **That is the blocker.**
+
+Useful detail if this is ever picked up: the server posts the Darwin
+notification `CPDistributedNotificationCenterDidRestartNotification-<name>` when
+it starts, and clients re-check-in on it — so a server that appears *after*
+SpringBoard has booted is still picked up. Nothing here depends on ordering.
+
+## What an outside process CAN do, and does
+
+SpringBoardServices exports MIG stubs onto SpringBoard's own server port, which
+`SBSSpringBoardServerPort()` hands to any process:
+
+    int SBAddDownloadingIconForDisplayIdentifier(mach_port_t, const char *uniqueID,
+                                                 const char *bundleID);
+    int SBCancelDownloadingIconForDisplayIdentifier(mach_port_t, const char *uniqueID);
+
+`sbdlicon` here is a 6 KB armv6 binary that calls them. SpringBoard's handler
+(`sub_42e6c`) turns `uniqueID` into a display identifier via
+`+[SBDownloadingIcon displayIdentifierForDownloadUniqueID:]`, creates the icon,
+sets its bundle ID, and then:
+
+* if `bundleID` is **already installed** -> `addNewIconToDesignatedLocation:`,
+  and the placeholder appears immediately, in that app's slot. Measured:
+  `sbdlicon add dl-demo-2 com.apple.mobilenotes` replaced the Notes icon with a
+  dark placeholder labelled "Waiting…"
+  (`docs/screenshots/DELIVERABLE-1-placeholder-over-an-installed-app.png`).
+* if it is **not installed** -> only `[SBIconController setIconToInstall:]`,
+  which just stashes the icon in an ivar. Measured: nothing appears.
+
+The second case is the one that matters when a new `.ipa` is dropped, so for a
+while it looked as though this RPC was not the feature after all. **The way
+round is the ordering inside the handler**: the icon is created and registered
+in `SBIconModel`'s dictionary under `com.apple.downloadingicon-<uid>` *before*
+`iconForDisplayIdentifier:` runs. Pass that same string as the bundle id and the
+lookup finds the icon that was just made, so the "already installed" branch is
+taken and the icon is placed after the last one on the home screen. Measured: it
+appears, and `cancel` removes it and collapses the page again.
+
+That is what `add` does when no bundle id is given — it is what a caller
+installing a new app always wants, and putting the trick in `sbdlicon` rather
+than in a shell quoting expression keeps it explained in one place. Pass a
+bundle id explicitly only for the update case.
+
+Two properties worth knowing, both of which make the failure path cheap:
+placement uses `saveIconState:NO`, so a placeholder is never written to disk and
+cannot outlive the running SpringBoard; and `addDownloadingIconForDisplayIdentifier:`
+is idempotent per display identifier, so keying the id on the bundle id means
+dropping the same `.ipa` twice reuses one icon instead of stacking them.
+
+## The two routes left for real progress, and which to take
+
+Both require code inside a process that holds the notification server's receive
+right, i.e. inside `itunesstored`. Neither touches SpringBoard, so neither can
+wedge the boot the way an injected SpringBoard dylib can — if the code crashes,
+launchd restarts `itunesstored` and the UI is unharmed.
+
+1. **`DYLD_INSERT_LIBRARIES` in `com.apple.itunesstored.plist`.** The real
+   daemon still runs and still owns everything; our dylib posts through
+   `ISGetDistributedNotificationCenter()`, which in that process *is* the
+   server, so `postNotificationName:userInfo:` is legal. Smallest change, and
+   the store keeps working.
+2. **Move the MachService.** Delete
+   `com.apple.iTunesStore.daemon-notifications` from `itunesstored`'s plist and
+   declare it in our own LaunchDaemon; launchd then hands *us* the receive
+   right. Cleaner process boundary, but it takes the notification path away
+   from the real daemon.
+
+Route 1 is the one to build, and **the question it turns on is now answered
+rather than assumed**: `DYLD_INSERT_LIBRARIES` from that plist still works on
+3.1.3. `probe_insert.c` (since deleted; git history) was a dylib whose only content is a constructor that
+writes its pid to a file. Put it at `/usr/lib/it-probe-insert.dylib`, add
+
+    EnvironmentVariables = { DYLD_INSERT_LIBRARIES =
+                             "/usr/lib/it-probe-insert.dylib" }
+
+to `/System/Library/LaunchDaemons/com.apple.itunesstored.plist`, then
+`launchctl unload`/`load`/`start com.apple.itunesstored`, and
+`/tmp/it-insert-probe` says `loaded in pid 417`. Measured on a live guest. Note
+it needed no signature at all — `amfi_allow_any_signature=1
+cs_enforcement_disable=1` are in the boot args, which `run-ios3.sh` sets by
+default.
+
+## The recipe for the filling bar
+
+All of this is static analysis of the 3.1.3 `iTunesStore.framework` and
+`AppSupport.framework` armv6 slices from the SDK. Nothing below has been run.
+None of it needs the keyed-archive format reverse engineered: the dylib is
+inside the process that already has the classes, so it builds real objects and
+lets `NSKeyedArchiver` encode them.
+
+### The chain, end to end
+
+    itunesstored              -[CPDistributedNotificationCenter postNotificationName:userInfo:]
+      -> mach msg to each checked-in client
+    SpringBoard               -[CPDistributedNotificationCenter deliverNotification:userInfo:]
+                              = [[NSNotificationCenter defaultCenter]
+                                   postNotificationName:name object:self userInfo:userInfo]
+      -> -[ISDownloadQueue _downloadsAdded:] / _downloadStatusChanged: / ...
+      -> -[SBDownloadController downloadQueue:changedWithRemovals:disappearances:]
+      -> -[SBDownloadingIcon downloadStatusChanged:]  ->  setProgress:
+
+The middle step is the one worth knowing: the queue does **not** observe the
+distributed center directly. `-[ISDownloadQueue initWithAssetTypes:]` calls
+`ISStartDistributedNotificationCenter()` — which is just `[[centerNamed:
+@"com.apple.iTunesStore.daemon-notifications"]
+startDeliveringNotificationsToMainThread]` — and then registers ordinary
+`NSNotificationCenter defaultCenter` observers. AppSupport re-posts each
+distributed notification locally under the same name and userInfo. So the
+distributed post is the only thing to get right; everything after it is a local
+notification.
+
+### Sequencing, which is not optional
+
+`_downloadStatusChanged:` reads the item id, finds the download by
+`_indexOfDownloadWithIdentifier:` and calls `setStatus:` on **the download
+already in the queue**. So `ISNotificationDownloadsAdded` has to come first and
+the item identifiers have to match; a status for an unknown item has nothing to
+land on.
+
+| Post | userInfo |
+| --- | --- |
+| `ISNotificationDownloadsAdded` | `param` = archived `NSArray<ISDownload>`, `indexSet` = archived `NSIndexSet`. **Both required** — the handler unarchives each and calls `insertObjects:atIndexes:`, which throws on a nil index set. |
+| `ISNotificationDownloadStatusChanged` | `item-id` = plain `NSNumber` (read with `unsignedLongLongValue`, *not* archived), `param` = archived `ISDownloadStatus` |
+| `ISNotificationDownloadsRemoved` | `param`, read with a plain `objectForKey:` |
+
+### Who actually moves the bar
+
+`SBDownloadController` does **not** implement
+`downloadQueue:downloadStatesChangedAtIndexes:`, so that delegate call is
+skipped. The bar moves through the other branch: `_downloadStatusChanged:` ends
+with `[[download delegate] downloadStatusChanged:download]`, and the download's
+delegate is the `SBDownloadingIcon` itself, set by `-[SBDownloadingIcon
+setDownload:]`. Good news for us — it means only the download object and its
+status matter, not the queue delegate.
+
+### The objects
+
+`ISDownloadMetadata` is `initWithDictionary:` over a plain `NSDictionary` of
+iTunes manifest keys. Getters that take several keys try them in this order and
+use the first present:
+
+| property | dictionary key(s) |
+| --- | --- |
+| `itemIdentifier` (`unsigned long long`) | `songId`, then `item-id` |
+| `title` | `itemName`, then `title` |
+| `bundleID` | `bundle-id`, then `softwareVersionBundleId` |
+| `subtitle` | `artistName` |
+| `artistName` | `artistName` |
+| `transactionID` | `download-id` |
+| `preOrderIdentifier` | `preorder-id` |
+| `kind` / `genre` / `sinfs` / `playlistName` / `isRental` / `downloadKey` | same name as the property |
+| `durationInMS` | `duration` |
+| `artworkIsPrerendered` | `softwareIconNeedsShine` |
+| `displayableArtworkURL` | `artwork-urls` dict, then `softwareIcon57x57URL`, then `icon-url` |
+
+`itemIdentifier` is the one that matters: `-[ISDownload uniqueID]` is
+`[NSString stringWithFormat:@"%llu", [metadata itemIdentifier]]`, and
+`+[SBDownloadingIcon displayIdentifierForDownload:]` prefixes it with
+`com.apple.downloadingicon-` — the same identifier space `sbdlicon` already
+uses, so the dylib and the placeholder can be made to name one icon.
+
+`ISOperationProgress` — ivars and setters, all public, all `NSCoding`:
+
+    long long  currentValue            setCurrentValue:
+    long long  maxValue                setMaxValue:
+    long long  normalizedCurrentValue  setNormalizedCurrentValue:
+    long long  normalizedMaxValue      setNormalizedMaxValue:
+    int        operationType           setOperationType:
+    int        units                   setUnits:
+    double     changeRate, estimatedTimeRemaining
+    BOOL       canPause
+
+**The trap is in the normalized pair.** `-init` sets both to **-1**, and the
+getters return the raw `currentValue`/`maxValue` when the normalized value is
+negative. So set `currentValue`/`maxValue` and leave the normalized pair alone.
+And `maxValue` must be non-zero in the very first status: `-[SBDownloadingIcon
+downloadStatusChanged:]` computes `normalizedCurrentValue / normalizedMaxValue`
+as a float with no guard, so 0/0 is a NaN straight into `setProgress:`.
+
+`operationType == 1` is what sets `_installing` and flips the label from
+"Downloading…" to "Installing…". `ISDownloadStatus` has `setProgress:`,
+`setPaused:`, `setFailed:`, `setError:`.
+
+### Shape of the work
+
+The dylib can be plain C in the `contrib/it-pasteboard/pbset.c` style —
+`dlopen` + `objc_msgSend` — so there is no ObjC toolchain work. Progress source:
+`ideviceinstaller` prints real percentages on stdout and the progress is a
+current/max integer pair, so the host figure maps straight on with no
+interpolation.
+
+**What is still unproven**, and should be the first thing on screen: that
+SpringBoard's already-checked-in `ISDownloadQueue` reacts to a post made this
+way. The design says it should — clients re-check-in on
+`CPDistributedNotificationCenterDidRestartNotification-<name>`, so a server that
+appears late is not a hazard — but that is reasoning, not a measurement.
+
+**Shipping it needs the plist edit baked into a NAND image**, which is a
+distribution decision rather than a code one: the placeholder works on the
+user's existing images as they are, and the progress bar would only appear on a
+rebuilt one.
+
+## Building
+
+    ./build.sh          # needs ../armv6-toolchain
+
+Note the explicit `_start`: `../armv6-toolchain` rewrites `LC_MAIN` as the
+`LC_UNIXTHREAD` that 2010 dyld understands, with the pc pointing straight at the
+entry symbol and no crt1 in the way. Nothing sets up `argc`/`argv`, so a plain
+`main(int, char **)` reads whatever is in r0/r1 and takes a SIGBUS at the first
+`argv[]` access — before any output, which reads as "the binary is broken".

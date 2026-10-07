@@ -1,0 +1,164 @@
+# Getting text into the guest without tapping the on-screen keyboard
+
+Typing by synthesising taps on iOS's own keyboard is structurally lossy: key
+positions change per keyboard page and per field type (a URL field replaces the
+space bar), there is no feedback channel, and the page state can desynchronise
+silently — after which every subsequent character lands somewhere else.
+
+iOS 3.0 added `UIPasteboard`, which is the way out. Put the text on the guest's
+general pasteboard and the user taps **Paste**. No geometry, no page state.
+
+## What backs the pasteboard on 3.1.3 (measured, on the device)
+
+Not per-process state, and not a file the host can simply edit:
+
+* `/System/Library/LaunchDaemons/com.apple.UIKit.pasteboardd.plist` launches
+  `/System/Library/Frameworks/UIKit.framework/Support/pasteboardd` **on demand**
+  (MachService `com.apple.UIKit.pasteboardd`, `UserName mobile`, `KeepAlive`
+  with a `TimeOut`). That daemon owns the live state.
+* It persists to `/var/mobile/Library/Caches/com.apple.UIKit.pboard/pasteboardDB`
+  — its own backing store, created the first time a client connects. Writing
+  that file offline is not a channel: the running daemon holds the state, and it
+  is the daemon that the rest of the system asks.
+
+So the pasteboard is reachable only by talking to the daemon, and `UIPasteboard`
+is its only client. A guest-side process is required; there is no host-only
+route.
+
+## It works from ANY process — the pasteboard is not app-private
+
+`pbset` (a probe, since deleted; git history) was a plain armv6 command-line binary (no bundle, no `UIApplication`,
+run over ssh as root) that does exactly one thing:
+
+    [[UIPasteboard generalPasteboard] setValue:text forPasteboardType:@"public.utf8-plain-text"]
+
+After it ran, a long-press in SpringBoard's Spotlight field raised the **Paste**
+menu and pasting inserted the text verbatim — including a period, spaces and a
+`#` from the symbols page, the three things the synthesised-tap path gets wrong.
+That is the whole feasibility question answered: seed the pasteboard from
+outside, and the guest's own UI pastes it.
+
+## THE TRAP: an empty type string kills pasteboardd
+
+**`-[UIPasteboard setString:]` crashed pasteboardd**, every time, with
+`EXC_BAD_ACCESS (SIGBUS)`, `KERN_PROTECTION_FAILURE at 0x00000004` — a write
+through a NULL CF object. So did `-[UIPasteboard string]` and `pasteboardTypes`
+from the same kind of process.
+
+The reason is in pasteboardd's own MIG routines. Each one converts the incoming
+pasteboard name and type from C strings, and the conversion is:
+
+    ldrsb r0, [r1]        ; first byte of the type
+    cmp   r0, #0
+    beq   skip            ; empty -> r0 stays 0 -> the CFString is NULL
+    bl    _CFStringCreateWithCString
+    ...
+    bl    _CFDictionarySetValue   ; NULL key, no check -> crash in CF
+
+An empty type is turned into a NULL key and handed straight to
+`CFDictionarySetValue` / `CFDictionaryGetValue`. It is a genuine bug in Apple's
+daemon that a real app never trips, because a real app's UTI is never empty.
+Something about resolving the UTI in a bundle-less process leaves it empty.
+
+Two consequences worth knowing before debugging anything here:
+
+1. **Always pass the UTI explicitly** (`setValue:forPasteboardType:` with
+   `public.utf8-plain-text`). That path stores the data, writes `pasteboardDB`,
+   and reads back byte-identical.
+2. **A crash wedges the service.** launchd then repeats
+   `Check-in of Mach service failed. Already active: com.apple.UIKit.pasteboardd`
+   and every later pasteboard call quietly returns nil — which reads exactly
+   like "the pasteboard is empty" and will send you chasing the wrong bug.
+   Recover without rebooting:
+
+       launchctl unload /System/Library/LaunchDaemons/com.apple.UIKit.pasteboardd.plist
+       launchctl load   /System/Library/LaunchDaemons/com.apple.UIKit.pasteboardd.plist
+
+## What is here
+
+* `it_pbd.c` — the real thing: a launchd-started daemon that carries text both
+  ways over the `QC_PB_*` ops. The code is `contrib/it-agent/it_agent.c`'s
+  clipboard, included with `IT_AGENT_CLIPBOARD_ONLY`; only `main` is here. `it_pbd` is the built armv6 binary, rebuilt by
+  `build.sh` (gitignored, not tracked).
+* `com.qemu.it-pbd.plist` — its LaunchDaemon.
+* `build.sh` — armv6 build, see `../armv6-toolchain/README.md`. Plain C with a
+  dlopen'd ObjC runtime, because `ld -lobjc` against the 3.1.3 SDK is fatal.
+
+## Installing it
+
+It is already baked into `nand-grow7g` (what `run-ios3.sh` boots by default) and
+`nand-appsync3` (`--appsync`). Nothing else is needed to use it.
+
+An ssh install onto a running device works too, but ssh writes into the **NAND
+overlay**, and the overlay is thrown away — that is how this feature came to be
+"verified working" and yet dead on every image anyone actually boots. To put it
+in an image, three steps, in this order:
+
+    cp -Rc <image> <image>-pb                     # COW clone; never edit in place
+    imgtools/editimg.py --nand <image>-pb --blocks <N> --script install.sh
+    imgtools/setowner.py --nand <image>-pb \
+        /usr/local:0:0:755 /usr/local/bin:0:0:755 \
+        /usr/local/bin/it_pbd:0:0:755 \
+        /System/Library/LaunchDaemons/com.qemu.it-pbd.plist:0:0:644
+
+`--blocks` is the volume size: 1835008 for the 7 GiB images, 128000 for the
+500 MB ones. `install.sh` just copies `it_pbd` to `/usr/local/bin` and the plist
+to `/System/Library/LaunchDaemons`, both `chmod`ped.
+
+Three ways this silently produces a dead daemon, all of them hit:
+
+1. **Ownership.** launchd ignores a plist it does not see as root-owned, without
+   a word in any log. You cannot fix it inside the `editimg.py` script: that
+   mount is `noowners` and unprivileged, so `chown` fails outright, and worse,
+   `ls -ln` there reports *every* file as 501:20 — Apple's own included — so the
+   listing cannot tell you either way. Files created through it land as **99:99**
+   on disk. `setowner.py` edits the HFS+ catalog directly and is the fix.
+2. **The code-signing gate.** `it_pbd` is our own armv6 binary and 3.1.3's kernel
+   will not exec anything that is not Apple-signed. It needs
+   `amfi_allow_any_signature=1 cs_enforcement_disable=1` to reach the kernel —
+   `run-ios3.sh` now sets those on **every** run, not just `--apps`. Measured:
+   without them the daemon never starts, and `ldid -S` plus patching
+   `MISValidateSignature` in the dyld shared cache is **not** a substitute (both
+   tried, both dead).
+3. **A stale overlay.** An overlay shadows blocks the base image changed after
+   the overlay was made, so an old `ios3/nandrw` hides the newly added files
+   completely — the device boots perfectly and the daemon is simply not there.
+   `run-ios3.sh` now warns when the base is newer than the overlay; `--fresh`
+   clears it.
+
+The daemon logs to `/var/log/it_pbd.log` (startup and failures only: the clipboard's
+contents are not logged). The machine's `pasteboard-status` property (QMP qom-get) tells "the host never
+sent it" from "the guest never took it".
+
+## Is anything actually listening?
+
+    qom-get path=/machine property=pasteboard-agent
+    # -> "alive: 786 polls" | "stale: last polled 34 s ago" | "absent: ..."
+
+Ask this before believing a paste worked. Setting `pasteboard` succeeds whether
+or not a guest agent exists, so the host side alone can never tell you. If text
+is queued and nothing collects it within ten seconds the machine also says so on
+stderr, unprompted.
+
+## Driving it from the host
+
+    # headless / scripted
+    qom-set path=/machine property=pasteboard value="Hello. World 42 #tag"
+    qom-get path=/machine property=guest-pasteboard
+
+    # in a window
+    Edit > Paste Text to Guest   (Cmd+Ctrl+V, as in the iPhone Simulator)
+
+Both go through the same machine property, so there is one implementation, not
+two. The Cocoa item is the only part that needs a clipboard peer; a headless run
+has none, which is why the QMP path is not the afterthought it looks like.
+
+## The host half
+
+`QC_PB_POLL/READ/ACK` and `QC_PB_WRITE/COMMIT` in
+`include/hw/arm/guest-services/general.h`, on the existing cp15 `QEMU_CALL`
+tunnel — the same mechanism `QC_POLL_INPUT` uses, and reachable from PL0, so no
+kernel patch is involved. The text is windowed through a guest buffer rather
+than carried in the args union: the 52-byte `qemu_call_t` layout is frozen
+(`contrib/it-kbd-agent` is compiled into NAND images we cannot rebuild and
+hardcodes it), so any new args struct has to stay at or under 32 bytes.

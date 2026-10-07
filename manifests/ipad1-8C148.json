@@ -1,0 +1,15 @@
+{
+ "format": 1,
+ "board": "k48ap",
+ "product_type": "iPad1,1",
+ "build": "8C148",
+ "storage": "16g",
+ "ipsw": {"path": "~/Downloads/ipad1-ios32-feasibility/iPad1,1_4.2.1_8C148_Restore.ipsw",
+          "sha1": "8717b3bedc925b587566442ad375aa65d857e79a"},
+ "keys": "~/Downloads/ipad1-ios32-feasibility/iPad1,1_4.2.1_8C148_keys",
+ "identity": {"seed": "ipad1-8C148-default"},
+ "system_mib": 1280,
+ "data_size": "partition",
+ "options": {"ca_ogl": true, "appsync": true, "web_proxy": true, "usb_net": true, "writable_nor": true},
+ "activation": {"hook": null}
+}

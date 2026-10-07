@@ -1,0 +1,26 @@
+{
+ "format": 1,
+ "board": "n72ap",
+ "product_type": "iPod2,1",
+ "build": "5H11a",
+ "storage": "8g",
+ "ipsw": {
+  "path": "~/Library/Caches/gold.samhenri.LightTouchMac/IPSW/9af5625ea34acdd8abeb6fce71a72651d0c815d5.ipsw",
+  "sha1": "9af5625ea34acdd8abeb6fce71a72651d0c815d5"
+ },
+ "keys": "~/Developer/qemu-ios-files/ipod-ipsw/keys/iPod2,1_2.2.1_5H11a_keys",
+ "identity": {
+  "seed": "ipod2g-5H11a-default"
+ },
+ "model_number": "MB528",
+ "region_info": "LL/A",
+ "volume_blocks": 1835008,
+ "options": {
+  "gles_shim": true,
+  "appsync": true,
+  "web_proxy": true
+ },
+ "activation": {
+  "hook": null
+ }
+}

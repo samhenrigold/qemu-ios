@@ -1,0 +1,14 @@
+# One block per console session, small counts, only offsets iBoot itself uses.
+# Reading past a block's end aborts iBEC with no recovery (md 0xbf500000 16 hung it).
+md 0xbf500000 4      # ChipID words 0-3 (read OK on real hardware)
+md 0xbf106000 1      # POWER_ID
+md 0xbf100000 4      # PMGR PLL CON registers
+md 0xbf100040 4      # PMGR clock config start
+md 0xbf101010 4      # PMGR gates 0-3
+md 0xbf102000 2      # timer counter lo/hi
+md 0xbf102000 2      # again, to see it tick
+md 0xbfa00000 4      # GPIO pins 0-3 (buttons)
+md 0xbf200000 4      # VIC0 status regs
+md 0x5ff00000 4      # iBEC's own vector table
+# Last, one at a time: does DRAM repeat at 0x4ff00000? May abort.
+md 0x4ff00000 4

@@ -1,0 +1,9 @@
+{
+ "_comment": "tests/ipad1/jank.py --gate thresholds. The metric is deterministic in virtual time (icount + vsync-stepped input): every recorded run read every frame on the next vsync, so any missed refresh fails. min_frames sits under the observed frame count to leave slack for a small legitimate change. 'baseline' is the recorded verdict (jank-harness 0738fdb40a on qemu-ios 0a2fc35669, 3.2.2 golden, iop-core=off; frame-identical at load 89-206 and 151-165).",
+ "home-swipe": {"min_frames": 50, "max_p99_ms": 17, "max_hitches": 0, "max_longest_ms": 17, "max_dropped": 0, "max_runs": 2,
+                "baseline": "57 frames in 2 runs, p99 16.7 ms, 0 hitches (>=33 ms), longest 16.7 ms, 0 dropped"},
+ "app-launch": {"min_frames": 14, "max_p99_ms": 17, "max_hitches": 0, "max_longest_ms": 17, "max_dropped": 0, "max_runs": 1,
+                "baseline": "17 frames in 1 run, p99 16.7 ms, 0 hitches (>=33 ms), longest 16.7 ms, 0 dropped"},
+ "app-close":  {"min_frames": 38, "max_p99_ms": 17, "max_hitches": 0, "max_longest_ms": 17, "max_dropped": 0, "max_runs": 2,
+                "baseline": "43 frames in 2 runs, p99 16.7 ms, 0 hitches (>=33 ms), longest 16.7 ms, 0 dropped"}
+}

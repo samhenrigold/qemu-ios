@@ -1,0 +1,13 @@
+--- a/libavcodec/h264dec.c
++++ b/libavcodec/h264dec.c
+@@ -780,7 +780,9 @@
+      * causes problems for the first MB line, too.
+      */
+-    if (!FIELD_PICTURE(h) && h->current_slice && h->enable_er) {
++    if (!FIELD_PICTURE(h) && h->current_slice && h->enable_er &&
++        (!(avctx->flags2 & AV_CODEC_FLAG2_CHUNKS) ||
++         (h->mb_y >= h->mb_height && h->mb_height))) {
+ 
+         H264SliceContext *sl = h->slice_ctx;
+         int use_last_pic = h->last_pic_for_ec.f->buf[0] && !sl->ref_count[0];
+         int decode_error_flags = 0;

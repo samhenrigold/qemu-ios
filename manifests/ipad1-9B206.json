@@ -1,0 +1,16 @@
+{
+ "format": 1,
+ "board": "k48ap",
+ "product_type": "iPad1,1",
+ "build": "9B206",
+ "storage": "16g",
+ "ipsw": {"path": "~/Developer/qemu-ios-files/ios5-spike/iPad1,1_5.1.1_9B206_Restore.ipsw",
+          "url": "https://secure-appldnld.apple.com/iOS5.1.1/041-4292.02120427.Tkk0d/iPad1,1_5.1.1_9B206_Restore.ipsw",
+          "sha1": "ad9b607439250f2337fe132890dadc4c487beca8"},
+ "keys": "~/Developer/qemu-ios-files/ios5-spike/iPad1,1_9B206_keys",
+ "identity": {"seed": "ipad1-9B206-default"},
+ "system_mib": 1280,
+ "data_size": "partition",
+ "options": {"ca_ogl": true, "appsync": false, "web_proxy": true, "usb_net": true, "writable_nor": true},
+ "activation": {"hook": null}
+}
