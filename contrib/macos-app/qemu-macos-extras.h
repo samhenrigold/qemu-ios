@@ -114,7 +114,7 @@ const char *qemu_ios_build_id(void);
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((1u << 16) | 1u)
+#define QEMU_IOS_API_VERSION ((1u << 16) | 2u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */
@@ -137,6 +137,9 @@ bool qemu_ios_ui_hardware_keyboard(bool attached);
  * the only user stack). restrict=false opens outbound networking without a
  * link event, so the guest keeps its Wi-Fi association and DHCP lease. */
 void qemu_ios_ui_net_restrict(const char *id, bool restrict_);
+/* (1.2) Allow or refuse the guest's traffic to the Mac's local networks (private, link-local,
+ * multicast) on a running user netdev; boot with -netdev user,...,lan=off to start refused. */
+void qemu_ios_ui_net_lan(const char *id, bool allowed);
 
 #ifdef __cplusplus
 }

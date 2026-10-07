@@ -34,6 +34,8 @@ void hmp_netdev_set_restrict(Monitor *mon, const QDict *qdict);
 /* Flip a running user netdev's slirp restrict flag in place (see net/slirp.c).
  * Used by the netdev_set_restrict monitor command and the app's UI shim. */
 int net_slirp_set_restrict(const char *id, bool restricted);
+/* Allow or refuse the guest's traffic to the host's local networks in place. */
+int net_slirp_set_lan(const char *id, bool allowed);
 
 void hmp_info_usernet(Monitor *mon, const QDict *qdict);
 

@@ -731,19 +731,36 @@ static SlirpState *slirp_lookup(Monitor *mon, const char *id)
  * association and DHCP lease -- no netdev_del/add, no link event). `id` NULL
  * means the first slirp stack. Returns 0 on success, -1 if no such stack.
  */
-int net_slirp_set_restrict(const char *id, bool restricted)
+static SlirpState *net_slirp_find(const char *id)
 {
-    SlirpState *s;
-
     if (id) {
         NetClientState *nc = qemu_find_netdev(id);
         if (!nc || strcmp(nc->model, "user")) {
-            return -1;
+            return NULL;
         }
-        s = DO_UPCAST(SlirpState, nc, nc);
-    } else if (!QTAILQ_EMPTY(&slirp_stacks)) {
-        s = QTAILQ_FIRST(&slirp_stacks);
-    } else {
+        return DO_UPCAST(SlirpState, nc, nc);
+    }
+    return QTAILQ_FIRST(&slirp_stacks);
+}
+
+/* Allow or refuse the guest's traffic to the host's local networks, in place
+ * (libslirp's slirp_set_local_network). Returns -1 if no such stack. */
+int net_slirp_set_lan(const char *id, bool allowed)
+{
+    SlirpState *s = net_slirp_find(id);
+
+    if (!s) {
+        return -1;
+    }
+    slirp_set_local_network(s->slirp, allowed);
+    return 0;
+}
+
+int net_slirp_set_restrict(const char *id, bool restricted)
+{
+    SlirpState *s = net_slirp_find(id);
+
+    if (!s) {
         return -1;
     }
 
@@ -1292,6 +1309,9 @@ int net_init_slirp(const Netdev *netdev, const char *name,
                          user->dns, user->ipv6_dns, user->smb,
                          user->smbserver, dnssearch, user->domainname,
                          user->tftp_server_name, errp);
+    if (ret == 0 && user->has_lan && !user->lan) {
+        slirp_set_local_network(QTAILQ_LAST(&slirp_stacks)->slirp, false);
+    }
 
     while (slirp_configs) {
         config = slirp_configs;

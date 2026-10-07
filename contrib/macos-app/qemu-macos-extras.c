@@ -689,10 +689,38 @@ void qemu_ios_ui_net_restrict(const char *id, bool restricted)
     r->restricted = restricted;
     aio_bh_schedule_oneshot(qemu_get_aio_context(), net_restrict_bh, r);
 }
+
+static void net_lan_bh(void *opaque)
+{
+    struct net_restrict_req *r = opaque;
+    if (net_slirp_set_lan(r->id, r->restricted) < 0) {
+        fprintf(stderr, "[net] no user netdev '%s' to set lan\n",
+                r->id ? r->id : "(default)");
+    }
+    g_free(r->id);
+    g_free(r);
+}
+
+/* The app's "Attach to local network" toggle, applied in place. */
+void qemu_ios_ui_net_lan(const char *id, bool allowed)
+{
+    if (!qemu_ios_ui_ready()) {
+        return;
+    }
+    struct net_restrict_req *r = g_new(struct net_restrict_req, 1);
+    r->id = (id && *id) ? g_strdup(id) : NULL;
+    r->restricted = allowed;   /* here: allowed */
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), net_lan_bh, r);
+}
 #else
 void qemu_ios_ui_net_restrict(const char *id, bool restricted)
 {
     (void)id; (void)restricted;
+}
+
+void qemu_ios_ui_net_lan(const char *id, bool allowed)
+{
+    (void)id; (void)allowed;
 }
 #endif
 
