@@ -8,6 +8,9 @@
  *   com.apple.springboard SBDidShowReorderText = true
  *       SpringBoard's first-run "Edit Home Screen" tip, which every emulated
  *       device would otherwise show on each fresh clone.
+ *   com.apple.springboard SBHideACPower = true
+ *       SpringBoard's own switch for the AC-power UI: no charging chime, no plug in the status bar, the
+ *       wallpaper (not the charging battery) on the lock screen. The emulated USB cable is always in.
  *   com.apple.locationd AppleLocationServer = http://10.0.2.100:3128/clls/wloc,
  *                       AppleLocationServerRequiresCert = false
  *       Wi-Fi location (docs/ipad1/location.md): locationd ignores the PAC and
@@ -16,9 +19,9 @@
  *       position from the host.
  *
  * SETTINGS are re-applied on every boot. DEFAULTS are applied once per device
- * (the com.qemu.it-prefs DefaultsSet marker), so whatever the user picks in
- * Settings afterwards stays: Brightness at maximum and Auto-Lock at Never,
- * each written where that firmware's Settings writes it (see defaults()).
+ * (the com.qemu.it-prefs DefaultsSet and DefaultsSet2 markers), so whatever the user picks in
+ * Settings afterwards stays: Brightness at maximum, Auto-Brightness off, Auto-Lock at Never and Battery
+ * Percentage off, each written where that firmware's Settings writes it (see defaults()).
  *
  * On an iPhone whose CommCenter reads it (4.x; 1.0's does not), Data Roaming on once per SIM (see
  * roaming()).
@@ -62,6 +65,7 @@ struct passwd {   /* Darwin's, up to pw_dir */
 extern struct passwd *getpwnam(const char *);
 
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
+#define BACKBOARDD  "/usr/libexec/backboardd"   /* 6.x+: owns the backlight and the light sensor */
 #define LOCATIOND   "/usr/libexec/locationd"
 #define LOCATIOND_JOB "/System/Library/LaunchDaemons/com.apple.locationd.plist"
 #define COMMCENTER  "/System/Library/Frameworks/CoreTelephony.framework/Support/CommCenter"
@@ -81,6 +85,9 @@ static const struct setting {
     const char *job;
 } SETTINGS[] = {
     { "com.apple.springboard", "SBDidShowReorderText", SPRINGBOARD, TRUE },
+    /* No charging chime, plug in the status bar or battery on the lock screen: the emulated cable is
+     * always in, and the session's battery is the host's business, not the guest's. */
+    { "com.apple.springboard", "SBHideACPower", SPRINGBOARD, TRUE },
 #ifndef IT_PREFS_NO_LOCATION   /* the iPod (build-ipod.sh): no Wi-Fi location there */
     { "com.apple.locationd", "AppleLocationServer", LOCATIOND, STRING,
       "http://10.0.2.100:3128/clls/wloc", LOCATIOND_JOB },
@@ -263,6 +270,41 @@ static int mc_never(const void *feature)
  *               else com.apple.springboard SBAutoLockTime and SBAutoDimTime = -1 when SpringBoard names
  *               them (1.x-3.x), then GSSendAppPreferencesChanged, as Settings does, for a running SpringBoard.
  */
+/*
+ * The second set, under its own marker (DefaultsSet2) so devices that took the first get it once too:
+ *   Brightness     6.x+: com.apple.backboardd SBBacklightLevel2 = 1.0 when backboardd names it (backboardd
+ *                  owns the backlight there; com.apple.springboard's copy is not read back at boot).
+ *   Auto-Brightness off: com.apple.springboard SBEnableALS (1.x-5.x) or com.apple.backboardd BKEnableALS
+ *                  (6.x+) = false, whichever the owner names.
+ *   Battery %      com.apple.springboard SBShowBatteryPercentage = false when SpringBoard names it.
+ */
+static void defaults2(const void *mine)
+{
+    static const struct { const char *reader, *domain, *key; enum kind kind; } D2[] = {
+        { BACKBOARDD, "com.apple.backboardd", "SBBacklightLevel2", STRING },   /* STRING: the float 1.0 */
+        { SPRINGBOARD, "com.apple.springboard", "SBEnableALS", FALSE },
+        { BACKBOARDD, "com.apple.backboardd", "BKEnableALS", FALSE },
+        { SPRINGBOARD, "com.apple.springboard", "SBShowBatteryPercentage", FALSE },
+    };
+    const void *marker = str("DefaultsSet2");
+    float full = 1;
+    unsigned i;
+
+    if (get(marker, mine)) {
+        say("second defaults already set once; left to the user", "", "");
+        return;
+    }
+    for (i = 0; i < sizeof(D2) / sizeof(D2[0]); i++) {
+        const void *domain = str(D2[i].domain);
+        if (!file_has(D2[i].reader, D2[i].key))
+            continue;
+        set(str(D2[i].key), D2[i].kind == STRING ? num(0, 12, &full) : *no, domain);   /* kCFNumberFloatType */
+        say(D2[i].key, sync(domain) ? " set in " : " not saved in ", D2[i].domain);
+    }
+    set(marker, *yes, mine);
+    sync(mine);
+}
+
 static unsigned defaults(void)
 {
     static const char *const backlight[] = { "SBBacklightLevel2", "SBBacklightLevel" };
@@ -278,6 +320,7 @@ static unsigned defaults(void)
     int never = -1;
     unsigned i;
 
+    defaults2(mine);
     if (get(marker, mine)) {
         say("defaults already set once; left to the user", "", "");
         return 0;
