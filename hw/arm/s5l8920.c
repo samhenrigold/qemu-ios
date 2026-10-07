@@ -863,7 +863,6 @@ static void s5l8920_init(MachineState *machine)
 
     /* Display: the S5L8720's M2 CLCD and the same Samsung MIPI-DSIM, a 320x480 panel. */
     dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
-    IPOD_TOUCH_MIPI_DSI(dev)->direct_boot = true;
     IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = true;   /* as iBoot leaves the link */
     memory_region_add_subregion(sysmem, S5L8920_DSIM_BASE, &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);

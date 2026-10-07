@@ -3,7 +3,7 @@
 #include "qemu/log.h"
 #include "hw/core/qdev-properties.h"
 
-/* Cache opt-in tracing; direct-boot compatibility is per-device startup state. */
+/* Cache opt-in tracing; lane/reset state belongs to the physical DSIM. */
 static bool dsi_trace(void)
 {
     static int on = -1;
@@ -16,12 +16,6 @@ static bool dsi_trace(void)
 static uint32_t dsi_lane_mask(IPodTouchMIPIDSIState *s)
 {
     return (1u << MIN(s->lanes, 4)) - 1;
-}
-
-/* Escape/FIFO command handshake bits: per-lane ULPS (bits 4-7) + bit 9. */
-static uint32_t dsi_cmd_bits(IPodTouchMIPIDSIState *s)
-{
-    return (dsi_lane_mask(s) << 4) | 0x200;
 }
 
 static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
@@ -62,23 +56,20 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
              * StopStateClk set as "interface not enabled", so pinning it made
              * the panel's first display-off a "redundant disable request"
              * panic. */
-            uint32_t status = dsi_lane_mask(s) |
-                              ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk)
-                                ? rDSIM_STATUS_TxReadyHsClk : rDSIM_STATUS_StopStateClk);
+            uint32_t status = s->ulps_data ? dsi_lane_mask(s) << 4 : dsi_lane_mask(s);
+            status |= s->ulps_clock ? 0x200 :
+                ((s->clkctrl & rDSIM_CLKCTRL_TxRequestHsClk) ?
+                 rDSIM_STATUS_TxReadyHsClk : rDSIM_STATUS_StopStateClk);
             /* S5L8720 STATUS_SWRST follows an actual SWRST request, independent
              * of the board's boot strategy. Reset execution is synchronous;
              * analog completion latency remains unmodeled. Reads are inert. */
             if (s->swrst_released) {
                 status |= rDSIM_STATUS_SwRstRelease;
             }
-            /* Remaining escape/FIFO acknowledgments are legacy direct-boot
-             * compatibility behavior, not qualified command execution. */
-            if (s->direct_boot) {
-                status |= s->cmd_pending;
-                s->cmd_pending = 0;
-            }
             return status;
         }
+        case REG_ESCMODE:
+            return s->escmode;
         case REG_INTSRC:
             return s->intsrc;
         case REG_RXFIFO: {
@@ -140,10 +131,6 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
             s->pkthdr_reg = val;
             dsi_panel_read(s, val);
             dsi_note_dcs(val);
-            /* Sending a packet re-arms the command handshake bits. */
-            if (s->direct_boot) {
-                s->cmd_pending = dsi_cmd_bits(s);
-            }
             break;
         case REG_INTSRC:
             s->intsrc &= ~val;
@@ -151,14 +138,29 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
         case REG_SWRST: /* DSIM_SWRST */
             if (val & 1) {
                 s->rx_head = s->rx_count = s->intsrc = 0;
+                s->escmode = 0;
+                s->ulps_clock = s->ulps_data = false;
                 s->swrst_released = true;
             }
             break;
-        case 0x14: /* DSIM_ESCMODE: escape-mode command trigger */
-            if (s->direct_boot) {
-                s->cmd_pending = dsi_cmd_bits(s);
+        case REG_ESCMODE: {
+            /* Enter requests act on assertion; exit has priority. Leaving an
+             * enter bit asserted while clearing exit must not re-enter ULPS:
+             * stock firmware clears exit before finally clearing enter. */
+            uint32_t rising = val & ~s->escmode;
+            if (val & 1) {
+                s->ulps_clock = false;
+            } else if (rising & 2) {
+                s->ulps_clock = true;
             }
+            if (val & 4) {
+                s->ulps_data = false;
+            } else if (rising & 8) {
+                s->ulps_data = true;
+            }
+            s->escmode = val;
             break;
+        }
         case REG_CLKCTRL:
             // Remember the HS clock request; STATUS.TxReadyHsClk mirrors it.
             s->clkctrl = val;
@@ -180,6 +182,8 @@ static void ipod_touch_mipi_dsi_reset(DeviceState *dev)
     IPodTouchMIPIDSIState *s = IPOD_TOUCH_MIPI_DSI(dev);
 
     s->swrst_released = false;
+    s->escmode = 0;
+    s->ulps_clock = s->ulps_data = false;
     s->pkthdr_reg = 0;
     /* kboot= skips iBoot, whose pinot_init leaves the panel lit with the HS
      * clock running; the kernel's boot_args says the framebuffer is up, and
@@ -211,6 +215,11 @@ static void ipod_touch_mipi_dsi_init(Object *obj)
 static int dsi_post_load(void *opaque, int version_id)
 {
     IPodTouchMIPIDSIState *s = opaque;
+    if (version_id < 4) {
+        s->escmode = 0;
+        s->ulps_clock = s->ulps_data = false;
+        s->cmd_pending = 0;
+    }
     if (version_id < 3) {
         /* Old streams did not record completion of a software-reset request. */
         s->swrst_released = false;
@@ -229,10 +238,13 @@ static int dsi_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_mipi_dsi = {
     .name = "ipod_touch_mipi_dsi",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = dsi_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_V(escmode, IPodTouchMIPIDSIState, 4),
+        VMSTATE_BOOL_V(ulps_clock, IPodTouchMIPIDSIState, 4),
+        VMSTATE_BOOL_V(ulps_data, IPodTouchMIPIDSIState, 4),
         VMSTATE_BOOL_V(swrst_released, IPodTouchMIPIDSIState, 3),
         VMSTATE_UINT32(pkthdr_reg, IPodTouchMIPIDSIState),
         VMSTATE_UINT32(clkctrl, IPodTouchMIPIDSIState),

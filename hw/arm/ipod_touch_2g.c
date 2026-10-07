@@ -3536,7 +3536,6 @@ static void ipod_touch_machine_init(MachineState *machine)
     dev = qdev_new("ipodtouch.mipidsi");
     IPodTouchMIPIDSIState *mipi_dsi_state = IPOD_TOUCH_MIPI_DSI(dev);
     nms->mipi_dsi_state = mipi_dsi_state;
-    mipi_dsi_state->direct_boot = nms->direct_iboot[0] != 0;
     memory_region_add_subregion(sysmem, MIPI_DSI_MEM_BASE, &mipi_dsi_state->iomem);
     /* Has to be realized, not just created: an unrealized device is never
      * parented into the QOM tree, so qemu_devices_reset() never reaches it and
