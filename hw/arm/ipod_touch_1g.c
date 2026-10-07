@@ -880,7 +880,7 @@ static void n45_machine_init(MachineState *machine)
         }
         qdev_realize_and_unref(card, NULL, &error_fatal);
         if (!qemu_find_netdev("wifi0")) {
-            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0,lan=off", false);
             Error *err = NULL;
             if (o) {
                 netdev_add(o, &err);
