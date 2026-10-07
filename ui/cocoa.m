@@ -325,7 +325,7 @@ static void handleAnyDeviceErrors(Error * err)
     bool mouseOn;
     /*
      * Option-drag pinch. A single host pointer cannot describe two contacts, so
-     * Option synthesises a second one; see -updatePinch: for the arithmetic.
+     * Option synthesizes a second one; see -updatePinch: for the arithmetic.
      * Points are kept in guest framebuffer coordinates, not window ones, so the
      * mirror is about the middle of the *screen* whatever the window's size.
      */
@@ -619,7 +619,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 }
 
 /*
- * Show taps -- grey dots where the contacts are.
+ * Show taps -- gray dots where the contacts are.
  *
  * The iPhone Simulator did this in a separate borderless window with
  * ignoresMouseEvents set, purely so the dots could never be a hit-test
@@ -1323,7 +1323,7 @@ static NSView *it_output_box(NSString *text, NSSize size)
     }
 
     /*
-     * Option/Shift going down or up must move the synthesised second finger by
+     * Option/Shift going down or up must move the synthesized second finger by
      * itself -- letting go of Option is how you lift it, and that comes with no
      * pointer motion at all.
      */
@@ -1489,7 +1489,7 @@ static NSView *it_output_box(NSString *text, NSSize size)
  * is the one people already have in their fingers:
  *
  *   Option        the second contact is the pointer reflected through the
- *                 CENTRE of the screen -- (2cx - x, 2cy - y). A symmetric
+ *                 CENTER of the screen -- (2cx - x, 2cy - y). A symmetric
  *                 pinch: dragging towards the middle closes it, away opens it.
  *   Option+Shift  the pair translates rigidly. The offset between the two
  *                 contacts is frozen and carried onto each new pointer
@@ -1504,7 +1504,7 @@ static NSView *it_output_box(NSString *text, NSSize size)
  *
  * Contacts are pushed as QEMU multi-touch events on slot 1. Slot 0 stays on the
  * ordinary pointer path, which the digitizer already maps to finger 0, so
- * one-finger behaviour is untouched by everything here.
+ * one-finger behavior is untouched by everything here.
  *
  * mousePoint/pinchPoint are guest framebuffer coordinates. Callers update
  * mousePoint (and prevMousePoint) first; this only decides what finger 1 does.

@@ -11,8 +11,8 @@
  * Loaded into that one launchd job with DYLD_INSERT_LIBRARIES and bound by
  * symbol through dyld interposing, so no binary is patched and nothing
  * depends on a particular build's addresses. One binary for every iOS: the
- * notice is recognised by its text, the key itself (if the caller lets CF
- * localise) or the string MobileStorageMounter's own bundle localises that
+ * notice is recognized by its text, the key itself (if the caller lets CF
+ * localize) or the string MobileStorageMounter's own bundle localizes that
  * key to, in whatever language is set. 3.2.x raises it with
  * CFUserNotificationDisplayNotice and the key UNSUPPORTED_FAILURE; 4.2.1
  * builds a CFUserNotificationCreate alert from UNSUPPORTED_FAILURE_TITLE and
@@ -92,7 +92,7 @@ static Boolean is_unsupported(CFTypeRef s)
         if (CFEqual(s, keys[i])) {
             return true;
         }
-        /* a key this bundle does not carry localises to itself */
+        /* a key this bundle does not carry localizes to itself */
         if (localized[i] && !CFEqual(localized[i], keys[i]) && CFEqual(s, localized[i])) {
             return true;
         }

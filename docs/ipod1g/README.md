@@ -19,7 +19,7 @@ with working touch; lockdownd reports the device activated.
   store with real FTL spares a Settings change survives a clean power-off (the PMU shutdown path) and
   the next boot; after a hard quit the FTL's own restore rebuilds its tables (see debts).
 - USB: the wrangler takes its PHY and publishes its host and device nubs. Untethered the device idles
-  into sleep (`pmu go hib`) without a panic. Waking is not modelled: the kernel parks in `ml_arm_sleep`
+  into sleep (`pmu go hib`) without a panic. Waking is not modeled: the kernel parks in `ml_arm_sleep`
   with interrupts masked for the PMU to cut the AP, and the resume path (bootrom/LLB back into the kernel)
   is skipped by the direct iBoot boot (debt 9). With `usb-tcp-addr` the OTG core talks to usbmuxd-qemu as
   on the 2G: the PMU reports the host on the cable (MBCS1 USBPRES|USBOK, power source "kind 16384", 500 mA,
@@ -91,7 +91,7 @@ the block does, P a documented quirk/patch, S stub.
 | Bootrom + LLB stubs | vrom + jump-table stubs at LLB_BASE (+0x80 verify, +0x100 decrypt) | ported from devos50 | H |
 | 8900 image engine | `8900` v1.0 format-3 payload decrypt (AES-128-CBC key 0x837) behind the decrypt stub | ported | H |
 | NOR | `pflash_cfi02` on `-drive if=pflash` | shared QEMU model | R |
-| Timer | `ipodtouch.timer`, `irqlatch=0xF8`, `freq-hz=12000000`; timers 0-3 unmodelled (logged) | variant by property | R (timer 4) / S (0-3) |
+| Timer | `ipodtouch.timer`, `irqlatch=0xF8`, `freq-hz=12000000`; timers 0-3 unmodeled (logged) | variant by property | R (timer 4) / S (0-3) |
 | Clock | `ipodtouch.clock`, `s5l8900=on` reset presets | variant | H |
 | SYSIC / power controller | `ipodtouch.sysic`, `direct-boot`, epoch from the staged iBoot (`it_iboot_epoch`), `s5l8900` mask semantics (+0xC down, +0x10 up), 7 GPIO groups | variant | R |
 | GPIO | `ipodtouch.gpio`, 0x20 pads | variant | R |
@@ -150,7 +150,7 @@ the block does, P a documented quirk/patch, S stub.
 4. **CLCD VIDCON/blend registers (H)**: stored and echoed, not interpreted; the palette and window-2
    alpha are ignored. Window 2 shows only until window 1 has a base.
 5. **RAM-backed windows (S)**: watchdog, I2S0-2, MPVD, H264 accept and return whatever is written;
-   audio/video paths are not modelled.
+   audio/video paths are not modeled.
 6. **TVOut workaround property**: devos50's per-build zero-word overlay is `tvout-workaround=<paddr>`,
    off by default; 3A101a on these assets does not need it.
 7. **Timers 0-3 (S)**: touched by the kernel, logged, never fire.

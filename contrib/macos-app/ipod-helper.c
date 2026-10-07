@@ -83,7 +83,7 @@ static void wr32(unsigned char *p, uint32_t v)
 /*
  * The page stream is one zlib stream with no member boundaries -- see
  * nandpack.py for why it is deliberately not an archive format (Apple's notary
- * service opens anything it recognises as one, and NAND pages look like
+ * service opens anything it recognizes as one, and NAND pages look like
  * unsigned Mach-O binaries to it). The manifest says which page each
  * PAGE-sized slice belongs to, in order.
  */

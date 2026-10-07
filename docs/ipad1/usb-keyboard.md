@@ -88,7 +88,7 @@ which is exactly what a CCK plus keyboard looks like after the controller is up.
 that isn't stock is the one DT property, which a 3G board's DT would carry anyway.
 
 **b. Mode switch (not built).** Without `hsic-enabled`, the app changes `AppleUSBCableType` between
-`USBHost` and `USBDevice`, like a CCK plug and unplug. That means modelling whatever K48 power-source
+`USBHost` and `USBDevice`, like a CCK plug and unplug. That means modeling whatever K48 power-source
 path publishes it (not traced). Every switch into host mode tells the OTG side to detach, so usbmux
 drops (the app loses lockdown/AFC) until the CCK is "unplugged". Worse in every way than (a), so
 it's kept only as the answer to "can it be done like hardware".
@@ -143,7 +143,7 @@ a stock quirk that also keeps the iPad from ever auto-locking, so it goes. `it_m
 adds `DYLD_INSERT_LIBRARIES` to `com.apple.mobile.storage_mounter.plist`, the same generic step for
 every build; the package delivers the dylib as the hook `/usr/local/lib/it_msmquiet.dylib`) and drops
 that one notice at its source by dyld interposing, identified at run time by the text the mounter's own
-bundle localises the notice's key to, in whatever language is set. The versions differ and the shim
+bundle localizes the notice's key to, in whatever language is set. The versions differ and the shim
 adapts without a table:
 - 3.2 / 3.2.2 raise it with `CFUserNotificationDisplayNotice` and one key, `UNSUPPORTED_FAILURE`
   ("The attached USB device is not supported.", button `DISMISS`).

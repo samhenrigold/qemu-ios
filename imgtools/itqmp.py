@@ -183,8 +183,8 @@ def gles_rejects(q):
 
 def magenta_fraction(ppm, step=1):
     """Fraction of a screendump's pixels that are magenta, against the frame's own maximum (the
-    backlight scales pixels). gles-debug=on paints what the GL bridge refused that colour, and
-    nothing in the iOS UI is that colour; the GLTest fixtures are, so not for their screens."""
+    backlight scales pixels). gles-debug=on paints what the GL bridge refused that color, and
+    nothing in the iOS UI is that color; the GLTest fixtures are, so not for their screens."""
     _, _, pix = read_ppm(ppm)
     hi = max(pix) or 1
     lo, up = 0.3 * hi, 0.7 * hi
@@ -419,7 +419,7 @@ def pinch(q, cx, cy, r0, r1, steps=24, dt=0.03, angle=0.0, settle=0.3):
     Both contacts are placed and committed before any motion: iPhone OS
     decides a gesture is a pinch from two contacts existing at once, and a
     first frame carrying only one finger reads as a drag that a second
-    finger joined later, which is a different recogniser.
+    finger joined later, which is a different recognizer.
     """
     def pos(r):
         dx, dy = math.cos(angle) * r, math.sin(angle) * r
@@ -458,7 +458,7 @@ def shot_ppm(q, path, min_bytes=1, timeout=6):
 
 
 def shot(q, path):
-    """screendump + normalise. Returns (path, max_sample, nonzero_fraction).
+    """screendump + normalize. Returns (path, max_sample, nonzero_fraction).
 
     The panel scales every pixel by the guest-programmed backlight, so a raw
     dump of a dim screen is faithful and illegible; normalize() rescales it.

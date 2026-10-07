@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract and decrypt the boot Apple logo from a NOR image, for IT_INJECT_LOGO.
 
-iBoot cannot load the logo itself: its image_load rejects the personalised
+iBoot cannot load the logo itself: its image_load rejects the personalized
 signature before it ever reaches the GID decrypt (measured over the gdbstub -
 it returns -1), which is why the screen is black for the whole of iBoot's life.
 IT_INJECT_LOGO hands it the decrypted image instead, exactly as IT_INJECT_DT

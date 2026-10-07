@@ -199,7 +199,7 @@ static void adm_run_command(S5L8900ADMState *s)
         break;
     }
     default:
-        qemu_log_mask(LOG_UNIMP, "[adm] unrecognised command 0x%x\n", cmd);
+        qemu_log_mask(LOG_UNIMP, "[adm] unrecognized command 0x%x\n", cmd);
         break;
     }
 }

@@ -1,6 +1,6 @@
 /*
  * macOS-app additions to the qemu-ios-ui.h ABI (see contrib/ios-app).
- * Same rules: app-thread safe, everything is marshalled onto the QEMU
+ * Same rules: app-thread safe, everything is marshaled onto the QEMU
  * thread through a bottom half.
  */
 

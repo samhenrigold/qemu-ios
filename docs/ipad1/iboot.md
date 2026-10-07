@@ -167,7 +167,7 @@ DFU upload buffer by the ROM's own memmove. Firmware remains untracked.
 and its A4 alias. It is mutually exclusive with `iboot=` and `kboot=`. GPIO
 board straps now yield the measured K48 POWER_ID (`0x01020001`); the DRAM
 controller provides register readback and immediate DLL calibration completion.
-The latter represents ideal RAM timing, not an analogue DRAM timing simulation.
+The latter represents ideal RAM timing, not an analog DRAM timing simulation.
 
 Production fuse values remain the default. For the unpersonalized development
 certificates shipped in IPSWs, `development-fuses=on` selects the engineering

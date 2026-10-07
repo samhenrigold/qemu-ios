@@ -4,7 +4,7 @@
 The LCD device registers a legacy absolute mouse handler
 (`ipod_touch_lcd_mouse_event`, 0..32767 on both axes, Y inverted), so QMP
 `input-send-event` reaches the touchscreen. The framebuffer's effective maximum
-sample value is 1, so PPM dumps are normalised to 0..255 before being written
+sample value is 1, so PPM dumps are normalized to 0..255 before being written
 out as PNG - otherwise every screenshot looks solid black.
 """
 

@@ -144,7 +144,7 @@ processes; save and restore of a running machine via `migrate file:` /
 **3D is partial.** A game's world, camera and menus render and animate, and
 frames reach CoreAnimation through the real IOSurface present path. But at
 least one app reaches a state where the panel keeps compositing a stale frame:
-the missing geometry is provably in the GL colour buffer and provably absent
+the missing geometry is provably in the GL color buffer and provably absent
 from the panel, with CA accepting every frame it is handed. Pacing also
 judders, while the guest sits at 3.5% CPU.
 
@@ -156,4 +156,4 @@ rather than raw PCM and have not been looked at.
 **Encrypted App Store binaries cannot run** — only decrypted ones.
 
 **The device never auto-locks, dims, or idle-sleeps** on a stock run. Set
-`IT_I2C_NAK=1` to get those behaviours back.
+`IT_I2C_NAK=1` to get those behaviors back.

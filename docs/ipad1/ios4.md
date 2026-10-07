@@ -26,7 +26,7 @@ Components: kernel `xnu-1504.58.28~3/RELEASE_ARM_S5L8930X` (Darwin 10.4.0), iBoo
 | DT `flash-controller0/disk` | `*-ns` timings | `*-clks` timings, `meta-per-logical-page`, `valid-meta-per-logical-page`, `logical-page-size`, `ppn-device` + PPN geometry | kboot sets only the props the IPSW DT has; the 4.x meta layout (12 total / 10 DMA bytes, 4096) is a property of this raw NAND, declared next to the other NAND values. PPN props stay 0 (iBoot-931 fills them only when `ppn-device` = 1, iBoot 0x5ff077fc). `*-clks` stay 0: the IOP model ignores timings (the kernel prints `tRP 41ns ...`) |
 | IOP firmware `cnfg` block / bss | 0xf018 / 0xf160-0x1b000 | 0x15018 / 0x15160-0x22000 | `s5l8930_iop.c`: bss bounds from the image header words fw[0x318]/[0x31c], `cnfg` by scanning the loaded image for its magic |
 | IOPFMI command ABI | v1 | **v2** (below) | `s5l8930_iop.c` picks v2 when the loaded image carries `h2fmi_iop_read_chip_ids` |
-| NAND geometry / FTL | 3,925,449 sectors | the same; NANDDRIVERSIGN `0x43313131` read as "new style signature", metadata whitening honoured | unchanged `ipad1_nand.py` store; 4.x runs its own full R/O restore on it (and erases free blocks while doing so: ~1800 erase-multiple commands per bus) |
+| NAND geometry / FTL | 3,925,449 sectors | the same; NANDDRIVERSIGN `0x43313131` read as "new style signature", metadata whitening honored | unchanged `ipad1_nand.py` store; 4.x runs its own full R/O restore on it (and erases free blocks while doing so: ~1800 erase-multiple commands per bus) |
 | data partition | plain 0xAF + fstab patch | the IPSW fstab already says `/dev/disk0s2`; the unprotected HFSX volume mounts journaled | unchanged. No EncryptedMediaFilter / content-protection mount is needed to mount it |
 | launchd jobs used by rootfs/bake | | SpringBoard, BTServer, storage_mounter, lockdownd, installd: same paths | unchanged |
 | AppSync `MISValidateSignature` | | found by symbol in the 4.2.1 shared cache (VA 0x3075d924) | unchanged (`appsync_cachepatch`) |
@@ -53,7 +53,7 @@ selects the PPN handler per opcode). Raw NAND uses 1-12 (same numbering as v1), 
   failing; status 1 / 0x80000001. No per-operation status ring (v1 had one at +0xa0).
 - Meta DMA stays 10 bytes per page (`valid`); YaFTL's struct is 12 (`total`).
 
-Not modelled: op 21 (fw 0x966c, never sent on this boot), the PPN handlers, and the failing-CE details on
+Not modeled: op 21 (fw 0x966c, never sent on this boot), the PPN handlers, and the failing-CE details on
 error paths (the model never fails a read).
 
 ## The blocker: system keybag and effaceable storage
@@ -270,13 +270,13 @@ loaded):
   which now only saves the host a fault round trip per page.
 - CA puts an EAGL layer's surface in its own IOMFB layer (UI0) under a full-screen UI1, with a
   destination rectangle: +0x54 origin, +0x60 source size, +0x64 far corner (`x << 16 | y`). The display
-  model (`s5l8930_display.c`) assumed full-panel layers at 0,0 and now honours the rectangle.
+  model (`s5l8930_display.c`) assumed full-panel layers at 0,0 and now honors the rectangle.
 
 **The GL check without activation.** Apps can't be launched from an unactivated home screen, so
 `contrib/it-gltest/it_gltest.c` is a launchd job (`ipad1_device.py create ... --gl-test`, recorded as
 `gl_test` in the lock) that puts a CAEAGLLayer on its own remote CAContext, ordered above everything,
 and draws a magenta / cyan / yellow ES 1.1 scene with a moving blue band. `tests/ipad1/gltest.py DEVICE`
-checks the fixture's glReadPixels probes, the colour fractions of two screendumps (the iPod GLES check's
+checks the fixture's glReadPixels probes, the color fractions of two screendumps (the iPod GLES check's
 method), the fixture's present rate and tearcheck's score. On 8C148: readback PASS, magenta 0.071 /
 cyan 0.153 / yellow 0.076 (layer 0.076 / 0.153 / 0.076), presents 61.5 fps (vsync), 0 torn, black or
 partial frames in 92 captured changes. On 7B500 it passes too, but only its first frame reaches the
@@ -374,7 +374,7 @@ activation hook), and the iPod regression — see the commit.
 | ~~End-to-end validation with GL CA~~ **DONE 2026-09-28** ("End to end, activated") | — |
 | Lock-screen power-off hang (2/37), glDiscardFramebufferEXT | open |
 
-Scratch artefacts (untracked): `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (decrypted firmware,
+Scratch artifacts (untracked): `~/Developer/qemu-ios-files/ipad1/repro-8C148/` (decrypted firmware,
 extracted IOP images `iopfw-{7B500,8C148}.bin`, probe boots `p1`-`p7`, the diagnostic `diag/it_ps.c` and the
 keybag experiment `diag/it_kb.c`; `re/kc.py` — the kernelcache VA↔file/xref/disasm helper used to resolve
 the trust gate above; its source is gone, `re/kc2.py` replaces it), `bin/pwrprobe.py` (orientation and

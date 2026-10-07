@@ -501,7 +501,7 @@ static OSStatus out_device_ioproc(
      * over for as long as the starvation lasts. That turns a dropout into a
      * repeated fragment, which is far more audible than the silence it stands
      * in for: measured on the iPod touch shutter, a single starved period in
-     * the middle of a 500 ms clip is what "recognisable but garbled" was.
+     * the middle of a 500 ms clip is what "recognizable but garbled" was.
      * Silence is the honest thing to play when there is nothing to play.
      */
     if (pending_frames < frame_size) {

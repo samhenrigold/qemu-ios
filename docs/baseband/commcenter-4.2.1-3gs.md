@@ -35,7 +35,7 @@ CommCenter -> /dev/mux.spi-baseband (+ per-DLCI nodes via ASMIOCCREATEDLCI)
 | `arm-io/spi2` `spi,s5l8920x,baseband` | reg 0x02200000 (+0x80000000), irq 0x9c, protocol-version **1**, max-data-size **0x7f8**, rx/tx-buffer-count 16, CDMA ch 0x10 (TX, FIFO 0x82200010) / 0x11 (RX, FIFO 0x82200020), config `0 0x53 0x20010100`, MRDY = GPIO 0x1802 (out), SRDY = GPIO 0x1304 (in, edge irq), fail_gpio 0x0804 |
 | `baseband` `baseband,n88` | irq 0xa8; bb_rst GPIO 0x1407, radio_on 0x1405, reset_det 0x1500 (in), bb_on = PMU GPIO 2, umts_rxd_ctrl 0x0f03, bb_usart0_rxd_ctrl 0x0f02, `device-imei` and `snum` empty (lockdownd reads device-imei, so the board should fill it) |
 | `uart2/umts` | 0x82700000 irq 0x16, the baseband's debug UART |
-| `i2s2/audio2` `audio-data,baseband` | voice PCM (not modelled: no audio) |
+| `i2s2/audio2` `audio-data,baseband` | voice PCM (not modeled: no audio) |
 
 AppleBaseband (kext 0x8066d000) has the classes AppleBasebandN82, N88 and N90. They look up
 bb_on/bb_rst/radio_on/reset_det and the usb-mux functions; CommCenter drives them through
@@ -184,7 +184,7 @@ These hold for the 3GS unless its v1 trace says otherwise.
 * **Baseband reset**: CommCenter pulses bb_rst (GPIO 0x0102) and then radio_on (0x0101) low. The
   modem resets to raw AT and CommCenter's recovery re-runs init in bypass ("at" pings, then
   `+cmux`). A baseband reset by CommCenter (raw `at`
-  pings after the mux was up) is not modelled. It only happened while the frame bugs above were
+  pings after the mux was up) is not modeled. It only happened while the frame bugs above were
   still in.
 
 How to watch it: `IOS_BB_TRACE=2` prints every AT line and reply, the SPI frames and MRDY/SRDY with

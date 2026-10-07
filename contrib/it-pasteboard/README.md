@@ -1,8 +1,8 @@
 # Getting text into the guest without tapping the on-screen keyboard
 
-Typing by synthesising taps on iOS's own keyboard is structurally lossy: key
+Typing by synthesizing taps on iOS's own keyboard is structurally lossy: key
 positions change per keyboard page and per field type (a URL field replaces the
-space bar), there is no feedback channel, and the page state can desynchronise
+space bar), there is no feedback channel, and the page state can desynchronize
 silently — after which every subsequent character lands somewhere else.
 
 iOS 3.0 added `UIPasteboard`, which is the way out. Put the text on the guest's
@@ -34,7 +34,7 @@ run over ssh as root) that does exactly one thing:
 
 After it ran, a long-press in SpringBoard's Spotlight field raised the **Paste**
 menu and pasting inserted the text verbatim — including a period, spaces and a
-`#` from the symbols page, the three things the synthesised-tap path gets wrong.
+`#` from the symbols page, the three things the synthesized-tap path gets wrong.
 That is the whole feasibility question answered: seed the pasteboard from
 outside, and the guest's own UI pastes it.
 

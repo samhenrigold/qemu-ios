@@ -17,7 +17,7 @@
  *     memory (memory mode, 0x80/0x84/0x8c),
  *   - the resulting chaining state is read back out of the hash registers.
  *
- * Padding and finalisation belong to the guest. iBoot pre-pads its messages,
+ * Padding and finalization belong to the guest. iBoot pre-pads its messages,
  * so for iBoot the state after the last block already is the digest. XNU
  * instead hands whole pages to the engine and then runs its own SHA1Final
  * over the padding block in software (libkern SHA1UpdateUsePhysicalAddress),

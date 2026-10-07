@@ -11,7 +11,7 @@ whole visit. One QEMU; it exits when the tour ends.
 import argparse, json, os, shutil, socket, subprocess, sys, tempfile, time
 
 BOOTROM = os.path.expanduser("~/Developer/qemu-ios-files/ipod1g/bootrom_s5l8900")
-ROW = lambda i: 87 + 46 * i               # root list row centres (status 20 + bar 44 + 46-point rows)
+ROW = lambda i: 87 + 46 * i               # root list row centers (status 20 + bar 44 + 46-point rows)
 BACK = (32, 42)
 SCROLLED = 274                            # 15 rows of 46 in a 416-point table, scrolled to the end
 TAB = lambda i: 32 + 64 * i               # button bar buttons

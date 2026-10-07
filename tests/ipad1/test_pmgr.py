@@ -14,7 +14,7 @@ source = (root/'hw/arm/s5l8930_pmgr.c').read_text()
 constants = '\n'.join(re.findall(r'^#define .*$', source, re.M))
 state = source[source.index('typedef struct S5L8930EventTimer'):source.index('/*\n * Reset values')]
 functions = []
-for name in ('pmgr_modelled','pmgr_ticks','evt_remaining','evt_arm','evt_expire','evt_write_state',
+for name in ('pmgr_modeled','pmgr_ticks','evt_remaining','evt_arm','evt_expire','evt_write_state',
              'wdog_count','wdog_expire','wdog_check','s5l8930_pmgr_read','s5l8930_pmgr_write'):
     m = re.search(r'^static [^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}', source, re.M|re.S)
     assert m, name

@@ -371,7 +371,7 @@ Total for 3.1.3 feature parity without a shell: **about 6-9 working days (P1-P5)
 - **itmedia/itphoto**: one-shot helpers spawned by the agent, not a shell. They use MusicLibrary
   and PhotoLibrary, for which no stock host-side service exists on 3.x (iTunes wrote a hashed
   iTunesDB). They stay separate processes so a framework crash cannot take the agent down.
-- **The MBXGLEngine shim**: the MBX GPU is not modelled.
+- **The MBXGLEngine shim**: the MBX GPU is not modeled.
 - **it_typein on 3.1.3**: there is no stock keyboard path, and P6 showed that out-of-process key
   events are dropped by the stock layout.
 - Everything else (installs, logs, crash reports, icons, time zone, screenshots, power, networking)

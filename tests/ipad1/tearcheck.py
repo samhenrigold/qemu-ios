@@ -10,17 +10,17 @@ Notes, Home. A second thread screendumps back to back the whole time. That
 goes through the same display_update() read of the guest framebuffer the app
 publishes at its refresh, so what tears here tears in the app.
 
-Scoring, per captured frame i against its neighbours i-1 and i+1, row by row
+Scoring, per captured frame i against its neighbors i-1 and i+1, row by row
 (panel rows are framebuffer rows, the order the guest writes memory in):
   torn     bands of >= BAND rows equal to frame i-1 only, and bands of
            >= BAND rows equal to frame i+1 only, on opposite sides of one
            row: the frame is one state above it and the next below.
            Interleaved bands are content moving across rows (the page
            swipe, rotated onto the landscape panel), not a tear.
-  black    every pixel zero while both neighbours have content.
-  partial  a band of >= BLACK_BAND fully black rows where both neighbours
+  black    every pixel zero while both neighbors have content.
+  partial  a band of >= BLACK_BAND fully black rows where both neighbors
            have content in those rows.
-Frames identical to both neighbours are idle and not counted. Output:
+Frames identical to both neighbors are idle and not counted. Output:
 summary.json in DIR, plus worst-N.png (prev | frame | next, bands marked).
 """
 import argparse, glob, json, os, re, subprocess, sys, threading, time

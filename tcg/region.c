@@ -688,7 +688,7 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
          */
         if (!is_debugger_attached()) {
             error_setg(errp, "jit needs an attached debugger on this OS "
-                             "(TXM only honours debugger-blessed code pages)");
+                             "(TXM only honors debugger-blessed code pages)");
             return -1;
         }
 

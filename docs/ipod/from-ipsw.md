@@ -179,9 +179,9 @@ display (`IOMobileFramebufferSwapSignal`), as glishim does. The engine is ldid-s
 Fresh 8C148 device (`firmwarekit create --catalog CATALOG --id n72ap-8C148 --ipsw IPSW --out OUT --helper LIGHTTOUCHDEVICE`, lock
 `derived.gles = "shim MBXGLEngine-8C148"`): `regress.py --device OUT --checks boot,gles` PASS, home screen lit=285214,
 GLTest magenta 0.141 / cyan 0.281 / yellow 0.141, no unimplemented slot. Host log: one SpringBoard
-`GLESGetEGLInterface`/`GLESCreateGC` pair, `[gles] host GL up`, `swap: framebuffer ID ... signalling the main
+`GLESGetEGLInterface`/`GLESCreateGC` pair, `[gles] host GL up`, `swap: framebuffer ID ... signaling the main
 display`, then GLTest's `GLESBindView` and `present tally: ok=600 failed=0`. 7E18 with the new shim staged
-(`regress.py --stage-gles-shim`, default tier): 8/8, same GLES colours.
+(`regress.py --stage-gles-shim`, default tier): 8/8, same GLES colors.
 
 ### 8C148: Wi-Fi and screen lock (2026-09-28)
 
@@ -233,7 +233,7 @@ The hold button does nothing on 2.x (2.1.1 too): no power sheet, no lock, so the
 completes. 2.x's DeviceTree has no `function-button_hold` (3.x: GPIO 0xC02), only `function-wake_button_hold` (PMU
 STAT 0x191). With IT_GPIO_TRACE/IT_PMU_TRACE the guest acks the hold GPIO edge (group 3 bit 26) and never reads the
 PMU; awake, the kernel unmasks only EVENT_C bits 2/4/6 (masks 0x95/0xdf/0xab), while the model latches hold at
-EVENT_C bit 1 on the press only. The hold's 2.x PMU event path is unmodelled (LightTouchMac docs/smoke.md #12).
+EVENT_C bit 1 on the press only. The hold's 2.x PMU event path is unmodeled (LightTouchMac docs/smoke.md #12).
 
 ### P3, 5F138: LLB → iBoot
 
@@ -385,8 +385,8 @@ all eight default regression checks pass across `/private/tmp/ipod-bootchain-reg
 and `...-dt-apps` (the second run supplies initially missing guest fixtures).
 GLES uses `--stage-gles-shim` for the shipping NAND's older shim.
 
-The S5L UART acknowledgement mode now applies to every boot strategy. Previously
-it was selected only for direct iBoot; SecureROM boots used Exynos acknowledgement
+The S5L UART acknowledgment mode now applies to every boot strategy. Previously
+it was selected only for direct iBoot; SecureROM boots used Exynos acknowledgment
 semantics and 2.1.1 spun in AppleS5L8900XSerial's ISR. Before/after gdb samples
 move from that handler to the CPU idle loop. All eight 7E18 regression checks
 pass after the UART change (`/private/tmp/ipod-bootchain-regress-uart`) and after
@@ -466,7 +466,7 @@ Under gdb, `-[SBAwayView updateInterface]` gets YES from `-[SBLockdownManager br
 brick state`). `determine_activation_state` clears it only when `is_phone` (DeviceClass == iPhone) is true.
 On an iPod, only `toggle_brick_state` clears it, and only when a paired host sets `TimeIntervalSince1970`
 or `iTunesHasConnected` (the `verify_set` path of lockdownd's set_value handler). iTunes does this on
-connect. This is host-protocol behaviour, so the emulator needs no change.
+connect. This is host-protocol behavior, so the emulator needs no change.
 
 Measured: `idevicepair pair` then `idevicedate -c` logs `toggle_brick_state: Disabling the brick state (time
 interval)`. On the same boot, a home press and unlock swipe reach the home screen (first-run Edit Home Screen

@@ -83,9 +83,9 @@ lines (`CGLChoosePixelFormat`/`CGLCreateContext`/`CGLSetCurrentContext` becoming
 
 | | State | Effort |
 |---|---|---|
-| **Touch** | `ipod_touch_lcd_mouse_event()` already takes normalised coordinates and calls `ipod_touch_multitouch_on_touch/_release/_motion` | Near-free; a UIKit handler calls those three |
+| **Touch** | `ipod_touch_lcd_mouse_event()` already takes normalized coordinates and calls `ipod_touch_multitouch_on_touch/_release/_motion` | Near-free; a UIKit handler calls those three |
 | **Multitouch** | **Does not exist.** One `FingerData`, scalar `touch_x`/`touch_y`, `// TODO we assume one finger for now`. Pinch and rotate do not work. | Contained but real — the wire header already has `numFingers`/`fingerDataLen` |
-| **Accelerometer** | Modelled LIS302DL. `ACCEL_1G = 0x40`, ±2 g in a signed byte. **X is inverted versus UIKit; Y and Z are not.** | Near-free: `x = -a.x*0x40, y = a.y*0x40, z = a.z*0x40` |
+| **Accelerometer** | Modeled LIS302DL. `ACCEL_1G = 0x40`, ±2 g in a signed byte. **X is inverted versus UIKit; Y and Z are not.** | Near-free: `x = -a.x*0x40, y = a.y*0x40, z = a.z*0x40` |
 | **Audio out** | Host path proven, but the guest never starts the transfer | Blocked on an open bug |
 | **Microphone** | **Unbuilt** — no `AUD_open_in`, `SWVoiceIn` or `AUD_read` anywhere in `hw/arm/`, and neither codec model has mic registers | A whole new capture path |
 

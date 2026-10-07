@@ -47,7 +47,7 @@ Usage:
     tests/ipod/regress.py --with-apps         # + afc, usbtcp, wifi, appinstall, applaunch
     tests/ipod/regress.py --quick            # boot + afc only, one boot
     tests/ipod/regress.py --checks boot,wifi # explicit selection, any tier
-    tests/ipod/regress.py --check-prereqs    # report missing artefacts, run nothing
+    tests/ipod/regress.py --check-prereqs    # report missing artifacts, run nothing
 
 The default tier needs a built qemu-system-arm and a NAND containing it_agent.
 USB-side checks need the usbmuxd fork (--usbmuxd); missing host tools cause an
@@ -109,7 +109,7 @@ FRAME_BYTES = W * H * 3
 # finished while SpringBoard was still painting.
 HOME_LIT_MIN = 180000
 # ...and it has to be a picture rather than a solid fill. iBoot paints the panel
-# its default colour - white on the pinot panel - and leaves it there when the
+# its default color - white on the pinot panel - and leaves it there when the
 # boot fails, so a device sitting in recovery mode lights EVERY sub-pixel and
 # sails through a lit floor at 460800. That is not hypothetical: it is what made
 # this harness report PASS at t+13s against a NOR whose device tree iBoot could
@@ -142,13 +142,13 @@ GLES_DIR = os.path.join(ROOT, "contrib", "it-gles")
 GLES_BUNDLE_ID = "com.qemuios.gltest"
 # Fraction of the frame that must be magenta, and cyan, for the render to
 # count. GLTest clears magenta and draws a cyan quad over the left half of its
-# view precisely because no part of the iOS UI produces either colour, so this
+# view precisely because no part of the iOS UI produces either color, so this
 # is a far sharper assertion than a lit-pixel floor - measured on a real 3.1.3
 # run, GLTest gives 0.281/0.281 and the home screen 0.0003/0.0082. A lit floor
 # alone could not tell them apart at all (the home screen lights *more*
 # sub-pixels than the GL frame does).
 GLES_QUAD_MIN = 0.05
-# And at most this much. The 240x360 view is 0.281 of the panel per colour;
+# And at most this much. The 240x360 view is 0.281 of the panel per color;
 # 0.498 each (and a 270-row striped variant at 0.281) was the LCD model reading
 # CA's directly scanned-out GL surface as a full-panel framebuffer, which the
 # minimum alone passed.
@@ -503,7 +503,7 @@ class Device:
             if lit >= SOLID_LIT_MAX:
                 # See SOLID_LIT_MAX: a fill is iBoot, not SpringBoard.
                 log("%s: t+%.0fs solid fill (%d lit) - the panel is showing a "
-                    "flat colour, so this is iBoot/recovery, not a boot"
+                    "flat color, so this is iBoot/recovery, not a boot"
                     % (self.tag, time.time() - START, lit))
                 continue
             host_connected = False
@@ -1225,7 +1225,7 @@ def install_gles_app(cfg, r):
 
 def dismiss_reorder_tip(control, dev):
     """A new device's first unlock raises SpringBoard's modal "Edit Home Screen" tip
-    (SBDidShowReorderText unset); it would cover every later frame. Stock behaviour,
+    (SBDidShowReorderText unset); it would cover every later frame. Stock behavior,
     so dismiss it the way a user does rather than baking the preference."""
     for _ in range(3):
         status, tree = itqmp.agent(control.qmp, "uidump", timeout=20)
@@ -1523,10 +1523,10 @@ def check_gles(cfg, procs, dev, r):
 
     The frame is never hashed and never compared to a golden image: host GPUs
     differ, and a pixel-exact reference would be flaky on every machine but the
-    one that recorded it. What no host GPU can change is *which colours* come
+    one that recorded it. What no host GPU can change is *which colors* come
     out of `glClear(magenta); glDrawArrays(cyan quad)` -- both are flat, both
     are unfiltered, and glapp.c picked them because nothing in the iOS UI
-    produces either. So the assertion is the colour signature, held across two
+    produces either. So the assertion is the color signature, held across two
     samples, plus a scan of the shim's own unimplemented-slot log.
     """
     if cfg.gles_front_end:
@@ -2012,7 +2012,7 @@ def main():
                     help="also run the opt-in tier: " +
                          ", ".join(OPT_IN_CHECKS))
     ap.add_argument("--check-prereqs", action="store_true",
-                    help="report which artefacts are missing for each tier "
+                    help="report which artifacts are missing for each tier "
                          "and exit, without running anything")
     ap.add_argument("--boot-timeout", type=int, default=900,
                     help="seconds to wait for the home screen (default 900; "

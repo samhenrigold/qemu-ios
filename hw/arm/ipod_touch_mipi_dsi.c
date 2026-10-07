@@ -71,7 +71,7 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
             if (s->swrst_released) {
                 status |= rDSIM_STATUS_SwRstRelease;
             }
-            /* Remaining escape/FIFO acknowledgements are legacy direct-boot
+            /* Remaining escape/FIFO acknowledgments are legacy direct-boot
              * compatibility behavior, not qualified command execution. */
             if (s->direct_boot) {
                 status |= s->cmd_pending;

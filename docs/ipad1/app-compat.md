@@ -32,7 +32,7 @@ Emulator-side findings:
   same app with different archive mtimes launches, and uninstalling before the install launches
   3/3. Fresh installs launch when tapped 1-3 s after `Install: Complete` (0 failures in 60+). The
   fix is in `Boot` (a default overlay starts empty), and the harness no longer waits after install.
-  This is stock iOS behaviour, so a real iPad should do the same.
+  This is stock iOS behavior, so a real iPad should do the same.
 - **Super Monkey Ball: blank GL surface. FIXED (ipad1-gl).** It rebuilds its framebuffer on the
   rotate to landscape: `glDeleteRenderbuffers`, then `renderbufferStorage:fromDrawable:` again. EAGL
   starts that with `gliBindViewES(gc, NULL)` and then binds the layer through CA's `vt[1]`. The stock

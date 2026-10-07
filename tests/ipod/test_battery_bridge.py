@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""App-thread battery updates are validated and marshalled onto the emulator thread."""
+"""App-thread battery updates are validated and marshaled onto the emulator thread."""
 from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[2]

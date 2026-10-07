@@ -1239,7 +1239,7 @@ static int surface_capture(ca_view_t *v, void *s)
      * to cover its width -- at ITS OWN pixel size. A CAEAGLLayer asking for
      * kEAGLColorFormatRGB565 gets a 2-byte surface (320 wide, stride 640), and
      * measuring that against a hardcoded 4 bytes rejected it as garbage: the
-     * app then rendered every frame into a framebuffer with no colour
+     * app then rendered every frame into a framebuffer with no color
      * attachment, which looks like a healthy draw count and a white screen. */
     bpp = (format == CA_FOURCC_565L || format == CA_FOURCC_555L) ? 2 : 4;
     if (!base || width == 0 || height == 0 ||
@@ -1795,7 +1795,7 @@ static int GLESSwapNotification(void *gc, unsigned connection,
     if (signal_swap(connection, 20, args, 2, 0, 0) == 0) return 1;
     if (!fb_signal) {
         w("[mbxshim] swap: framebuffer ID "); wx(connection);
-        w(" is no connection (4.x); signalling the main display\n");
+        w(" is no connection (4.x); signaling the main display\n");
         void *h = dlopen("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/"
                          "IOMobileFramebuffer", RTLD_NOW);
         if (h) {

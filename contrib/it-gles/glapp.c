@@ -28,10 +28,10 @@
  * is not the same as the normal one (floats promote to double), and CGRect and
  * NSTimeInterval both travel through here.
  *
- * WHAT IT DRAWS, AND WHY THOSE COLOURS
+ * WHAT IT DRAWS, AND WHY THOSE COLORS
  *
  * The GL view is deliberately NOT fullscreen: it is inset in a red window. So
- * the three ways this can end are told apart by pixels alone, with no colour
+ * the three ways this can end are told apart by pixels alone, with no color
  * shared between them:
  *
  *   - CA composited our surface -> magenta right half and cyan left half
@@ -254,7 +254,7 @@ static void draw_frame(void)
     p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 #else
-/* A quad over the left half, in a magenta field. Both colours are ones no
+/* A quad over the left half, in a magenta field. Both colors are ones no
  * part of the iOS UI produces, so a screenshot cannot be read two ways. It is
  * alone in a page nothing else touches, so the draw is its first access and
  * the host has to fault it in (a static table used to draw nothing). */
@@ -285,7 +285,7 @@ static void draw_frame(void)
     p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     /* A yellow texture over the lower right quarter, via OES_draw_texture --
-     * the third colour the regression check counts. A yellow field with no
+     * the third color the regression check counts. A yellow field with no
      * DrawTex support reads as plain magenta there. */
     if (p_glDrawTexfOES && g_tex) {
         static const int crop[4] = { 0, 0, 4, 4 };

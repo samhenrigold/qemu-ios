@@ -127,7 +127,7 @@ a ~1 s stall about every 12 s. That's BluetoothManager blocking on BTServer: res
 (control: 790 ms on every tap). Hiding the DT node (uart3/bluetooth compatible=none) does not help.
 So `ipad1_rootfs.py bake` sets `Disabled` in `com.apple.BTServer.plist` by default
 (`--keep-bluetooth` to skip). With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
-General shows Bluetooth greyed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
+General shows Bluetooth grayed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
 Sam: no Bluetooth is fine.
 
 Parked work, for whoever wants a real controller. In the ipad1-kbd worktree, `git stash@{0}` and

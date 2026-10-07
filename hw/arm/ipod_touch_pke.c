@@ -21,7 +21,7 @@
  * gate must use forge-sigcheck=off and reject a mutated signature.
  *
  * The explicit compatibility option below can instead vouch for an image:
- * When the recovered block is not well formed, synthesise the one
+ * When the recovered block is not well formed, synthesize the one
  * the caller is about to compare against, built from the last digest the SHA1
  * engine computed. Enabled with forge-sigcheck=on; off by default, so the
  * stock NOR keeps booting through the genuine verification path.

@@ -416,7 +416,7 @@ static void fmss_run_script(IPodTouchFMSSState *s)
         }
         if (!ok) {
             qemu_log_mask(LOG_UNIMP, "[fmss] program 0x%08x: op %08x %08x at +0x%x "
-                          "not modelled; stopped\n", s->reg_cs_script,
+                          "not modeled; stopped\n", s->reg_cs_script,
                           insn[0], insn[1], pc - 8);
             return;
         }
@@ -432,7 +432,7 @@ static void fmss_run_script(IPodTouchFMSSState *s)
  * through the trigger register, so a block erase is never visible to us -- but
  * it certainly happens, because the FTL rewrites blocks that are fully
  * populated in the base image while only programming a handful of their pages.
- * Without modelling the erase, the pages the FTL did not rewrite still read
+ * Without modeling the erase, the pages the FTL did not rewrite still read
  * back as the base image's *old* contents instead of as erased flash, so on
  * the next boot the FTL's scan finds stale valid-looking data where it expects
  * clean pages.
@@ -1253,7 +1253,7 @@ static void read_nand_pages(IPodTouchFMSSState *s)
          * after it, so it ran 52 bytes past the end of the driver's array into
          * guest kernel heap. On every NAND read, for the life of the run.
          *
-         * Writing 0xc is behaviour-identical for every entry except that
+         * Writing 0xc is behavior-identical for every entry except that
          * overspill: bytes 0xc..0x3f were always overwritten by the next
          * iteration anyway.
          */
@@ -1305,7 +1305,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
         return;
     }
     if (!s->nand_overlay) {
-        return; /* no writable overlay -> writes are discarded (original behaviour) */
+        return; /* no writable overlay -> writes are discarded (original behavior) */
     }
 
     uint32_t desc = s->reg_cs_buf_addr;
@@ -1599,7 +1599,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
             if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
             else if(s->reg_csgenrc == 0xa02) { write_nand_pages(s); }
             else {
-                /* Erase and the other opcodes are not modelled. Confirmed by
+                /* Erase and the other opcodes are not modeled. Confirmed by
                  * instrumentation that none of them fires during boot or an
                  * app install, so erase is not what blocks persistence. */
             }

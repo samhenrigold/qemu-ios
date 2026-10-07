@@ -31,7 +31,7 @@ typedef struct IPodTouchSYSICState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     bool direct_boot; /* Startup board compatibility policy. */
-    uint32_t epoch;   /* POWER_ID[31:24] to synthesise on a direct boot: the staged iBoot's
+    uint32_t epoch;   /* POWER_ID[31:24] to synthesize on a direct boot: the staged iBoot's
                        * own security epoch (it_iboot_find_epoch), which the LLB would have latched */
     bool s5l8900;     /* "s5l8900" property: +0xC powers down, +0x10 up, STATE is the on-mask */
     qemu_irq gpio_irqs[GPIO_NUMINTGROUPS];

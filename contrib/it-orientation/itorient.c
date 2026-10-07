@@ -62,7 +62,7 @@
  * animating the swing, so a change is on screen before the animation of the
  * user's tap has finished.
  *
- * No headers on purpose, and no crt1: see sbdlicon.c, which this is modelled on.
+ * No headers on purpose, and no crt1: see sbdlicon.c, which this is modeled on.
  */
 
 /* ../armv6-toolchain rewrites LC_MAIN as an LC_UNIXTHREAD whose pc points

@@ -146,7 +146,7 @@ and validates the staged tree against `manifest.json`; a pin bump is a LightTouc
 stages for LightTouchMac (moving them out of `docs/` is on another track). `docs/ipad1/screens/`
 holds the iPad evidence screenshots; put new evidence in `qemu-ios-files` instead.
 
-## Upstream and licence
+## Upstream and license
 
 QEMU-iOS is built on [QEMU](https://www.qemu.org) and grew out of devos50's
 [qemu-ios](https://github.com/devos50/qemu-ios), the emulator for the iPod touch 1G and 2G. devos50's
@@ -156,5 +156,5 @@ write-ups are still the best introduction to the S5L8720 peripherals:
 is upstream's iPod touch 2G guide, kept with a note on what still applies.
 
 Like QEMU, this repository is licensed under the GNU General Public License version 2 (`COPYING`); some
-files carry other compatible licences in their headers (`LICENSE` explains QEMU's licensing). No Apple
+files carry other compatible licenses in their headers (`LICENSE` explains QEMU's licensing). No Apple
 firmware is part of the repository.

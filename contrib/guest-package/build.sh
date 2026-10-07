@@ -19,7 +19,7 @@ rm -rf "$OUT/src" "$OUT/logs"
 mkdir -p "$OUT/src/contrib" "$OUT/src/include/hw/arm/guest-services" "$OUT/src/tests" "$OUT/logs"
 COMPONENTS="it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
             ipad1-guest appsync it-boot"
-# ipad1-guest also compiles these sources; it-gles/gles-public/it-boot read their neighbours
+# ipad1-guest also compiles these sources; it-gles/gles-public/it-boot read their neighbors
 for c in $(python3 "$HERE/build_inputs.py" --components); do
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"
 done

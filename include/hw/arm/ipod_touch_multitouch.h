@@ -155,7 +155,7 @@ typedef struct FingerData
 
 /*
  * How many simultaneous contacts the model reports. The panel itself handles
- * more, but every gesture iPhone OS 3.1.3 recognises (pinch, rotate, two-finger
+ * more, but every gesture iPhone OS 3.1.3 recognizes (pinch, rotate, two-finger
  * scroll, three- and four-finger swipes in later builds) fits inside five, and
  * the frame has to stay under the negotiated MT_MAX_PACKET_SIZE.
  */
@@ -182,7 +182,7 @@ typedef struct FingerData
  * nailed the checksum to offset 73 -- correct for exactly one finger and wrong
  * for every other count. Getting it wrong is not benign: the driver counts
  * checksum failures, and past a threshold it kills the panel and re-probes,
- * which desynchronises the SPI state machine permanently.
+ * which desynchronizes the SPI state machine permanently.
  *
  * So the frame is built into a plain byte buffer by mt_build_frame(), which
  * returns the length alongside it. Nothing may reach for a fixed offset.

@@ -64,7 +64,7 @@ struct PL080State {
      * pl080_attach_paced_peripheral). Only those are allowed to gate a
      * memory<->peripheral transfer; every other peripheral keeps the historical
      * "transfer the whole descriptor the instant the channel is enabled"
-     * behaviour, because nothing drives its request line and gating it would
+     * behavior, because nothing drives its request line and gating it would
      * stall the channel forever.
      */
     uint32_t paced_req;

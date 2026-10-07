@@ -36,7 +36,7 @@ typedef struct IPodTouchSHA1State {
     /*
      * The engine is a raw SHA1 block compressor: it chains from the state the
      * guest loads into the hash registers and leaves the resulting state
-     * there. It never pads and never finalises - the guest's software does
+     * there. It never pads and never finalizes - the guest's software does
      * both (see XNU's SHA1Final, and iBoot, which pre-pads its messages).
      */
     uint32_t state[5];

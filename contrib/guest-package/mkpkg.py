@@ -16,7 +16,7 @@ rewritten here; hooks replace stock-path files (the preparer keeps a .baked copy
 
 The .itpack is nandpack's idea (contrib/macos-app/nandpack.py) for arbitrary files: one
 custom magic, a JSON index and one zlib stream, so the notary service, which opens any
-archive it recognises and rejects the unsigned guest Mach-Os inside, sees neither.
+archive it recognizes and rejects the unsigned guest Mach-Os inside, sees neither.
 """
 import hashlib
 import json

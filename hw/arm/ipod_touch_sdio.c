@@ -319,7 +319,7 @@ static unsigned sdio_bdc_hdrlen(IPodTouchSDIOState *s)
 
 /*
  * Deliver a firmware event. The frame is an ordinary 802.3 packet on the data
- * channel whose ethertype the driver recognises; everything from the bcmeth
+ * channel whose ethertype the driver recognizes; everything from the bcmeth
  * header inwards is big endian.
  *
  * The layout is pinned by what handleEventPacket checks: three OUI bytes at
@@ -383,7 +383,7 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
     /*
      * 2.1.1's driver dispatches receive by channel and answers channel 1 with
      * "WTF?? Got an event packet!!!" before dropping it, so its events have to
-     * arrive on the data channel and be recognised by their ethertype.
+     * arrive on the data channel and be recognized by their ethertype.
      * 3.1.3's rxPacket has a real sixteen entry jump table on the channel
      * (VA 0xc07191d6): 0 control, 1 event, 2 data, 3 superframe, 15, and
      * "ignore" for the rest - and its handleDataPacket has no ethertype test
@@ -654,7 +654,7 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
      * frame. On a get it is the size of the buffer the driver is waiting to
      * have filled, and the reply has to be exactly that long: the command
      * manager asserts on it (AppleBCM4325CmdManager.cpp:213) and then reads
-     * its own uninitialised buffer. Clamping both ways answered every get
+     * its own uninitialized buffer. Clamping both ways answered every get
      * with a few bytes - a 1148 byte WLC_GET_BSS_INFO came back as zero - and
      * that is why the joined BSS had a garbage BSSID and an empty SSID.
      */
@@ -793,7 +793,7 @@ static void sdpcm_handle_cdc(IPodTouchSDIOState *s, const uint8_t *cdc,
 
 /*
  * Store into the backplane, giving the few registers that are not plain memory
- * their behaviour. Everything else is backed by the page store so the driver's
+ * their behavior. Everything else is backed by the page store so the driver's
  * read-back verification passes.
  */
 static void backplane_store(IPodTouchSDIOState *s, uint32_t sb_addr,

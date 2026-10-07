@@ -29,7 +29,7 @@
  *   0x3C  TX FIFO/status ctrl (writes 1)
  *   0x40  clock divider / format (opaque)
  *
- * The config words are all computed in software, so the model honours only the
+ * The config words are all computed in software, so the model honors only the
  * enable bit, the TX command values, and the TX FIFO; everything else is stored
  * and echoed back.
  */
@@ -132,7 +132,7 @@
  * sound.
  *
  * IT_I2S_PREBUFFER_BYTES overrides it; 0 restores the old just-in-time
- * behaviour for A/B.
+ * behavior for A/B.
  */
 #define IT_I2S_PREBUFFER_BYTES_DEFAULT 32768
 
@@ -193,12 +193,12 @@ typedef struct IPodTouchI2SState {
     int dma_req_id;           /* peripheral request line on it (10) */
     bool dma_req;             /* current level of that line */
     QEMUTimer *pace_timer;
-    uint32_t fifo_bytes;      /* modelled TX FIFO occupancy */
+    uint32_t fifo_bytes;      /* modeled TX FIFO occupancy */
     uint32_t fifo_depth;      /* IT_I2S_FIFO_BYTES */
     uint32_t prebuffer;       /* IT_I2S_PREBUFFER_BYTES: host-side lead */
     bool prefilled;           /* the current sound has passed the prebuffer */
     int64_t prefill_start_ns; /* when this sound's prebuffer began filling */
-    int64_t pace_last_ns;     /* when we last drained the modelled FIFO */
+    int64_t pace_last_ns;     /* when we last drained the modeled FIFO */
     uint64_t pace_fraction;   /* fractional bytes, denominator 1e9 */
     uint32_t pace_debt;       /* bytes the drain still owes after a host stall */
     bool pushed_since_tick;   /* any PL080 delivery since the last pace tick */

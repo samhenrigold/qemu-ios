@@ -4,7 +4,7 @@
  *
  * Milestone 1 of docs/archive/ipad1-PLAN.md: enter the iOS 3.2.2 (7B500) kernel
  * directly, with no bootrom or iBoot, and get its console on UART0. Only the
- * devices the kernel's platform expert needs are modelled. Every other
+ * devices the kernel's platform expert needs are modeled. Every other
  * peripheral address falls into an unimplemented-device window that logs the
  * access (-d unimp) instead of faulting, so bring-up can see what the kernel
  * reaches for next.
@@ -135,7 +135,7 @@ static const A4Board a4_k48 = {
     /*
      * The K48 Pinot panel's ID read, a1 e5 69 09: raw-panel-id in a real
      * unit's DeviceTree (docs/ipad1/iboot.md), whose lcd-panel-id 0xa1e506c9
-     * is iBoot's normalisation of those four bytes. iBoot-1219 panics on a
+     * is iBoot's normalization of those four bytes. iBoot-1219 panics on a
      * panel type it does not know ("Mismatch between PINOT_TYPE and panel
      * ID"); 817/931 took the iPod's ID the model used to answer.
      */
@@ -1261,7 +1261,7 @@ static void ipad1_init(MachineState *machine)
 
     /*
      * dart1: the IOMMU in front of the ISP, JPEG and video-encoder blocks
-     * (DT dart1 mappers). No client is modelled; its driver programs it at
+     * (DT dart1 mappers). No client is modeled; its driver programs it at
      * every boot (smoke #29) the way it does dart2.
      */
     sysbus_create_simple(TYPE_S5L8930_DART, S5L8930_DART1_BASE, NULL);
@@ -1430,7 +1430,7 @@ static void ipad1_init(MachineState *machine)
     /*
      * USB device mode: the same Synopsys DWC OTG core and PHY register layout
      * as the S5L8720 (gap-kernel-platform-mmio.md §6), so both iPod models are
-     * reused unchanged. The host bridge (usbmuxd-qemu) is dialled from
+     * reused unchanged. The host bridge (usbmuxd-qemu) is dialed from
      * usb-tcp-addr, or IT_USB_TCP=host:port when that is unset. Without a
      * host the guest would never be configured, the power source would see
      * < 500 mA and let the device deep-sleep a few minutes after SpringBoard,

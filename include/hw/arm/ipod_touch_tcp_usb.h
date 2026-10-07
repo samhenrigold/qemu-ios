@@ -54,7 +54,7 @@ enum
  * constraints only by convention -- a disagreement about the maximum
  * transaction size silently corrupted every bulk transfer larger than the
  * guest's armed size instead of failing. The device now states its limit and the
- * host is required to honour it.
+ * host is required to honor it.
  *
  * A device that predates the handshake sees an endpoint outside its range and
  * stalls, so an old device fails loudly against a new host rather than

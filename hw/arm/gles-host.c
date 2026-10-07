@@ -134,7 +134,7 @@
 
 /*
  * Enums that exist only as values on ES: the guest can name a client-array
- * type this host cannot serve, and gles_pointer_ok has to be able to recognise
+ * type this host cannot serve, and gles_pointer_ok has to be able to recognize
  * it in order to reject it. Defining them is not claiming support.
  */
 #ifndef GL_INT
@@ -160,7 +160,7 @@
 
 /* GL_BGRA is GL_BGRA_EXT in ES's headers -- same token, and the extension that
  * defines it (GL_APPLE_texture_format_BGRA8888) is present on every iOS GL
- * stack. It is what an IOSurface colour attachment is described with. */
+ * stack. It is what an IOSurface color attachment is described with. */
 #ifndef GL_BGRA
 #define GL_BGRA                       GL_BGRA_EXT
 #endif
@@ -201,7 +201,7 @@ static unsigned gles_fb_w = 320, gles_fb_h = 480;   /* the iPod panel: lcd->pw/p
 #define GLES_MAX_NAMES     65536u
 
 /*
- * Texture units modelled. ES 1.1 requires at least 2 and the MBX has exactly 2;
+ * Texture units modeled. ES 1.1 requires at least 2 and the MBX has exactly 2;
  * 8 costs four pointers apiece and means a guest that asks for more than the
  * hardware had still gets coherent state rather than a silently dropped array.
  */
@@ -259,7 +259,7 @@ typedef struct {
 
     /* Scratch for pulling this array across. Grown as needed, never shrunk.
      * Per-array rather than shared, because a single draw needs several of
-     * them live at once -- position, colour and normal all point into their
+     * them live at once -- position, color and normal all point into their
      * own copy while glDrawArrays runs. */
     uint8_t *buf;
     size_t buf_size;
@@ -333,19 +333,19 @@ typedef struct {
     bool drawable_announced;
 
     /*
-     * True when the colour attachment is an IOSurface and the present can read
+     * True when the color attachment is an IOSurface and the present can read
      * the frame straight out of it. False means the readback path below, which
-     * is both the macOS behaviour and the iOS fallback.
+     * is both the macOS behavior and the iOS fallback.
      */
     bool iosurface;
 
     GLESArray vertex;
     /*
      * ONE TEXCOORD ARRAY PER TEXTURE UNIT. There used to be a single one, which
-     * silently modelled a single-texturing GL: an app that set unit 0's coords,
+     * silently modeled a single-texturing GL: an app that set unit 0's coords,
      * switched to unit 1 and set those overwrote the only slot, so at draw time
      * unit 0 had no array bound at all and every fragment sampled the same
-     * texel. That renders as flat untextured colour with the lighting and
+     * texel. That renders as flat untextured color with the lighting and
      * geometry still perfectly correct -- which is what Temple Run looked like,
      * and it is not a subtle-looking bug, so it hid as "textures are broken".
      *
@@ -394,7 +394,7 @@ typedef struct {
      * Framebuffer objects, wired to real host FBOs -- with ONE exception.
      *
      * Exactly one of the guest's framebuffers is the drawable: CoreAnimation
-     * owns its colour renderbuffer and we present out of gh.fbo, so that one
+     * owns its color renderbuffer and we present out of gh.fbo, so that one
      * has to keep resolving to gh.fbo. Every OTHER framebuffer the guest
      * creates is a genuine offscreen target and gets a genuine host FBO.
      *
@@ -402,7 +402,7 @@ typedef struct {
      * storage through -renderbufferStorage:fromDrawable:, which is not a GL
      * call at all, so the drawable renderbuffer is precisely the one the guest
      * never passes to glRenderbufferStorage. rb_sized records the ones it
-     * does; a colour attachment missing from that set marks its framebuffer
+     * does; a color attachment missing from that set marks its framebuffer
      * as the drawable, in fbo_drawable.
      */
     GHashTable *rb_sized;       /* renderbuffer name -> given explicit storage */
@@ -461,7 +461,7 @@ typedef struct {
      * alongside the frame rate they explain.
      *
      *   t_call    everything between entering and leaving gles_host_call
-     *   t_fetch   pulling guest memory across (vertex/colour/normal arrays,
+     *   t_fetch   pulling guest memory across (vertex/color/normal arrays,
      *             index lists)
      *   t_err     glGetError, which is the one call in the draw path that
      *             cannot be pipelined -- it drains the driver's queue
@@ -491,7 +491,7 @@ typedef struct {
      *
      * This exists because a run of draws got attributed to the wrong screen
      * twice: once by reading the tail of a back-to-front sorted list and
-     * describing the whole frame from it, and once by using the fog COLOUR as
+     * describing the whole frame from it, and once by using the fog COLOR as
      * a proxy for which scene was on screen. Both were guesses about scene
      * identity dressed as measurements, and both survived review because the
      * numbers they produced looked plausible.
@@ -582,7 +582,7 @@ static GLESHost *gh_current = &gh_legacy;
  *   IT_GLES_STRICT  check glGetError after every pointer call and every draw
  *
  * IT_GLES_STRICT defaults ON, and that is a measurement talking, not caution.
- * glGetError is a synchronisation point -- it drains the driver's command
+ * glGetError is a synchronization point -- it drains the driver's command
  * queue, so it cannot be pipelined -- and the draw path calls it up to nine
  * times per draw (twice per bound array, once after the draw). That reads like
  * an obvious bottleneck and it is not: profiled through Cube Runner's title
@@ -683,7 +683,7 @@ static inline void gles_platform_make_current(void)
 }
 
 /*
- * Make the frame buffer's colour attachment an IOSurface, if this OS still
+ * Make the frame buffer's color attachment an IOSurface, if this OS still
  * allows it. The caller has the texture bound; on success this has taken the
  * place of its glTexImage2D.
  */
@@ -784,11 +784,11 @@ static inline void gles_platform_frame_unlock(void)
  * mean "back to the screen".
  */
 /*
- * Host-private GL objects (the drawable's FBO, colour texture and depth
+ * Host-private GL objects (the drawable's FBO, color texture and depth
  * buffer) take names from a range no guest glGen* reaches, so the guest's
  * first glGenTextures still returns 1, as on the device. Bobby Carrot binds
  * its textures by load order from 1 without reading the generated names; with
- * our colour texture holding name 1 every sprite drew with its neighbour's
+ * our color texture holding name 1 every sprite drew with its neighbor's
  * texture and the backdrop sampled the render target itself (issue 12).
  * Legacy GL, and ES, create an object on first bind, so a probed name is as
  * good as a generated one; the snapshot scan covers this range too.
@@ -819,7 +819,7 @@ static GLuint gles_host_fbo(uint32_t name)
 /*
  * Make a framebuffer name mean the drawable, or stop meaning it.
  *
- * This is a property of the framebuffer's CURRENT COLOUR ATTACHMENT, not of the
+ * This is a property of the framebuffer's CURRENT COLOR ATTACHMENT, not of the
  * name, because an engine may reuse one framebuffer object and swap what is
  * attached to it. The role therefore flips while the framebuffer is bound, and
  * the live binding has to follow it -- otherwise the calls between here and the
@@ -903,7 +903,7 @@ static bool gles_host_init(void)
     gh.tex = gles_private_name(glIsTexture);
     glBindTexture(GL_TEXTURE_2D, gh.tex);
     /*
-     * Storage for the colour attachment, from one of two places. An IOSurface
+     * Storage for the color attachment, from one of two places. An IOSurface
      * gives the CPU a mapped view of the very memory the GPU renders into, so
      * the present becomes a copy out of it instead of a glReadPixels; ordinary
      * texture storage is the fallback and stays the readback path. Either way
@@ -941,7 +941,7 @@ static bool gles_host_init(void)
     if (gh.iosurface
         && glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)
            != GL_FRAMEBUFFER_COMPLETE_EXT) {
-        fprintf(stderr, "[gles] FBO incomplete with an IOSurface colour "
+        fprintf(stderr, "[gles] FBO incomplete with an IOSurface color "
                 "attachment; presenting by readback\n");
         gh.iosurface = false;
         glBindTexture(GL_TEXTURE_2D, gh.tex);
@@ -1047,7 +1047,7 @@ static uint32_t gles_type_size(uint32_t type)
  *   glColorPointer      ES: UBYTE FIXED FLOAT        desktop: BYTE UBYTE SHORT ... FLOAT
  *
  * So GL_BYTE positions and texture coordinates are legal ES and illegal
- * desktop, while GL_BYTE normals and UNSIGNED_BYTE colours are legal in both.
+ * desktop, while GL_BYTE normals and UNSIGNED_BYTE colors are legal in both.
  *
  * THIS IS WHY IT MATTERS, and it cost a QEMU crash to find: a rejected
  * glVertexPointer does not fail loudly. It sets GL_INVALID_ENUM and leaves the
@@ -1059,8 +1059,8 @@ static uint32_t gles_type_size(uint32_t type)
  * very first draw call.
  *
  * Widening is only correct because these are the types whose values are used
- * unscaled. Normals and colours are NOT widened here: GL_BYTE normals and
- * GL_UNSIGNED_BYTE colours are normalised to [-1,1] and [0,1] by both ES and
+ * unscaled. Normals and colors are NOT widened here: GL_BYTE normals and
+ * GL_UNSIGNED_BYTE colors are normalized to [-1,1] and [0,1] by both ES and
  * desktop GL, so passing them through keeps that conversion in the driver where
  * it belongs -- converting them by hand would mean reimplementing the scaling
  * and getting it subtly wrong.
@@ -1103,7 +1103,7 @@ static const char *gles_array_name(GLenum client_state)
  *
  * These are GL 2.1's tables for the four gl*Pointer entry points, and they are
  * spelled out rather than inferred because the four do NOT agree: GL_BYTE is
- * legal for colours and normals and illegal for positions and texture
+ * legal for colors and normals and illegal for positions and texture
  * coordinates, and sizes differ per call. The types ES allows and desktop does
  * not are widened before we get here (gles_needs_widen), so anything this
  * rejects is a genuine combination neither API accepts.
@@ -1217,7 +1217,7 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
                 if (type == GLES_FIXED) {
                     v = (float)((const int32_t *)row)[c] / 65536.0f;
                 } else {
-                    /* GL_BYTE positions are used unscaled, not normalised. */
+                    /* GL_BYTE positions are used unscaled, not normalized. */
                     v = (float)((const int8_t *)row)[c];
                 }
                 a->fbuf[(size_t)i * a->size + c] = v;
@@ -1230,7 +1230,7 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
 
     /*
      * Decide up front whether the host will take this pointer, instead of
-     * asking it afterwards. Same protection, no synchronisation: see the note
+     * asking it afterwards. Same protection, no synchronization: see the note
      * on IT_GLES_STRICT.
      */
     if (!gles_pointer_ok(a->client_state, a->size, type)) {
@@ -1309,7 +1309,7 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
  */
 /* Which texture units have a coordinate array enabled, as a bitmask. A draw
  * with texturing on but 0x00 here samples one texel for every fragment, which
- * looks like flat untextured colour rather than like a missing array. */
+ * looks like flat untextured color rather than like a missing array. */
 static unsigned gles_texcoord_mask(void)
 {
     unsigned i, m = 0;
@@ -1938,7 +1938,7 @@ static unsigned gles_query_count(uint32_t pname)
  * PVRTC and the paletted formats, decoded on the CPU.
  *
  * PVRTC was THE texture format on the PowerVR MBX, so a large share of the
- * 2008-2010 catalogue uploads nothing else -- and desktop CGL has no PVRTC at
+ * 2008-2010 catalog uploads nothing else -- and desktop CGL has no PVRTC at
  * all, nor does any GL this ever runs on outside iOS. So the choice is decode
  * it here or render those titles untextured.
  *
@@ -2139,9 +2139,9 @@ static uint8_t *gles_decode_buf(size_t n)
  * exactly the report nobody can act on.
  *
  * The fixture is a 2x2 block grid (8x8 texels) whose four blocks are flat
- * white, green, red and black. Reading the four block centres back therefore
- * tests the endpoint unpack, the interpolation weights (a centre must land on
- * its own block's colour exactly, with zero bleed) and the twiddle order --
+ * white, green, red and black. Reading the four block centers back therefore
+ * tests the endpoint unpack, the interpolation weights (a center must land on
+ * its own block's color exactly, with zero bleed) and the twiddle order --
  * green and red are placed so that a row-major block order swaps them.
  */
 
@@ -2208,7 +2208,7 @@ static const uint8_t *gles_fetch_texels(CPUState *cpu, uint32_t pixels,
  */
 /*
  * Texturing is on but no unit has a coordinate array. Every fragment then
- * samples the same texel, which draws as FLAT UNTEXTURED COLOUR with the
+ * samples the same texel, which draws as FLAT UNTEXTURED COLOR with the
  * geometry and lighting still perfectly correct -- so it reads as "textures are
  * broken" rather than as a client-array problem, and it is exactly what a
  * single-texcoord-slot bug produces once an app touches unit 1. Warned once.
@@ -2223,7 +2223,7 @@ static void gles_check_texcoords(void)
     warned = true;
     fprintf(stderr, "[gles] drawing with GL_TEXTURE_2D enabled but NO texture "
             "coordinate array on any unit -- every fragment samples one texel, "
-            "which looks like flat untextured colour\n");
+            "which looks like flat untextured color\n");
 }
 
 /*
@@ -2231,7 +2231,7 @@ static void gles_check_texcoords(void)
  *
  * Checking only inside glCheckFramebufferStatus is not enough, because that
  * reports what the GUEST asked about, whenever it happened to ask. An app that
- * checks once at startup and later swaps in a different colour attachment gets
+ * checks once at startup and later swaps in a different color attachment gets
  * no second opinion -- and a draw into an incomplete framebuffer produces
  * nothing at all, silently, which is indistinguishable from a dozen other
  * causes of a blank screen. Warned once per framebuffer name.
@@ -2269,19 +2269,19 @@ static void gles_check_fb_complete(void)
  * End of frame on a TILE-BASED DEFERRED renderer.
  *
  * The MBX is a PowerVR: it renders into tile memory and resolves only the
- * colour buffer out to the framebuffer. Depth and stencil live and die inside
+ * color buffer out to the framebuffer. Depth and stencil live and die inside
  * the tile, so every frame begins with them fresh whether or not the app asked
  * -- and omitting glClear(GL_DEPTH_BUFFER_BIT) was normal practice on that
  * hardware because the clear bought nothing.
  *
  * Our host GL has an ordinary persistent depth renderbuffer, so those apps got
  * frame 1 correct and then a depth buffer full of near values that z-failed
- * every fragment afterwards. The screen goes to whatever the colour clear is
+ * every fragment afterwards. The screen goes to whatever the color clear is
  * and stays there, with the app still submitting geometry at full rate --
  * Labyrinth's white level, which enables GL_DEPTH_TEST, writes depth, and
- * clears colour only.
+ * clears color only.
  *
- * glClear honours depth/stencil write masks and the scissor box. Override
+ * glClear honors depth/stencil write masks and the scissor box. Override
  * them for the clear and restore them afterwards, so guest masks cannot
  * preserve stale depth or stencil into the next frame.
  */
@@ -2310,8 +2310,8 @@ static void gles_frame_end(void)
     }
 
     /* Say so once, because it changes what the app sees. An app relying on the
-     * tile behaviour renders correctly BECAUSE of this; without it the symptom
-     * is a screen frozen at the clear colour from frame 2 onward. */
+     * tile behavior renders correctly BECAUSE of this; without it the symptom
+     * is a screen frozen at the clear color from frame 2 onward. */
     if (!gh.depth_cleared_this_frame && glIsEnabled(GL_DEPTH_TEST)) {
         static bool warned;
 
@@ -2339,7 +2339,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
          * Offscreen draws are few and decide a whole texture, so each one is
          * worth a line. A render-to-texture that comes back flat is either not
          * sampling what it thinks (texture 0 / an incomplete texture), or
-         * multiplying itself away (colour or blend), and only the per-draw
+         * multiplying itself away (color or blend), and only the per-draw
          * state says which.
          */
         if (gh.draws_offscreen <= 16) {
@@ -2351,7 +2351,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
             glGetIntegerv(GL_BLEND_DST, &db);
             glGetFloatv(GL_CURRENT_COLOR, col);
             fprintf(stderr, "[gles]   offscreen draw %s mode=0x%x count=%u "
-                    "tex2d=%d bound_tex=%d colour=(%.2f %.2f %.2f %.2f) "
+                    "tex2d=%d bound_tex=%d color=(%.2f %.2f %.2f %.2f) "
                     "blend=%d(0x%x,0x%x) lighting=%d texunits=0x%02x\n",
                     what, mode, count, glIsEnabled(GL_TEXTURE_2D), tex,
                     col[0], col[1], col[2], col[3], glIsEnabled(GL_BLEND),
@@ -2403,7 +2403,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
  * title flythrough have byte-identical GL state at end of frame and submit
  * about the same number of cube draws, yet only the title screen shows any --
  * so the difference has to be in what is drawn when, and against what depth
- * state. The gameplay screen is two flat colour bands, which is what two
+ * state. The gameplay screen is two flat color bands, which is what two
  * full-screen quads drawn last would look like.
  */
 
@@ -2509,7 +2509,7 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
      * decides it for a triangle, and this app splits cleanly along that line:
      * its title flythrough is 100% GL_TRIANGLES and renders, its gameplay
      * obstacles are 100% GL_LINE_STRIP and do not. A zero line width, a zero
-     * alpha under an enabled blend, or a colour array that is off for these
+     * alpha under an enabled blend, or a color array that is off for these
      * draws would each produce exactly nothing, and none of the three is
      * visible in the geometry -- which is why the geometry looked innocent for
      * so long.
@@ -2522,7 +2522,7 @@ static void gles_trace_draw(const char *what, uint32_t mode, uint32_t count)
     fprintf(stderr, "[gles]   f%" PRIu64 " draw %-14s mode=0x%x count=%-4u depthmask=%d "
             "depthtest=%d xyz=(%.2f %.2f %.2f)\n"
             "[gles]     linewidth=%.2f blend=%d(src=0x%x dst=0x%x) "
-            "colour=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
+            "color=(%.2f %.2f %.2f %.2f) matdiffuse=(%.2f %.2f %.2f %.2f) "
             "arrays vtx=%u col=%u nrm=%u texunits=0x%02x lighting=%d\n",
             gh.presents, what, mode, count, depth_mask,
             glIsEnabled(GL_DEPTH_TEST), mv[12], mv[13], mv[14],
@@ -2803,7 +2803,7 @@ static int64_t gles_write_xparams(CPUState *cpu, uint32_t ptr, uint32_t pname, u
  * available. Rows run bottom-up and are BGRA, which is what both destinations
  * want; `stride` is the surface's, not the frame's, so callers must use it.
  *
- * THE SYNCHRONISATION, in one place because it is the only part of this that
+ * THE SYNCHRONIZATION, in one place because it is the only part of this that
  * can be silently wrong. Two things stand between the guest and a half-drawn
  * frame:
  *
@@ -3151,7 +3151,7 @@ static void gles_dump_state(void)
             "[gles]   enabled: fog=%d depth=%d lighting=%d cull=%d blend=%d "
             "texture2d=%d\n"
             "[gles]   fog: mode=0x%x start=%.3f end=%.3f density=%.4f "
-            "colour=(%.2f %.2f %.2f %.2f)\n"
+            "color=(%.2f %.2f %.2f %.2f)\n"
             "[gles]   depth: func=0x%x range=(%.2f %.2f) mask=%d cullmode=0x%x\n"
             "[gles]   modelview  translate=(%.3f %.3f %.3f)  scale=(%.3f %.3f %.3f)\n"
             "[gles]   projection diag=(%.3f %.3f %.3f) m[14]=%.3f\n",
@@ -3224,7 +3224,7 @@ static void gles_report_progress(void)
     {
         /* What the DRAWABLE actually contains, read from the same buffer the
          * present just wrote out. Distinguishes "the app drew nothing / drew
-         * the clear colour" from "we drew a scene and lost it on the way to
+         * the clear color" from "we drew a scene and lost it on the way to
          * the panel" -- which no counter can. */
         uint64_t r = 0, g = 0, b = 0;
         unsigned i, n = gh.drawable_width * gh.drawable_height;
@@ -3384,7 +3384,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
     }
 
     /* 'BGRA' is what CA uses on this device; accept RGBA too rather than
-     * silently producing colour-swapped output for it. */
+     * silently producing color-swapped output for it. */
     bgra = (format != GLES_SURFACE_RGBA32);
 
     /*
@@ -5767,7 +5767,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          *
          * ES 1.1 and desktop GL disagree about an incomplete texture in the
          * way that matters most: ES says texturing is treated as DISABLED, so
-         * the fragment keeps its own colour, while desktop GL samples
+         * the fragment keeps its own color, while desktop GL samples
          * (0,0,0,1) -- BLACK. An app that uploads only level 0 and leaves a
          * mipmapping min filter therefore looks fine on the device and paints
          * black here. Labyrinth's board is exactly that: the wood renders into
@@ -7021,7 +7021,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * actually CONTAINS. A render-to-texture pass that runs, reports no
          * error and produces a blank result is invisible otherwise -- the only
          * symptom is whatever samples it later looking wrong, arbitrarily far
-         * away. The mean is enough to tell "the scene" from "the clear colour".
+         * away. The mean is enough to tell "the scene" from "the clear color".
          */
         /* Diagnostic readback stalls the GPU; never do it during normal play. */
         if (gh.offscreen_draws_here && getenv("IT_GLES_VERBOSE") &&
@@ -7067,7 +7067,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 th = surface->height;
             }
             /*
-             * The geometry as well as the colour. A render-to-texture that
+             * The geometry as well as the color. A render-to-texture that
              * comes back flat has three ordinary causes and they are told
              * apart here: an attachment that is not what the guest thinks, a
              * target with no storage (0x0), or a viewport that does not cover
@@ -7103,9 +7103,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         uint32_t attach = a[1], rb = a[3];
 
         if (attach == GL_COLOR_ATTACHMENT0_EXT) {
-            /* A colour renderbuffer that never got GL storage is the CA
+            /* A color renderbuffer that never got GL storage is the CA
              * drawable, so from now on this framebuffer MEANS gh.fbo. Any
-             * other colour attachment takes that meaning away again. */
+             * other color attachment takes that meaning away again. */
             gles_set_drawable(gh.bound_framebuffer,
                               rb && !g_hash_table_contains(
                                   gh.rb_sized, GUINT_TO_POINTER(rb)));
@@ -7113,7 +7113,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gles_trace_attach("glFramebufferRenderbuffer", attach, rb);
         gh.fb_dirty = true;
         if (gles_is_drawable(gh.bound_framebuffer)) {
-            /* gh.fbo already carries the colour target we present out of and a
+            /* gh.fbo already carries the color target we present out of and a
              * matching depth buffer; re-attaching over either breaks the
              * present path. */
             return 0;
@@ -7124,13 +7124,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     case GLES_SLOT_FB_TEXTURE_2D:        /* target, attach, textarget, tex, lvl */
-        /* Attaching a texture as colour makes this a real offscreen target,
+        /* Attaching a texture as color makes this a real offscreen target,
          * even if the very same framebuffer was the drawable a moment ago.
          * Engines reuse ONE framebuffer object and swap its attachments --
          * save the binding, attach a texture, render, attach the drawable
          * renderbuffer back -- and Labyrinth does exactly that. Treating
          * "drawable" as a permanent property of the NAME rather than of the
-         * current colour attachment sent its render-to-texture pass to the
+         * current color attachment sent its render-to-texture pass to the
          * screen and left the texture empty, which composited as a white
          * level while the menus (UIKit) looked perfect. */
         if (a[1] == GL_COLOR_ATTACHMENT0_EXT) {

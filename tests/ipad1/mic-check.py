@@ -11,7 +11,7 @@ replaces the i2s0 capture input with a synthetic stereo sine. it_mictest
 records 10 s (i2s0 RX -> CDMA ch 0x1b -> mediaserverd -> AudioQueue) and
 prints "MICTEST frames=.. secs=.. rate=.. freq=.. peak=.. glitches=.." on the
 serial console. PASS when freq is within 0.5% of HZ, rate within 2% of
-44100 (buffers are 2048 frames, so a 10 s window quantises to about 0.5%),
+44100 (buffers are 2048 frames, so a 10 s window quantizes to about 0.5%),
 and there are no discontinuities. About 4 minutes.
 """
 import argparse, os, re, shutil, subprocess, sys, tempfile

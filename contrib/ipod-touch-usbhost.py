@@ -71,7 +71,7 @@ def main():
     print(f"[host] device connected from {addr}", flush=True)
 
     # Give the guest driver time to finish programming the core. It parks with
-    # GINTMSK = RESET|ENUMDONE, so there is no point signalling before that.
+    # GINTMSK = RESET|ENUMDONE, so there is no point signaling before that.
     time.sleep(int(sys.argv[2]) if len(sys.argv) > 2 else 90)
 
     print("[host] --> RESET", flush=True)

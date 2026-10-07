@@ -88,7 +88,7 @@ static void apple_spi_update_cs(IPodTouchSPIState *s)
      * NOR chip select is GPIO pad 0 pin 0, wired separately by the machine.
      * The digitizer still has SSI_CS_NONE and frames commands by counting
      * bytes, so a response whose length
-     * disagrees with what the guest clocks desynchronises them permanently.
+     * disagrees with what the guest clocks desynchronizes them permanently.
      * See get_empty_frame() in ipod_touch_multitouch.c.
      */
 }
@@ -187,7 +187,7 @@ static uint64_t ipod_touch_spi_read(void *opaque, hwaddr addr, unsigned size)
                  * refill it, rather than leaving it un-kicked. Consistency
                  * only -- this was investigated as a suspect for the Doodle
                  * Jump 100%-CPU hang and is NOT the cause of it (that was an
-                 * unmodelled MBX status bit; see ipod_touch_mbx.c 0x12c).
+                 * unmodeled MBX status bit; see ipod_touch_mbx.c 0x12c).
                  */
                 qemu_log_mask(LOG_GUEST_ERROR, "%s: rx underflow\n", __func__);
                 r = 0;

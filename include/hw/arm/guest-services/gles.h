@@ -257,7 +257,7 @@ static inline const char *gles_id_name(uint32_t id)
  * at a width whose row is not a multiple of four bytes pads every row -- and
  * the upload path here used to size the fetch as w*h*bpp, with no padding at
  * all. That under-reads, and each row after the first is sheared by a
- * progressively larger offset. Honouring the alignment is not about supporting
+ * progressively larger offset. Honoring the alignment is not about supporting
  * the call; it is a correctness fix to uploads that were already wrong.
  */
 #define GLES_SLOT_DEPTH_FUNC                   GLES_ID_glDepthFunc   /* 0x0100 */
@@ -274,7 +274,7 @@ static inline const char *gles_id_name(uint32_t id)
  * Read out of the 3.1.3 SDK trampolines like everything above, and
  * cross-checked against contrib/it-gles/slotmap.txt; the extractor was
  * re-validated here by re-deriving GLES_SLOT_BIND_BUFFER (642, `ldr r12,
- * [r3, #0xa18]`) before any neighbouring number was trusted.
+ * [r3, #0xa18]`) before any neighboring number was trusted.
  *
  * glCompressedTexImage2D is what a PowerVR-era title uploads its art with --
  * PVRTC was THE texture format on the MBX -- and it takes eight scalars, so it

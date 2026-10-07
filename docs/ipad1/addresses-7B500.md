@@ -248,7 +248,7 @@ matched-pair phrasing in the plan is not supported by the bytes — only 0x4FF00
 | /chosen policy props (debug-enabled, production-cert, secure-boot, …) | present, zeroed on prod | present, empty (iBoot fills at runtime) | ✓ |
 
 Only cosmetic difference: the 7B500 dump prints proper node names (`scaler`, no `@unit`), where the
-7B367 study noted the scaler node showed up misnamed as `sdio`. Same reg/type/IRQ, so no behavioural change.
+7B367 study noted the scaler node showed up misnamed as `sdio`. Same reg/type/IRQ, so no behavioral change.
 
 ## Not found / approximate
 - **OpenGLES engine-loader function VA** (§5): string cluster pinned (0x336bdbxx), function not

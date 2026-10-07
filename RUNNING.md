@@ -272,11 +272,11 @@ Two deliberate deviations from a real device:
 - **One partition, read-write root.** Stock 3.x `/etc/fstab` is
   `/dev/disk0s1 / hfs ro` plus `/dev/disk0s2 /private/var hfs rw`. The synthetic
   image has no `disk0s2`, so the build rewrites fstab to
-  `/dev/disk0s1 / hfs rw 0 1` (`--no-fstab` keeps the stock one). Modelling two
+  `/dev/disk0s1 / hfs rw 0 1` (`--no-fstab` keeps the stock one). Modeling two
   partitions would invalidate the closed-form layout and every tool built on it.
   The rootfs already ships an empty `/private/var` skeleton, which is what the
   restore process would have copied onto the data partition anyway.
-- **The kernelcache is a build artefact.** The shipped rootfs leaves
+- **The kernelcache is a build artifact.** The shipped rootfs leaves
   `/System/Library/Caches/com.apple.kernelcaches/` empty; restore writes it. The
   build copies the IPSW's `kernelcache.release.s5l8720x` there **unmodified and
   still encrypted** — the emulated AES engine decrypts it in-guest, so no key

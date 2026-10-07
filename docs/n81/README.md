@@ -183,7 +183,7 @@ What 6.x needed, all generic (nothing is chosen by build):
 8. **Power-off**:
    - The gesture rests at the end of the track before lifting; iOS 6 reads a moving lift as a flick back.
    - The CS42L59's halt handler waits for power-down done (0x38 bit 3) with no timeout. Before that bit was
-     modelled, PEHaltRestart's 30 s watchdog panicked first.
+     modeled, PEHaltRestart's 30 s watchdog panicked first.
 9. **Wi-Fi**: the CDC ioctl length word is split (reply buffer low 16 bits, request high 16).
 
 ### iOS 6.0 beta 1 (10A5316k, June 2012)
@@ -203,7 +203,7 @@ What the beta needed:
 
 1. **Expiry.** The check is lockdownd's, not SpringBoard's: when MobileGestalt's ReleaseType is "Beta"
    (SystemVersion.plist), it compares time() with a constant in the binary (10A5316k: 2012-07-18 00:00:01 UTC,
-   also reported as lockdown's BuildExpireTime). Past it, it stops honouring the cached FactoryActivated: the data
+   also reported as lockdown's BuildExpireTime). Past it, it stops honoring the cached FactoryActivated: the data
    ark becomes `Unactivated` with BrickState true, and that sticks. FirmwareKit's own keybag and seal boots run
    lockdownd, so the clock is pinned for every boot: the machine property `rtc-epoch=<unix seconds>` starts the
    D1815's counter there at power-on, and the guest agent's clock sync (op 0x165) answers the same pinned time
@@ -248,7 +248,7 @@ documented quirk/patch, S stub.
    `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
    signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
    (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
-   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colors, 35 bridge lines) and the
    bridge refuses nothing.
 
 1. **iBoot and the real NAND boot.** Only `kboot=` runs. A real N81 boots LLB/iBoot from NAND (boot

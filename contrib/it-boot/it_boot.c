@@ -462,7 +462,7 @@ static int is_hex64(const char *s)
     return 1;
 }
 
-/* text is modified in place (tokenised) */
+/* text is modified in place (tokenized) */
 static int parse_offer(char *text, struct offer *o)
 {
     memset(o, 0, sizeof(*o));

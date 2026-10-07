@@ -151,7 +151,7 @@ static inline void pl192_mask_priority(PL192State *s)
      * The guard here checked stack_i against PL192_INT_SOURCES (32), but
      * priority_stack[] and irq_stack[] are both [PL192_PRIO_LEVELS + 1] = 17.
      * Every read of VECTADDR acknowledges and pushes; a write pops. Eighteen
-     * acknowledgements without a matching write therefore wrote past both
+     * acknowledgments without a matching write therefore wrote past both
      * arrays into the adjacent fields of PL192State. 17 is the architectural
      * maximum nesting depth, so the arrays are the right size and the bound was
      * simply wrong -- saturate the depth instead of enlarging them, and do not

@@ -119,7 +119,7 @@ imgtools/ipad1_nand.py build ...              # rebuild the store
   the no-agent warning timer and the four properties (`pasteboard`,
   `guest-pasteboard`, `pasteboard-agent`, `pasteboard-status`). Both machines
   embed one and call `guest_pb_init` from instance_init. The iPod's
-  `guest-services.c` routes `QC_PB_*` there; behaviour and property text are
+  `guest-services.c` routes `QC_PB_*` there; behavior and property text are
   unchanged.
 - ipad1 already registered `QEMU_CALL` for the GLES shim (`ipad1_qemu_call`);
   its dispatch now also answers `QC_PB_*`. Everything else stays unanswered.

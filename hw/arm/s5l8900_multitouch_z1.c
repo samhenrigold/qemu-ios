@@ -74,7 +74,7 @@ static uint32_t z1_report(IPodTouchMultitouchState *mt, uint8_t id, uint8_t *d)
         stl_le_p(d + 4, p->surface_height);
         return 8;
     default:
-        qemu_log_mask(LOG_UNIMP, "[Z1] report 0x%02x not modelled (empty)\n", id);
+        qemu_log_mask(LOG_UNIMP, "[Z1] report 0x%02x not modeled (empty)\n", id);
         return 0;
     }
 }

@@ -95,7 +95,7 @@ typedef struct S5L8900Board {
     unsigned pmu_i2c;                /* the bus of the PCF50635 (0x73) and the WM8758 (0x1A) */
     S5L8900I2SPort codec_i2s;        /* the WM8758's data port */
     S5L8900I2SPort bb_i2s;           /* the baseband's voice port (base 0: none) */
-    hwaddr i2s_ram_bases[2];         /* the other I2S windows: RAM, unmodelled (0: none) */
+    hwaddr i2s_ram_bases[2];         /* the other I2S windows: RAM, unmodeled (0: none) */
     bool piezo;                      /* /arm-io/timer/buzzer */
     const char *touch;               /* the SPI2 peripheral: Zephyr2 or Zephyr1 */
     unsigned touch_atn_irq;          /* GPIO-IC line of the digitizer's ATN */
@@ -215,7 +215,7 @@ typedef struct IPodTouch1GMachineState {
     bool baseband;                   /* M68: the fake modem on UART1 ("baseband", default on) */
     DeviceState *modem;
     QEMUTimer *modem_battery_timer;
-    char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modelled here */
+    char *imei;                      /* M68: the unit's IMEI ("imei"); the baseband reports it, not modeled here */
     uint32_t panel_w, panel_h;       /* "panel=WxH" (issue #21); 0 = the shipped 320x480 */
 } IPodTouch1GMachineState;
 

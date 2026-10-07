@@ -124,7 +124,7 @@ static void synopsys_usb_update_in_ep(synopsys_usb_state *_state, uint8_t _ep)
 	synopsys_usb_ep_state *eps = &_state->in_eps[_ep];
 
 	/* CNAK is write-only: it ends a NAK the core or the driver set. Only the
-	 * IN side honours NAKSts (see the transport callback). */
+	 * IN side honors NAKSts (see the transport callback). */
 	if(eps->control & USB_EPCON_CLEARNAK)
 		eps->control &=~ (USB_EPCON_CLEARNAK | USB_EPCON_NAKSTS);
 	synopsys_usb_update_ep(_state, eps);
@@ -1066,7 +1066,7 @@ static void s5l8900_usb_otg_reset(DeviceState *d)
 
 	/*
 	 * The AHB master is always idle here - there is no bus to be busy on.
-	 * grstctl was never initialised, so AHBIDLE read as clear forever and
+	 * grstctl was never initialized, so AHBIDLE read as clear forever and
 	 * AppleSynopsysOTG2::_coreInit panicked with "AHB not idle"
 	 * (AppleSynopsysOTG2.cpp:394) while polling this register.
 	 */

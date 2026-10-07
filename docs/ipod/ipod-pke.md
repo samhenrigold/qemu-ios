@@ -39,7 +39,7 @@ machine value overrides it. The device retains this host policy across resets.
 Migration version 2 includes full SRAM, register selection, signs and the loaded
 modulus. Version 1 cannot represent those values and is rejected. Light Touch's
 existing build-identity snapshot gate also prevents cross-build reuse. Timing
-and interrupt delivery are not modelled; both tested boot drivers poll START.
+and interrupt delivery are not modeled; both tested boot drivers poll START.
 
 Checks:
 

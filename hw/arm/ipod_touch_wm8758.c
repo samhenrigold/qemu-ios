@@ -7,9 +7,9 @@
  * interface"). Writing register 0 resets the register file. There is no
  * read-back, so recv answers 0xff like an undriven bus.
  *
- * Only the control port is modelled. The kernel's driver needs the codec to
+ * Only the control port is modeled. The kernel's driver needs the codec to
  * ACK its setup writes before it publishes the IOAudio device mediaserverd
- * waits for; the analogue side (headphone output) is not modelled.
+ * waits for; the analog side (headphone output) is not modeled.
  */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"

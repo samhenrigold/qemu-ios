@@ -448,7 +448,7 @@ fi
 # somebody else's device with nothing to notice it by.
 #
 # IPOD_FILES is where the runner keeps its state, and the packaged app moves it
-# to Application Support because an app bundle is read-only. Honouring it here
+# to Application Support because an app bundle is read-only. Honoring it here
 # is what makes Install App... work inside the app: without it this looks in a
 # home directory the app never writes to, and reports "usbmuxd is not running"
 # about a usbmuxd that is running perfectly well a few directories away.

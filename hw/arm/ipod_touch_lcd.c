@@ -42,7 +42,7 @@ static bool lcd_panel_is_native(const IPodTouchLCDState *s)
  *
  * Frame timing on this machine has three stages and they are paced by three
  * different things, so a trace that only records one of them cannot tell a
- * dropped guest frame from a host sampling artefact:
+ * dropped guest frame from a host sampling artifact:
  *
  *   vsync  the model's 60 Hz frame interrupt to the guest
  *   flip   the guest writing a new scanout base to reg 0x24 (a present)
@@ -155,7 +155,7 @@ static int it_display_rotation_req;
 
 /* 7E18 AppleM2CLCD enables sources at +8 and acknowledges +0xc with W1C.
  * Its idle path clears enable bit 0; a constant status of 1 and an interrupt
- * driven by the last acknowledgement caused unexpected interrupts at 60 Hz. */
+ * driven by the last acknowledgment caused unexpected interrupts at 60 Hz. */
 /*
  * S5L8900 (iPod touch 1G) window-1 register layout, mapped onto the S5L8720
  * offsets this model decodes. The two CLCD generations keep the same
@@ -562,7 +562,7 @@ static void draw_line32_32(void *opaque, uint8_t *d, const uint8_t *s, int width
         return;
     }
 
-    /* The LUT is synchronised once per frame by lcd_refresh(). */
+    /* The LUT is synchronized once per frame by lcd_refresh(). */
     do {
         *dp++ = rgb_to_pixel32(lcd_bright_lut[s[2]], lcd_bright_lut[s[1]],
                                lcd_bright_lut[s[0]]);
@@ -1166,7 +1166,7 @@ static const QemuInputHandler ipod_touch_lcd_mtt_handler = {
  *    a guest presenting at ~57 fps was being resampled at 33.3 Hz: the host
  *    window advanced by one guest frame on some updates and two on others,
  *    which is judder of exactly the kind the device is reported to show, and
- *    it is entirely an artefact of the sampling rate. Driving the update from
+ *    it is entirely an artifact of the sampling rate. Driving the update from
  *    the frame interrupt puts the host window on the guest's own cadence and
  *    phase. Skipped when nothing is listening (-display none), where the blit
  *    would be pure cost.
@@ -1216,7 +1216,7 @@ static void refresh_timer_tick(void *opaque)
         lcd_in_vsync_present = false;
     }
 
-    /* IT_LCD_VSYNC_LEGACY restores the old re-arm-from-now behaviour, so the
+    /* IT_LCD_VSYNC_LEGACY restores the old re-arm-from-now behavior, so the
      * two can be A/B'd from one binary. Bisecting only. */
     if (lcd_vsync_legacy()) {
         s->next_vsync = now + LCD_VSYNC_PERIOD_NS * lcd_vsync_divisor();
@@ -1230,7 +1230,7 @@ static void refresh_timer_tick(void *opaque)
          * More than a whole frame behind -- the host was descheduled, or the
          * machine was stopped. Catching up by firing back-to-back ticks would
          * hand the guest a burst of frame interrupts it cannot use, so
-         * resynchronise to the current time and carry on.
+         * resynchronize to the current time and carry on.
          */
         s->next_vsync = now + LCD_VSYNC_PERIOD_NS * lcd_vsync_divisor();
     }

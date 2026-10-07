@@ -9,7 +9,7 @@ bypassing the controller's `pending & enabled` calculation.
 
 The digitizer now requests an edge through SYSIC. Pending remains latched while
 masked; enabling the source presents it; disabling it lowers the shared output;
-W1C acknowledgement clears it, and the next report creates a new pending edge.
+W1C acknowledgment clears it, and the next report creates a new pending edge.
 The actual qtest checks all these transitions. This changes no guest code,
 firmware command responses or guessed boot delay/readiness policy. Existing
 button/I2S direct producers remain separate audit work.
@@ -34,7 +34,7 @@ Before evidence: `/private/tmp/ltm-n45-early-hold-before` (3A101a),
 `/private/tmp/ltm-n45-touch-4B1-create.log`. After correction, bounded continuous
 contact probes are recorded at `/private/tmp/ltm-n45-early-hold-after` and
 `/private/tmp/ltm-n45-4B1-early-after`; both complete stock downloads, mount
-`disk0s1` and serve touch frame reads without desynchronisation. This is bounded
+`disk0s1` and serve touch frame reads without desynchronization. This is bounded
 regression evidence, not proof of all power transitions or historical panic
 reproduction. Keep the harness home-screen stimulus restriction until the
 specific old failure can be reproduced and explained.
@@ -49,5 +49,5 @@ injection compatibility remains open.
 After-correction screenshots were inspected: 3A101a is at the home screen
 (134434 lit subpixels); 4B1 is at the home screen with its expected Edit Home
 Screen tutorial after the long contact (292322 lit subpixels). Both 75-second
-probes have no guest panic or unknown-command desynchronisation. This establishes
+probes have no guest panic or unknown-command desynchronization. This establishes
 older/newer boot and functional touch regression for this specific mask change.

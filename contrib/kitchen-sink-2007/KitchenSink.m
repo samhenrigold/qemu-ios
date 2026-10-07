@@ -918,7 +918,7 @@ static const int pref_rows[] = { 2, 2, 2, 4 };
                         "<span style='font-style:italic'>styles</span></li><li>lists and tables</li></ul>"
                         "<table border=1 cellpadding=4 style='border-collapse:collapse'>"
                         "<tr><th>Device</th><th>OS</th></tr><tr><td>iPhone</td><td>1.0 (1A543a)</td></tr>"
-                        "</table><p style='color:#888'>Pinch is not modelled; scroll with a drag.</p>"
+                        "</table><p style='color:#888'>Pinch is not modeled; scroll with a drag.</p>"
                         "</body></html>"
                 baseURL:nil];
     [v addSubview:wv];

@@ -28,7 +28,7 @@ def hello():
 
 
 def tilt():
-    """Tilt's level: rings and a crosshair on slate, the ball off-centre."""
+    """Tilt's level: rings and a crosshair on slate, the ball off-center."""
     rows = [[(18, 23, 31)] * S for _ in range(S)]
     c = S // 2
     for y in range(S):

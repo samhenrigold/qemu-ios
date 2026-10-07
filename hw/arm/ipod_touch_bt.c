@@ -509,7 +509,7 @@ Chardev *it_bt_chardev(Chardev *user, bool enabled, uint32_t latency_us)
     /*
      * A chardev the user asked for on -serial wins, so UART1 can still be
      * pointed at a socket to watch or replace the HCI. bt=off leaves the port
-     * bare, which is the pre-2026-08 behaviour and the way to bisect against
+     * bare, which is the pre-2026-08 behavior and the way to bisect against
      * this model.
      */
     if (user || !enabled) {

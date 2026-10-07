@@ -23,7 +23,7 @@ second board on the same machine file (`-M n88`, below).
   read), the home screen comes up (2026-10-04, `screens` in qemu-ios-files/n18/runs/t4.png).
 - Power-off: QMP `system_powerdown` makes the user's gesture (Home, Hold 3.5 s, drag "slide to power
   off", rest 0.5 s at the end, lift; up to three drags). SpringBoard swaps every framebuffer,
-  AppleM2TVOut's too, so TV-out is modelled; the guest unmounts,
+  AppleM2TVOut's too, so TV-out is modeled; the guest unmounts,
   syncs the FTL ("AppleNANDFTL::_powerDownHandler: sync complete") and QEMU exits about 15 s after the
   request. Persistence (2026-10-05): a 70001-byte file pushed with `afcclient` over usbmuxd-qemu
   (`usb-tcp-addr=`) reads back identical after that power-off and a reboot on the same overlay; lockdown
@@ -95,7 +95,7 @@ build/qemu-system-arm -M n18,kboot=$F/kboot.bin,nand=$F/userland/nand-pristine,n
 
 `--no-whitening`: the N18/N88 DTs have no `metadata-whitening`, and WMR refuses a whitened store ("Metadata
 whitening not supported"). The NAND geometry is the iPad's 16 GB Hynix part (the IOP firmware's chip table
-knows it); the unit's own part is not modelled yet.
+knows it); the unit's own part is not modeled yet.
 
 For data protection (4.x needs effaceable storage and a system keybag) build the kboot with `--nor`, make
 a device from a copy of the store and an erased 1 MiB NOR, and run the one-shot on them; for the lock screen

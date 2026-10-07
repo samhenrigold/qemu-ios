@@ -474,7 +474,7 @@ void qemu_ios_ui_frame_size(int *width, int *height)
 }
 
 struct ios_touch {
-    double nx, ny;             /* normalised 0..1 over the panel */
+    double nx, ny;             /* normalized 0..1 over the panel */
     bool down;
 };
 

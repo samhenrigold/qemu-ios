@@ -44,7 +44,7 @@ def data_spare(lpn):
 
 
 class Store:
-    """The page store as the guest sees it (overlay over base, blk<N>.erased markers honoured), addressed by
+    """The page store as the guest sees it (overlay over base, blk<N>.erased markers honored), addressed by
     FTL logical page through the FTL's context. Context layout: openiBoot's s5l8900 FTLCxt, which
     FirmwareKit's N45NAND.ftlMeta writes: map pages at 0x38, log-offset pages at 0x110, the log table at
     0x1A4 (20-byte entries: usn, vbn, lbn), the context blocks at 0x312. Spare: usnDec u32 at 0, type at 9."""

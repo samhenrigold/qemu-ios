@@ -26,7 +26,7 @@ def load(name, file):
 rg = load("ipad1_regress", "regress.py")
 ac = load("ipad1_app_compat", "app-compat.py")
 
-# Home-screen icon centres, (row, col) -> screen point, per machine (measured on the stock layouts).
+# Home-screen icon centers, (row, col) -> screen point, per machine (measured on the stock layouts).
 GRID = {"ipad1": ac.GRID,
         "iPod-Touch-4G": lambda r, c: (91 + 152 * c, 125 + 176 * r),   # 4x4 grid on the 640x960 portrait panel
         "iPhone-4": lambda r, c: (91 + 152 * c, 125 + 176 * r),
@@ -86,7 +86,7 @@ def ocr_upright(ppm):
 
 
 # iOS 5's Setup Assistant on the iPod (tests/ipad1/regress.py walks the iPad's): each page is answered by the
-# first label of PICKS it shows, then its Next (the language page's is an arrow); a button labelled exactly as one\n# of ALERT_YES (an alert's, or Terms' Agree) first.
+# first label of PICKS it shows, then its Next (the language page's is an arrow); a button labeled exactly as one\n# of ALERT_YES (an alert's, or Terms' Agree) first.
 # iOS 7's language and country pages have no Next: their rows advance, so English is a pick too (on 4.x-6.x it is
 # already chosen), and so is Albania, the first plain-Gregorian row of 7.x's alphabetical country list.
 PICKS = ("Start Using iPod touch", "Start Using iPod", "Start Using iPhone", "Get Started", "Set Up as New iPod touch",
@@ -108,7 +108,7 @@ def walk_setup(b, step):
             b.tap(found["Back"])           # 6.x with Wi-Fi up: a stray tap opened the sign-in form; back out, skip
             pages.append("(Back)")
             continue
-        alert = next((t for t in ALERT_YES if t in found), None)        # a button labelled exactly so
+        alert = next((t for t in ALERT_YES if t in found), None)        # a button labeled exactly so
         if alert:
             b.tap(found[alert])
             pages.append("(%s)" % alert)
@@ -163,7 +163,7 @@ def main():
             rg.portrait_layout()
     rg.device_args(a)
     if a.major >= 7:
-        rg.MIN_COLOURS = 16   # regress main's floor: 7.x's Setup "Hello" between words is white and a status bar
+        rg.MIN_COLORS = 16   # regress main's floor: 7.x's Setup "Hello" between words is white and a status bar
     if a.boot_timeout is None:
         a.boot_timeout = 1400 if a.major >= 7 else 560
     rg.ipod.START = time.time()
@@ -292,7 +292,7 @@ def main():
             if not said and os.path.exists(syslog):  # a Harness without results.log reports through syslog
                 said = re.findall(r"\[Harness\] ((?:PASS|FAIL)[^\n]*GLES[^\n]*)", open(syslog, errors="replace").read())
             ok = frac > 0.3 and not rej and (a.ipa != HARNESS or (said and not any(s.startswith("FAIL") for s in said)))
-            step("gl", ok, "fixture colours %.0f%% of the frame, bridge refusals %s; %s" % (
+            step("gl", ok, "fixture colors %.0f%% of the frame, bridge refusals %s; %s" % (
                 frac * 100, rej or "none", "; ".join(said) or "no GLES report"))
         ok = b.powerdown()
         step("shutdown", bool(ok), "guest power-off %s" % ok)

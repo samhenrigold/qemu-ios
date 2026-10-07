@@ -216,7 +216,7 @@ header, then the body. A frame therefore has to survive being read in pieces.
 
 ### Where it gets to
 
-The driver now runs its whole initialisation against the model. Answering every
+The driver now runs its whole initialization against the model. Answering every
 control command with success and a zeroed payload is enough:
 
 ```
@@ -234,7 +234,7 @@ AppleBCM4325::setPowerStateGated() : Powering On
 
 **An `IO80211Interface` is attached to the network stack with the right MAC.**
 That is the first network interface this emulator has ever had, and iOS agrees:
-Settings' Wi-Fi row goes from a greyed-out "No Wi-Fi" to "Not Connected", and
+Settings' Wi-Fi row goes from a grayed-out "No Wi-Fi" to "Not Connected", and
 the Wi-Fi Networks pane opens with the toggle ON and "Choose a Network..."
 above an empty list.
 
@@ -265,7 +265,7 @@ Two things fall out of this:
 
 ### What the driver is blocked on
 
-Characterised directly. With `set_var iscan` acknowledged as a success, the
+Characterized directly. With `set_var iscan` acknowledged as a success, the
 driver **never asks for results**. Over ninety seconds in the Wi-Fi pane it
 issued `set_var iscan` six times - roughly every fifteen seconds - and zero
 requests for `iscanresults`, `WLC_SCAN_RESULTS` or anything else that would
@@ -290,7 +290,7 @@ fail silently:
 - **Events do not go on the event channel.** The receive dispatch answers
   channel 1 with "WTF?? Got an event packet!!!" and drops it. Events arrive on
   the **data channel** as an ordinary 802.3 frame that `handleDataPacket`
-  recognises by its ethertype.
+  recognizes by its ethertype.
 - **The BDC header is six bytes, not four.** `handleDataPacket` logs byte 0 as
   `bdc->flags` and byte 1 as `bdc->priority`, then advances the packet by six
   before treating the rest as ethernet - the two extra bytes are padding that
@@ -518,7 +518,7 @@ state the model has not really reached.
   long as the request. The model clamped both, so a 1148 byte
   `WLC_GET_BSS_INFO` came back with nothing, tripped
   `AppleBCM4325CmdManager.cpp:213`, and left the driver reading its own
-  uninitialised buffer - which is where the garbage BSSID in the join line came
+  uninitialized buffer - which is where the garbage BSSID in the join line came
   from. The same clamp was cutting `get_var iscanresults` from 2024 bytes down
   to 13, so the scan results path was never being answered either.
 - **`WLC_GET_RSSI` (127) and `WLC_GET_RATE` (12) are polled** to drive the
@@ -716,7 +716,7 @@ On that VM, side by side:
   capture shows the guest's SYN, `GET / HTTP/1.1`, `HTTP/1.0 200 OK`.
 - `http://www.google.com/` (a name needing a unicast query) **fails** with "not
   connected to the Internet" and puts **no forward DNS query on the wire** -
-  byte-for-byte the same behaviour as under the fake link.
+  byte-for-byte the same behavior as under the fake link.
 
 So the reachability wall is not about how the link came up. It is inside
 `SCNetworkReachabilityCreateWithName`: a name that resolves *synchronously and
@@ -766,7 +766,7 @@ so the MAC has to be a tuple:
 
 The parser (`0xc032f8e0` in the 5F138 kernelcache) walks the chain, stops at
 `0xFF`, and for a `0x22` tuple requires the first body byte to be 4 and the
-second to be 6 before copying six bytes. It also recognises a `0x80` vendor
+second to be 6 before copying six bytes. It also recognizes a `0x80` vendor
 tuple with subtype `0x81`, which is where Apple's config blob - BT address,
 WiFi calibration - would live.
 
@@ -787,7 +787,7 @@ stage verifiable by the driver's own log:
 2. ~~**SDPCM framing on function 2.**~~ Done. Four-byte hardware tag (length and
    its complement), eight-byte software header (sequence, channel, next length,
    header length, flow control, credit). Channels 0 control, 1 event, 2 data.
-3. ~~**The CDC control channel.**~~ Done well enough for initialisation:
+3. ~~**The CDC control channel.**~~ Done well enough for initialization:
    everything is acknowledged with success and a zeroed payload, which the
    driver accepts. Returning real values will matter once association is real.
 4. **Events and a fake association.** The next thing to build, and the thing

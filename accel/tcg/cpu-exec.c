@@ -507,7 +507,7 @@ static void guest_prof_sample(CPUState *cpu, const TranslationBlock *tb)
      * Weighted by the block's guest instruction count, not by executions.
      * Counting executions makes a three-instruction interrupt-toggle that runs
      * constantly outrank a large loop doing the actual work -- which is
-     * exactly the wrong answer for deciding what to optimise.
+     * exactly the wrong answer for deciding what to optimize.
      */
     pc = log_pc(cpu, tb);
     n = (uintptr_t)g_hash_table_lookup(guest_prof, GUINT_TO_POINTER(pc));

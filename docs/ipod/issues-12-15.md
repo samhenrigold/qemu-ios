@@ -2,7 +2,7 @@
 
 Both issues are GL-bridge bugs fixed on `ipad1`:
 
-- **#12, Bobby Carrot Forever** — `c0c86726a0`: the drawable's colour texture, depth
+- **#12, Bobby Carrot Forever** — `c0c86726a0`: the drawable's color texture, depth
   renderbuffer and FBO now take host-private names from `0x40000000`, so the game's first
   `glGenTextures` returns 1 again. Bobby binds textures by load order from 1.
 - **#15, Wolfenstein RPG** — `953fec2ee0`: 16-bit paletted-texture entries
@@ -53,7 +53,7 @@ title screen, the main menu and in the level. The tip renders all of them correc
 | Main menu, 8C148 | ![](screens/issues/12-bobby-8C148-menu-before.png) | ![](screens/issues/12-bobby-8C148-menu-tip.png) |
 | First level, 8C148 | ![](screens/issues/12-bobby-8C148-level-before.png) | ![](screens/issues/12-bobby-8C148-level-tip.png) |
 
-- **GL log.** "before" renders the drawable's own colour texture as `bound_tex=1`, which is the
+- **GL log.** "before" renders the drawable's own color texture as `bound_tex=1`, which is the
   game's first texture name. The tip renders it as `bound_tex=1073741824` (`0x40000000`).
   See `screens/issues/gl-logs/bc-*`.
 - **`gles-rejects`.** `{}` on all four runs. Nothing was refused: the glitch was a name

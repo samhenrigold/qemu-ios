@@ -33,7 +33,7 @@
  * made, and it is placed after the last icon on the home screen. That is what
  * `add` does when no bundle id is given, because it is what a caller
  * installing a new app always wants; pass one explicitly only to get the
- * update behaviour, where the placeholder sits in the existing app's slot.
+ * update behavior, where the placeholder sits in the existing app's slot.
  *
  * The placement is NOT saved to disk (SpringBoard passes saveIconState:NO), so
  * a placeholder that is somehow left behind does not survive a respring.

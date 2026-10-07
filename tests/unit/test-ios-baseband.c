@@ -838,7 +838,7 @@ static void test_incoming_sms(void)
     CHECK(ios_bb_sms_sender_ok("+14155550100") && ios_bb_sms_sender_ok("5550100"));
     CHECK(!ios_bb_sms_sender_ok("+") && !ios_bb_sms_sender_ok("") && !ios_bb_sms_sender_ok("Apple") &&
           !ios_bb_sms_sender_ok("1+2") && !ios_bb_sms_sender_ok("123456789012345678901"));
-    CHECK(!ios_bb_incoming_sms(&bb, "Apple", "alphanumeric senders are not modelled"));
+    CHECK(!ios_bb_incoming_sms(&bb, "Apple", "alphanumeric senders are not modeled"));
 
     /* URCs follow the DLCI that enabled them (4.x lays its channels out its own way). */
     c_mux_str(4, "at+cnmi=1,2,2,1\r");
@@ -950,7 +950,7 @@ static void test_signal_change(void)
     expect_frame(2, "\r\n+XCIEV: 27,100\r\n");
 }
 
-/* SIM removal and re-insertion are signalled with +XSIM: n. */
+/* SIM removal and re-insertion are signaled with +XSIM: n. */
 static void test_sim_removal(void)
 {
     bb.sim_present = false;

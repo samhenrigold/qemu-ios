@@ -24,7 +24,7 @@
  * ---------------------------------------------------------------------------
  * FIDELITY, SETTLED: THE SHUTTER IS NOW SAMPLE-EXACT. (2026-08-03, later still)
  *
- * The sound was audible but wrong -- "recognisable but garbled". Measured
+ * The sound was audible but wrong -- "recognizable but garbled". Measured
  * against the source PCM rather than listened to, the transformation was:
  *
  *     out = src[0..22122]                      the whole clip, sample-exact
@@ -45,7 +45,7 @@
  *    over is the one still in flight, and the channel walks it again. That is
  *    the 61440-byte replay, exactly. (An upstream QEMU bug, not one of ours.)
  *
- * 2. This FIFO was modelled 8192 bytes deep -- 46 ms, two of the guest's 4096-
+ * 2. This FIFO was modeled 8192 bytes deep -- 46 ms, two of the guest's 4096-
  *    byte periods -- and the depth is precisely how far the DMA's read head
  *    runs ahead of the sound leaving the device. The engine refills the ring
  *    just behind that head, so at 8192 the head sat ON the producer: samples
@@ -291,7 +291,7 @@
  *
  *    (a) c075013c in AppleARMPL080DMAC (ARM, not Thumb -- disassembling this
  *        kext as Thumb yields plausible garbage). The only site in that kext
- *        that materialises 0xE00002D8. Its test is
+ *        that materializes 0xE00002D8. Its test is
  *            r2 = [controller + 0x64*channel + 0x98]; if (r2 <= 1) return NotReady
  *        i.e. a purely software per-channel state, checked before any register
  *        is touched -- which is why the hardware never sees anything.
@@ -392,7 +392,7 @@ static bool it_i2s_debug(void)
  * honest model -- and it self-limits, because we only raise while the guest
  * still has the source unmasked in the GPIO controller.
  *
- * IT_I2S_IRQ=0 disables it, for bisecting against the old silent behaviour.
+ * IT_I2S_IRQ=0 disables it, for bisecting against the old silent behavior.
  */
 #define IT_I2S_READY_DELAY_NS  (2 * 1000 * 1000)
 #define IT_I2S_READY_PERIOD_NS (2 * 1000 * 1000)
@@ -466,7 +466,7 @@ static void it_i2s_arm_ready(IPodTouchI2SState *s)
  * -- 0.84 s of audio in zero guest time -- and then raised every period
  * interrupt at once. Everything we delivered was the silence the ring had been
  * allocated with, and the engine never got a chance to write a sample. Measured
- * both ways: the modelled FIFO saw 73728 bytes with peak 0, and pmemsave of the
+ * both ways: the modeled FIFO saw 73728 bytes with peak 0, and pmemsave of the
  * ring's physical pages (0x08c99000, 64 KB) read all-zero before the sound and
  * for nine seconds after it.
  *
@@ -479,7 +479,7 @@ static void it_i2s_arm_ready(IPodTouchI2SState *s)
  * The drain is computed from the virtual clock rather than counted in ticks, so
  * a late or coalesced timer callback cannot inflate the rate.
  *
- * IT_I2S_PACE=0 restores the old free-running behaviour for A/B.
+ * IT_I2S_PACE=0 restores the old free-running behavior for A/B.
  */
 static bool it_i2s_pace_enabled(void)
 {
@@ -510,7 +510,7 @@ static void it_i2s_update_dma_req(IPodTouchI2SState *s)
 }
 
 /*
- * Advance the modelled FIFO by however much real time has passed.
+ * Advance the modeled FIFO by however much real time has passed.
  *
  * TIME MUST NEVER BE DISCARDED HERE, and it used to be: draining clamped at an
  * empty FIFO and forgot the excess, so every host stall longer than the 11.6 ms
@@ -538,7 +538,7 @@ static void it_i2s_update_dma_req(IPodTouchI2SState *s)
  */
 #define IT_I2S_PACE_DEBT_MAX 32768u     /* bytes; ~186 ms, half a ring lap */
 
-/* IT_I2S_DEBT=0 restores the old discard-on-stall behaviour, for bisecting. */
+/* IT_I2S_DEBT=0 restores the old discard-on-stall behavior, for bisecting. */
 static bool it_i2s_debt_enabled(void)
 {
     static int cached = -1;
@@ -853,7 +853,7 @@ static void it_i2s_clock_update(void *opaque, ClockEvent event)
  * The sink is CoreAudio, and its IOProc is all-or-nothing: if fewer than one
  * full device buffer (512 frames, 11.6 ms by default) is queued when the
  * hardware calls, audio/coreaudio.m plays NOTHING that period. Our data path
- * had no lead to give it. The modelled TX FIFO drains at exactly the sample
+ * had no lead to give it. The modeled TX FIFO drains at exactly the sample
  * rate and is only 2048 bytes deep -- deliberately, because that depth is how
  * far the DMA read head runs ahead of the guest's own producer and raising it
  * breaks fidelity (see the header) -- so PCM reached the backend just in time
@@ -862,7 +862,7 @@ static void it_i2s_clock_update(void *opaque, ClockEvent event)
  * clip, which puts an 11.6 ms hole in the middle of a 500 ms sound and shifts
  * everything after it. Upstream's starvation path does not even clear the
  * hardware buffer, so what is actually heard is the previous 11.6 ms replayed.
- * That is the garbling: recognisable, because every sample is present and in
+ * That is the garbling: recognizable, because every sample is present and in
  * order, and wrong, because a fragment is repeated in the middle of it.
  *
  * The fix cannot be a deeper FIFO -- that is the guest's clock and it is
@@ -998,7 +998,7 @@ static void it_i2s_push(IPodTouchI2SState *s, const uint8_t *buf, unsigned len)
  *
  * A DMA channel is stopped wherever the guest's Config = 0 lands, which is an
  * arbitrary element -- so a stream can end having delivered an ODD number of
- * 16-bit samples. On the real block that does not matter: the serialiser takes
+ * 16-bit samples. On the real block that does not matter: the serializer takes
  * its channel from LRCLK and the driver resets the TX FIFO (this register)
  * before every stream, so the next stream starts on the left channel whatever
  * the last one left behind. Our FIFO is a byte stream with no LRCLK, so a
@@ -1539,8 +1539,8 @@ static const VMStateDescription vmstate_ipod_touch_i2s = {
 static const Property ipod_touch_i2s_properties[] = {
     DEFINE_PROP_UINT32("ready-gpio-group", IPodTouchI2SState, ready_group, IT_I2S_GPIO_INT_GROUP),
     DEFINE_PROP_UINT32("ready-gpio-bit", IPodTouchI2SState, ready_bit, IT_I2S_GPIO_INT_BIT),
-    /* Whether the PCM reaches a host voice: off where the codec's analogue side
-     * is not modelled (N45's WM8758 drives only the headphone jack). */
+    /* Whether the PCM reaches a host voice: off where the codec's analog side
+     * is not modeled (N45's WM8758 drives only the headphone jack). */
     DEFINE_PROP_BOOL("host-output", IPodTouchI2SState, host_output, true),
 };
 

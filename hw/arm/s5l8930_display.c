@@ -526,7 +526,7 @@ static void layer_row(S5L8930DisplayState *s, uint32_t fmt, uint32_t base,
  * and format. UI1 is blended source-over with its alpha (premultiplied, as CA
  * renders); an opaque UI1 simply replaces UI0. Software CA uses UI0 alone.
  * Each layer covers its destination rectangle (+0x54 origin .. +0x64 far
- * corner) with its source (+0x60 size), nearest-neighbour if the two differ,
+ * corner) with its source (+0x60 size), nearest-neighbor if the two differ,
  * and is transparent outside it. 4.x CA puts an EAGL layer's surface in UI0
  * that way, under a full-panel UI1 that is clear where the layer shows.
  */

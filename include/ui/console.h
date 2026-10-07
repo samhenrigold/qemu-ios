@@ -392,7 +392,7 @@ void graphic_hw_gl_block(QemuConsole *con, bool block);
  *
  * A device whose panel scales the whole framebuffer by a backlight level draws
  * a faithful picture of a dim screen -- and an illegible one. Brightening the
- * result afterwards cannot put back what the scaling quantised away, so instead
+ * result afterwards cannot put back what the scaling quantized away, so instead
  * the device may offer to render the next frame as if the backlight were full,
  * and a frontend copying the screen for a human asks for that around the grab.
  *

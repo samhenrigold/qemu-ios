@@ -15,7 +15,7 @@ They cannot be signed: they are slices of a disk image, not programs.
 Putting them in a `.tar.gz` does NOT help. The service decompresses archives and
 keeps walking -- the second rejection named
 `device.tar.gz/device.tar/nand-appsync3/cs0/14384.page`, which is the same page
-one layer deeper. Anything the scanner recognises as an archive, it opens.
+one layer deeper. Anything the scanner recognizes as an archive, it opens.
 
 So this is deliberately not an archive format. One file, one custom magic, a
 manifest and a single zlib stream: nothing in it announces itself as a container

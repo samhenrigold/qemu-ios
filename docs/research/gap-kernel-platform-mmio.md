@@ -97,7 +97,7 @@ Register access convention in the Apple platform kexts: registers are read/writt
 - **UART** (`uart,s5l8900x`): Samsung layout (UTRSTAT 0x10, UTXH 0x20, UBAUD 0x28, UDIVSLOT 0x2C, UFSTAT 0x18…) as in qemu-ios; uart0 0x82500000 IRQ 0x16 `boot-console`.
 - **AMFI/sandbox**: no hardware dependencies beyond PKE/SHA1 accelerators (`IOPKEAccelerator` "doPowerMod" in AMFI c03b8f6c); boot-args `amfi_get_out_of_my_way`, `amfi_allow_any_signature`, `amfi_unrestrict_task_for_pid` (c03b9650-c03b9720).
 
-## 8. Prioritized device-model list (minimal behaviour)
+## 8. Prioritized device-model list (minimal behavior)
 **Must-have to reach rootfs mount**
 1. 4× PL192 @0xBF200000 stride 0x10000, chained, vectored (VECTADDR = `irq|0x80000000` entries, EOI on write, SOFTINT/SOFTINTCLEAR, INTSELECT FIQ) — §2.
 2. PMGR/timer @0xBF100000 (0x6000): 64-bit 24 MHz counter 0x2000/0x2004; event timer 0x2008 (down-count) / 0x2010 (state 3→1) → IRQ 6 (FIQ); watchdog 0x2020/0x2024/0x202C → system reset; gate regs 0x1010+4n (request nibble mirrored to actual, bit31 self-clearing, reset values = iBoot state); clock-config 0x40-0xFC (bit30 reads 0); 0x5030 (bit16 reads 0 after write 7); DPSM 0x100-0x13F (bits 0x40000000/0x200 read 0); 0x1200 write; PLL regs 0x00-0x24 consistent with iBoot's clock decode (only iBoot reads them); bridge windows 0x85E00000/0x85F00000/0x88E00000/0x88F00000/0x89E00000/0x89F00000 (RAM) — §1.

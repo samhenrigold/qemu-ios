@@ -30,7 +30,7 @@ table can be reused as they are. The transport underneath is new:
    BT chardev attached.
 2. **DMA.** The A4 UART driver uses CDMA peripheral channels for BT. `s5l8930_cdma.c` runs a whole chain
    inside the `go` write (memory/AES only). BT needs a paced device-FIFO mode: TX drains to the UART,
-   and RX completes as bytes arrive, including the Rx-timeout / partial-descriptor behaviour the
+   and RX completes as bytes arrive, including the Rx-timeout / partial-descriptor behavior the
    iPod comment warns about. **This is the largest unknown.** First check in the kext whether
    AppleS5L8930XSerial falls back to PIO when the DMA channels are absent from the DT. If it does,
    drop `dma-channels` from our DT and this item goes away.
@@ -58,7 +58,7 @@ table can be reused as they are. The transport underneath is new:
    `Set Connection Encryption` → `Encryption Change`. Also answer `Read Remote Features`,
    `Remote Name Request` and role/mode commands (`Write Link Policy`, `Sniff Mode`) as the trace
    shows them, plus `Number Of Completed Packets` for ACL flow control.
-3. **L2CAP** on the ACL handle: signalling channel (CID 1) with Connection Req/Rsp, Configure Req/Rsp
+3. **L2CAP** on the ACL handle: signaling channel (CID 1) with Connection Req/Rsp, Configure Req/Rsp
    both ways, and Disconnect. The keyboard opens (or accepts) PSM 0x11 (HID control) and PSM 0x13
    (HID interrupt). BTServer may also run **SDP** (PSM 1) against the keyboard ("SdpClient",
    `getSdpAttributeForService`). The pre-seeded HID attributes may let it skip SDP. If they don't,
@@ -77,7 +77,7 @@ table can be reused as they are. The transport underneath is new:
 | CDMA device-FIFO pacing (skip it if the PIO fallback exists) | 0-4 days, highest risk |
 | Pre-seeded pairing plist (RE the schema, imgtools option) | 1 day |
 | Link control + encryption event sequence | 1-2 days |
-| L2CAP signalling + HID control/interrupt (+ canned SDP) | 2-3 days |
+| L2CAP signaling + HID control/interrupt (+ canned SDP) | 2-3 days |
 | Host input → interrupt-channel reports (reuse `MAC_TO_HID`) | 0.5 day |
 | **Total** | **~1.5-2.5 weeks**, versus 1-2 days for hidbridge |
 

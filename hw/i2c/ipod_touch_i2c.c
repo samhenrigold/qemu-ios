@@ -44,7 +44,7 @@ static bool i2c_trace(void)
  * successful transfer and the following reads returned QEMU's unmatched-bus
  * default of 0xff. Every absent device therefore presented as a present device
  * reporting all-ones -- which is how the missing CS42L58 codec was mistaken for
- * a misbehaving one, and it is latent for every other unmodelled I2C address.
+ * a misbehaving one, and it is latent for every other unmodeled I2C address.
  *
  * A NAK is still a completed address phase: the interrupt must still be raised
  * so the driver runs, inspects the status bit and returns an error, rather than
@@ -120,7 +120,7 @@ static uint8_t s5l8900_i2c_start_addr(IPodTouchI2CState *s)
 static void s5l8900_i2c_set_ack(IPodTouchI2CState *s, uint8_t addr)
 {
     if (!i2c_nak_enabled()) {
-        return;   /* legacy behaviour: every address appears to ACK */
+        return;   /* legacy behavior: every address appears to ACK */
     }
     if (!i2c_addr_is_claimed(s, addr)) {
         /*

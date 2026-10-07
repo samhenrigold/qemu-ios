@@ -74,7 +74,7 @@ is killed by the watchdog while stopped):
 * **Register layout.**  `g` is 300 bytes in the classic *GDB* ARM numbering,
   not lldb's:  r0-r15 at 0, f0-f7 (12 bytes each, legacy FPA) at 64, fps at
   160, cpsr at 164, s0-s31 at 168, fpscr at 296.  The stop reply's register
-  numbers (`00`-`0f`, `19`) confirm it.  The shim synthesises `qRegisterInfo`
+  numbers (`00`-`0f`, `19`) confirm it.  The shim synthesizes `qRegisterInfo`
   from exactly that layout, so no target-definition file is needed.
 * **Do not put the device side in no-ack mode.**  It replies `OK` to
   `QStartNoAckMode` and then never answers another packet -- the shim acks the

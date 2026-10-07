@@ -377,7 +377,7 @@ passes Release build, strict deep signature and macOS 14 dependency checks.
 ### CLCD interrupt enable and pending status
 
 The 7E18 frame handler disables source bit 0 at register 0x08 when idle. The
-model ignored this register and treated an acknowledgement at 0x0c as permission
+model ignored this register and treated an acknowledgment at 0x0c as permission
 to keep raising interrupts. It now models enable, pending and W1C independently,
 including migration compatibility. See `docs/ipod/ipod-clcd-irqs.md` for driver
 addresses and the hardware contract. Sanitizer IRQ and LCD compositor tests pass.
@@ -877,7 +877,7 @@ configuration matrix and watchdog check still pass; Light Touch Release builds.
 
 ## Inspector status and keyboard control (2026-09-06)
 
-Light Touch now shows device state, explicitly labelled battery target, proxy
+Light Touch now shows device state, explicitly labeled battery target, proxy
 status and guest-agent connectivity above the app list, with an input checkbox
 and matching Device-menu command. Agent status reuses the existing health poll
 at one-second intervals. The keyboard gate rejects presses while disabled,
@@ -989,7 +989,7 @@ Register writes and interrupt restoration use the configured device flag rather
 than reading the host environment. Light Touch passes the option directly.
 
 All 22 native configuration cases pass. Native migration checks exercise both
-modes, decode-failure completion, IRQ assertion/acknowledgement and reset
+modes, decode-failure completion, IRQ assertion/acknowledgment and reset
 (`/tmp/it-mpvd-snapshot.log`). Boot and a 70 KiB guest-agent round trip pass with
 all three explicit video options enabled (`/tmp/it-mpvd-option-guest.log`). CLI,
 dylib and app builds pass. This changes mode selection, not codec capability;
@@ -1014,7 +1014,7 @@ verifies cold persistence and both confirmed shutdowns
 
 Two test issues were corrected during acceptance: migration inspection must
 wait for incoming load completion, and ITSync may emit diagnostics before the
-final import acknowledgement. Database-count and byte/audio assertions remain.
+final import acknowledgment. Database-count and byte/audio assertions remain.
 
 ## LCD composition startup option (2026-09-06)
 

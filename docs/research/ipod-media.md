@@ -84,7 +84,7 @@ Decoder errors drain valid queued frames, then
 publish one silent error buffer with status bit 0 and error 100 at `0x2202ff28`.
 Input DMA ownership is returned after that output is published.
 The code is taken from the guest driver's own no-output path. Buffer ownership
-and interrupt acknowledgement still apply. A new job clears both the error
+and interrupt acknowledgment still apply. A new job clears both the error
 and old decoder state. ASan/UBSan checks cover these transitions, including
 failure before a codec exists. `/tmp/it-blitz-spore-80294` plays a copied movie
 with a deliberately corrupted AAC packet, then replays the healthy movie in
@@ -451,9 +451,9 @@ all 264,821 intro frames within one S16 step, with zero content-starved callback
 Do not substitute ffmpeg pixel equality for the MPEG-4 check: native MPEG-4
 reconstruction differs slightly from ffmpeg, unlike the tested H.264 fixtures.
 
-Normal app termination also exposed a lost SSH stdout acknowledgement: sshd
+Normal app termination also exposed a lost SSH stdout acknowledgment: sshd
 can close before the halt marker is delivered. LightTouch now waits for the
-authoritative PMU event even when that acknowledgement is absent. The repeat
+authoritative PMU event even when that acknowledgment is absent. The repeat
 logs `guest confirmed power-off — volume unmounted` and exits zero. Artifacts
 are under `/tmp/it-media-app-home`; `/tmp/it-test-media-app.py` performs playback,
 private USB queries, window captures and normal termination.
@@ -637,7 +637,7 @@ the guest-visible error path.
 
 That correction exposes premature input completion. The emulator acknowledged
 the final compressed input while 32 decoded frames remained in its software
-queue. AudioQueue treated the acknowledgement as end-of-stream, truncating
+queue. AudioQueue treated the acknowledgment as end-of-stream, truncating
 the offline result at sample 108,544 (`2770`, `2839`, `2928`, `2977`). Priming
 or enlarging the probe's buffer did not fix that ordering bug. AMC now publishes
 the queued PCM before returning input ownership; error completions likewise

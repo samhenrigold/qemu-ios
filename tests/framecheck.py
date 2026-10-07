@@ -67,7 +67,7 @@ def verdict(cap_path, ref_path, thr=THR):
     ok = frac <= thr
     return {"ok": ok, "frac": round(frac, 4), "thr": thr,
             "why": ("matches the reference (%.3f <= %.2f)" % (frac, thr)) if ok else
-                   ("differs from the reference (%.3f > %.2f): flip / colour swap / stale surface"
+                   ("differs from the reference (%.3f > %.2f): flip / color swap / stale surface"
                     % (frac, thr))}
 
 

@@ -9,7 +9,7 @@
  * All of it ORs into the single IRQ 0x74.
  *
  * Decoded from the 7B500 kernel (AppleS5L8930X kext, text at 0xc0643000):
- * disableVectorHard (vtable neighbour of handleInterrupt) writes 0x800,
+ * disableVectorHard (vtable neighbor of handleInterrupt) writes 0x800,
  * enableVector writes 0x840, clearing a level pin's status first; start
  * writes all-ones to 0x800 and 0x880. openiBoot's gpio.h agrees on
  * 0x800 = disable / 0x840 = enable.

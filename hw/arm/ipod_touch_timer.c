@@ -205,7 +205,7 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
          * Timers 0-3 (0x00-0x7f; 0x80 is the 64-bit counter block): registers
          * and the output pin, which is what the S5L8900 kernel uses them for
          * (timer 1 is the N45's buzzer, the DT's timer/buzzer, device_type
-         * pwm). Their interrupts are not modelled: no kernel seen enables one
+         * pwm). Their interrupts are not modeled: no kernel seen enables one
          * (3A101a only ever writes STATE 0 at boot and drives timer 1 as PWM).
          */
         if (addr < TIMER_NUM_CHANNELS * TIMER_STRIDE) {

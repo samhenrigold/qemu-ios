@@ -171,7 +171,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSDIOState, IPOD_TOUCH_SDIO)
  * Events do not arrive on the event channel. This driver dispatches receive by
  * channel and answers channel 1 with "WTF?? Got an event packet!!!" before
  * dropping it - events come up the data channel, BDC encapsulated, as an 802.3
- * frame that handleDataPacket recognises by its ethertype.
+ * frame that handleDataPacket recognizes by its ethertype.
  */
 /*
  * handleDataPacket logs byte 0 as bdc->flags and byte 1 as bdc->priority, then

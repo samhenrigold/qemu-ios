@@ -246,7 +246,7 @@ def apm_hfs_slice(raw):
 
 
 def edit_plist(data, fn):
-    """Apply fn(dict) to a plist, keeping its binary/XML flavour."""
+    """Apply fn(dict) to a plist, keeping its binary/XML flavor."""
     d = plistlib.loads(data)
     fn(d)
     return plistlib.dumps(d, fmt=plistlib.FMT_BINARY if data.startswith(b"bplist") else plistlib.FMT_XML)
@@ -300,7 +300,7 @@ def dyld_insert(d, lib=("/" + APPSYNC_REL)):
 
 
 # Web proxy (the app's, on slirp guestfwd 10.0.2.100:3128, as on the iPod). The Wi-Fi service
-# carries a PAC. 3.2.2's Safari does NOT honour the "; DIRECT" fallback: with no guestfwd at .100 a
+# carries a PAC. 3.2.2's Safari does NOT honor the "; DIRECT" fallback: with no guestfwd at .100 a
 # proxied URL just fails, so plain host names and private/link-local/loopback IP literals go DIRECT
 # (slirp reaches the LAN itself). IP literals are tested first because isInNet on a host name does a
 # DNS lookup.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native MPVD mode, completion, IRQ acknowledgement and restore checks."""
+"""Native MPVD mode, completion, IRQ acknowledgment and restore checks."""
 from pathlib import Path
 import os,socket,subprocess,tempfile,time,sys
 ROOT=Path(__file__).resolve().parents[2]
@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='it-mpvd-snapshot-') as tmp:
       w(0x1000c,0x0c)
       assert read(0)==(2 if enabled else 0) and irq()==enabled
      q.cmd('quit');assert child.wait(timeout=10)==0
-     print('PASS: MPVD', enabled, 'saved' if not phase else 'restored mode, IRQ, acknowledgement and reset',flush=True)
+     print('PASS: MPVD', enabled, 'saved' if not phase else 'restored mode, IRQ, acknowledgment and reset',flush=True)
     finally:
      if f:f.close()
      if t:t.close()

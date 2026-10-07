@@ -189,7 +189,7 @@ static void prepare_report_info_response(IPodTouchMultitouchState *s, uint8_t re
     }
     else {
         /*
-         * Anything outside the six modelled report IDs used to hw_error(),
+         * Anything outside the six modeled report IDs used to hw_error(),
          * which aborts the whole process -- a guest asking an innocuous
          * question killed the emulator. A third-party app (Wordsmith) does
          * exactly this with report ID 0xbf and took QEMU down with it.
@@ -527,7 +527,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
         else {
             /*
              * Treat this as the desync alarm, not as curiosity about an
-             * unmodelled command.
+             * unmodeled command.
              *
              * This device frames commands by counting bytes and nothing else --
              * there is no chip select to fall back on (see apple_spi_update_cs
@@ -544,7 +544,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
              */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "[MT] unknown command 0x%02x - the SPI byte stream has "
-                          "most likely desynchronised; touch will not recover\n",
+                          "most likely desynchronized; touch will not recover\n",
                           value);
             printf("%s Unknown command 0x%02x!\n", __func__, value);
         }
@@ -595,7 +595,7 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
             return 0;
         }
 
-        /* Parenthesised: '+' binds tighter than '|', so this used to compute
+        /* Parenthesized: '+' binds tighter than '|', so this used to compute
          * (b2<<10) | ((b3<<2)+5) -- with b3 == 255 the carry was OR-merged
          * instead of added and data_len disagreed with the byte count the
          * guest then clocked out, terminating the command early and
@@ -688,8 +688,8 @@ static uint32_t ipod_touch_multitouch_transfer(SSIPeripheral *dev, uint32_t valu
  * IT_MT_PAD_FINGERS raises the floor. Its only purpose is the one-variable
  * experiment that established the guest sizes its read from dataLength rather
  * than from a constant: with it set to 2 every frame is 103 bytes and reports
- * numFingers=1, so touch behaviour is unchanged and the ONLY thing under test
- * is whether a longer frame desynchronises the SPI state machine. (It does not;
+ * numFingers=1, so touch behavior is unchanged and the ONLY thing under test
+ * is whether a longer frame desynchronizes the SPI state machine. (It does not;
  * "Unknown command" stayed at 0.) Left in because that is the assumption the
  * whole multi-finger path rests on and it should stay cheap to re-check.
  */
@@ -745,7 +745,7 @@ static bool mt_const_fingerid(void)
  * and touch is dead for the rest of the session. Forcing that path deliberately
  * (IT_MT_EMPTY_TEST, every 7th read) reproduced it in under three minutes,
  * including the guest's "Could not detect HBPP" line. This device cannot
- * resynchronise once the two sides disagree: there is no usable chip-select
+ * resynchronize once the two sides disagree: there is no usable chip-select
  * signal (see the note on apple_spi_update_cs in ipod_touch_spi.c).
  *
  * The fix at the time was to give the no-fingers report the same dataLength as
@@ -817,7 +817,7 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
 
         /*
          * The finger ID is what ties a contact across frames, and it is what
-         * the gesture recognisers use to tell "two fingers moving apart" from
+         * the gesture recognizers use to tell "two fingers moving apart" from
          * "one finger that jumped". Slot index + 1, stable for the life of the
          * contact; the single-finger path always reported 1, which is what slot
          * 0 still gets.
@@ -840,7 +840,7 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
          * carry a finger index and a hand index alongside the path identity,
          * and the single-finger code sent the constants 2 and 1 for the one
          * contact it could describe. Slot 0 still gets exactly those, so
-         * one-finger behaviour is unchanged; further contacts get a distinct
+         * one-finger behavior is unchanged; further contacts get a distinct
          * finger index, on the assumption that two contacts claiming to be the
          * same finger of the same hand is not something real hardware reports.
          *
@@ -956,10 +956,10 @@ static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s
  * The rate also sets the reported speed, because get_frame() derives velocity
  * as (distance since the last host sample) / (time since the last frame). At
  * 10 Hz that divided a single mouse step by 100 ms and under-reported finger
- * speed by about 6x, which is its own reason the slide-to-unlock recogniser
+ * speed by about 6x, which is its own reason the slide-to-unlock recognizer
  * struggled. Raising the rate fixes the magnitude as well as the smoothness.
  *
- * IT_MT_HZ overrides it, for bisecting against the old behaviour (IT_MT_HZ=10).
+ * IT_MT_HZ overrides it, for bisecting against the old behavior (IT_MT_HZ=10).
  */
 static int64_t mt_frame_period_ns(void)
 {
@@ -1098,7 +1098,7 @@ void ipod_touch_multitouch_set_finger(IPodTouchMultitouchState *s, int slot,
     /*
      * A contact that leaves the panel ends, it does not slide along the bezel.
      * The pointer paths cannot produce this -- QEMU clamps absolute axes to the
-     * window -- but synthesised multi-touch can: a pinch driven from a single
+     * window -- but synthesized multi-touch can: a pinch driven from a single
      * host pointer pushes its mirrored second finger off the edge long before
      * the real one gets there. The original iPhone Simulator made this an
      * explicit transition (_dragWentOffScreen) rather than leaving a stuck

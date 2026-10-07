@@ -15,7 +15,7 @@
 /*
  * Host <-> guest pasteboard.
  *
- * The point of this path is that it is not the keyboard. Typing by synthesising
+ * The point of this path is that it is not the keyboard. Typing by synthesizing
  * taps on iOS's own on-screen keyboard loses exactly the characters people most
  * want to move between the two machines -- punctuation, spaces in URL fields,
  * anything on the symbols page -- because each of those depends on keyboard page
@@ -278,7 +278,7 @@ bool guest_pb_call(GuestPasteboard *pb, CPUState *cpu, qemu_call_t *q,
     case QC_PB_WRITE:
         /*
          * offset 0 starts a fresh item. Anything else has to continue the one
-         * already being staged; a gap would leave uninitialised bytes in the
+         * already being staged; a gap would leave uninitialized bytes in the
          * middle of the text.
          */
         if (off == 0) {

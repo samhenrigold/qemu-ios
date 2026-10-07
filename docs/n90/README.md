@@ -50,7 +50,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
 - `wifi`: PASS run alone. In the four-boot run it timed out waiting for a lease once.
 - `tests/ipad1/app-install.py --machine iPhone-4`: all PASS. AppSync install; walks iOS 5's Setup Assistant
   ("Set Up as New iPhone" ... "Start Using iPhone"); launch; the Harness GL fixture on the panel (50% fixture
-  colours, no bridge refusals, Harness "PASS GLES pixel readback" and "PASS GLES framebuffer/draw/present API");
+  colors, no bridge refusals, Harness "PASS GLES pixel readback" and "PASS GLES framebuffer/draw/present API");
   guest power-off.
 - The fixes it took were in the harness, not the models. The panel can sleep during the install, so the walk
   wakes it before sliding. The syslog relay closes mid-run on 5.x, so the Harness report is also read from its
@@ -102,7 +102,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    through the GL bridge: 1035 slots, 316 named.
    - CoreAnimation fences every frame with glFenceSyncAPPLE (slot 779, 1024 calls before Setup).
    - APPLE_sync is now in the name table as ids 912-918, exported by 6.x and 7.x OpenGLES. The front end answers
-     it locally: the host finishes every call before the next, so a fence is signalled as it is made.
+     it locally: the host finishes every call before the next, so a fence is signaled as it is made.
    - The bridge refuses nothing on 7.1.2.
    - Since resolved (see the 7.1.2 results below): regress's Setup walk for iOS 7, activation
      (lt_activate fails on 7.1.2's lockdownd), a guest package for 10*/11*, and the 6.x Wi-Fi lease.
@@ -120,7 +120,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
 
 FirmwareKit `n90ap-10A403`, `-10A523`, `-10B144`, `-10B146` and `-10B329` (catalog entries on LightTouchMac a4-n81
 51f27b1). Each was created fresh, then `tests/ipad1/app-install.py --machine iPhone-4` ran on it:
-mux, AppSync install, lock, the Setup walk, icon, launch, GL (about 50% fixture colours, Harness "PASS GLES pixel
+mux, AppSync install, lock, the Setup walk, icon, launch, GL (about 50% fixture colors, Harness "PASS GLES pixel
 readback", no bridge refusals) and guest power-off all PASS on every build.
 - Two fixes from fw-a4 were needed: AppSync answering 6.x's MIS signing-identity and entitlement keys, and the
   content-protection bit on the data volume.
@@ -131,7 +131,7 @@ readback", no bridge refusals) and guest power-off all PASS on every build.
 
 FirmwareKit `n90ap-11D257` (LightTouchMac a4-n81-6x 6479bd5: system_mib 1664, ro root, data-ark activation
 FactoryActivated, cell's k48-ios7 seed baked in). `tests/ipad1/app-install.py --machine iPhone-4`: mux, install,
-lock, setup, icon, launch, gl (31-51% fixture colours, Harness "PASS GLES pixel readback", no refusals) and
+lock, setup, icon, launch, gl (31-51% fixture colors, Harness "PASS GLES pixel readback", no refusals) and
 shutdown all PASS. What it took:
 - it_seal: the ro root keeps its job, so it halted every boot. It now seals once, keyed on /private/var/.it_sealed.
 - /chosen mac-address-wifi0 / -bluetooth0: 7.x's MobileGestalt reads the MACs there. Zero MACs gave a UDID
@@ -205,7 +205,7 @@ What differs from 7.1.2:
   offset (op 0x165), as on 6.0 beta 1.
 - **timed.** timed took NTP over Wi-Fi to 2026. FirmwareKit seeds com.apple.timed for a dated recipe:
   `TMAutomaticTimeEnabled` and `TMAutomaticTimeOnlyEnabled` false (Settings' switch, 6.x's and 7.x's key) and
-  `DisableAutomaticTime` true. The switch alone is not enough: timed (6.0b1 CoreTime-77) honours it only once its
+  `DisableAutomaticTime` true. The switch alone is not enough: timed (6.0b1 CoreTime-77) honors it only once its
   cache says the clock was set (TMSystemTimeSet), so a fresh unit took NTP at Setup's TMSetupTime regardless;
   `DisableAutomaticTime` is checked before every change. Measured on 6.0 beta 1 (N90 and N81, guest agent off, NTP
   answered with 2026 by a host responder): seeded, timed fetches and leaves the clock at 2012-06-16; without the
@@ -220,7 +220,7 @@ What differs from 7.1.2:
   in three). app-install walks a dated device's Setup offline (restrict=on): Setup says once there is no connection
   (Continue) and shows no Apple ID page. The harness's Wi-Fi has no web proxy at 10.0.2.100:3128 (the PAC's first
   choice), so the guest ARPs for it before every direct connection; the app serves that proxy.
-- **First boot.** A data-migration bar for 3-4 min before Hello; app-install uses regress's 7.x colour floor.
+- **First boot.** A data-migration bar for 3-4 min before Hello; app-install uses regress's 7.x color floor.
 - "Sandbox: ... application requires container but none set" lines for system apps (Mail) appear on every 7.0b1
   boot, passing runs included; they do not stop the Harness.
 
@@ -236,7 +236,7 @@ What differs from 7.1.2:
    `-[EAGLContext sendNotification:forTransaction:onLayer:]`, which the stock SGX engine turns into a kernel
    signal. The front end now rebinds that call, records CA's transfer and issues it unconditionally
    (`TransferSurfaceWithSwap`) after `glFinish`. `regress.py --checks app` (with the package as an offer) installs
-   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colours, 35 bridge lines) and the
+   the harness, launches it and taps "GL: rotating triangle": the triangle draws (4 colors, 35 bridge lines) and the
    bridge refuses nothing.
 
 1. **Baseband** waits on the cell stream (spi2 IFX protocol, modem core). Today the node is unmatched and

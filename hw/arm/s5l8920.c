@@ -892,7 +892,7 @@ static void s5l8920_init(MachineState *machine)
      * TV-out: the S5L8720's SDO and mixers (DT tv-out reg 0x5600000,
      * 0x5200000, 0x5100000; interrupts 0x23, 0x27). SpringBoard's power-off
      * swaps every framebuffer, AppleM2TVOut's too, and waits for each: with
-     * TV-out unmodelled its swap never completed and the guest never halted.
+     * TV-out unmodeled its swap never completed and the guest never halted.
      */
     dev = qdev_new("ipodtouch.tvout");
     memory_region_add_subregion(sysmem, 0x85600000, &IPOD_TOUCH_TVOUT(dev)->sdo_iomem);

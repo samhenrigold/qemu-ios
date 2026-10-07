@@ -119,7 +119,7 @@ free (its `com.apple.itunesstored.plist` declares only
 `com.apple.iTunesStore.daemon`) and anyone could claim it. On **3.1.3 the plist
 declares it**, alongside `.daemon`, `.daemon.public` and
 `.daemon.notifications.public`, so launchd holds the receive right and hands it
-only to the job labelled `com.apple.itunesstored`. `bootstrap_register2` on a
+only to the job labeled `com.apple.itunesstored`. `bootstrap_register2` on a
 launchd-declared name fails. **That is the blocker.**
 
 Useful detail if this is ever picked up: the server posts the Darwin
@@ -144,7 +144,7 @@ sets its bundle ID, and then:
 * if `bundleID` is **already installed** -> `addNewIconToDesignatedLocation:`,
   and the placeholder appears immediately, in that app's slot. Measured:
   `sbdlicon add dl-demo-2 com.apple.mobilenotes` replaced the Notes icon with a
-  dark placeholder labelled "Waiting…"
+  dark placeholder labeled "Waiting…"
   (`docs/screenshots/DELIVERABLE-1-placeholder-over-an-installed-app.png`).
 * if it is **not installed** -> only `[SBIconController setIconToInstall:]`,
   which just stashes the icon in an ivar. Measured: nothing appears.

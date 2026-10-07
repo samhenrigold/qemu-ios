@@ -21,7 +21,7 @@
 # Each backend gets its own build directory (build-ios, build-ios-interp,
 # build-ios-tcti).
 #
-# Optimisation flags (PGO_PROFILE / PGO_GENERATE, see below) only reach the
+# Optimization flags (PGO_PROFILE / PGO_GENERATE, see below) only reach the
 # build through configure, so changing them needs RECONFIGURE=1.
 set -eu
 
@@ -71,7 +71,7 @@ interp) TCG_FLAGS="--enable-tcg-interpreter" ;;
 tcti)   TCG_FLAGS="--enable-tcg-threaded-interpreter" ;;
 esac
 
-# OPTIMISATION FLAGS.
+# OPTIMIZATION FLAGS.
 #
 # Measured on a macOS build of the same TCI interpreter (build-tci-mac and
 # friends), timing a cold boot to a fixed guest milestone -- the only workload
@@ -112,7 +112,7 @@ esac
 #     own profile collected against a tcti build.
 #   - Functions absent from the profile are treated as cold. That is harmless
 #     for iOS-only glue, but it means the profile must be REGENERATED whenever
-#     the hot files change shape, or clang silently starts optimising a changed
+#     the hot files change shape, or clang silently starts optimizing a changed
 #     hot function for size.
 OPT_CFLAGS="-O3"
 OPT_LDFLAGS=""

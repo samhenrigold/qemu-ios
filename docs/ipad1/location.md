@@ -57,7 +57,7 @@ mechanisms already carry guest HTTP(S) to a host process:
   (`CONFIG.ca.pem`/`.ca.der`, installed into the guest trust store by `ittrust`,
   which holds iOS 3's `modify-anchor-certificates` entitlement — README §CA).
   It already has a host-side canned-response pattern: `it_weather_response`
-  matches a target URL and returns a synthesised body instead of proxying.
+  matches a target URL and returns a synthesized body instead of proxying.
 - **slirp DNS/guestfwd** could instead redirect one hostname to a host
   listener, but that is not needed given the proxy already MITMs by host.
 
@@ -97,7 +97,7 @@ Device menu control changes it without a reboot.
 
 1. Add a location responder to the web proxy, parallel to
    its Weather adapter: on a POST whose target is the ALS `wloc` host/path
-   (and/or the Skyhook `shwps` host), synthesise the response for the host-set
+   (and/or the Skyhook `shwps` host), synthesize the response for the host-set
    lat/long and the guest's known BSSID. HTTPS is handled by the proxy's
    existing TLS bridge, so this needs the app's Proxy feature on (CA already
    trusted) — no new certificate work, no guest binary injection.
@@ -121,7 +121,7 @@ guest trust store) so the TLS bridge can answer for `iphone-services.apple.com`.
 If we want location to work with the proxy **off**, the alternatives are worse:
 either serve only over the plain-HTTP `settings.plist` and hope the provider can
 be pointed at a plain-HTTP `wloc` with `RequiresCert=false` (unverified that 3.2
-honours an http:// AppleLocationServer), or install the CA unconditionally
+honors an http:// AppleLocationServer), or install the CA unconditionally
 (guest injection). I'd build option 1 (proxy-on) first and measure whether
 `RequiresCert=false` + http:// endpoint also works, which would remove the
 proxy-on dependency. Flagging before building, per your instruction.
@@ -137,7 +137,7 @@ name (guestfwd only covers addresses inside 10.0.2.0/24, and slirp's DNS can't b
 overridden), so the TLS-bridge plan and a served settings.plist were both out.
 
 What works is the plain-HTTP route through a preference: locationd reads
-`AppleLocationServer` from mobile's `com.apple.locationd` preferences and honours an
+`AppleLocationServer` from mobile's `com.apple.locationd` preferences and honors an
 `http://` URL with `AppleLocationServerRequiresCert` false. contrib/it-prefs
 (`it_prefs`, a one-shot boot job baked by `ipad1_rootfs.py bake`) sets both at run
 time through CFPreferences, as mobile, to `http://10.0.2.100:3128/clls/wloc`, the
@@ -196,7 +196,7 @@ Known limits:
   With that: 4/4 fresh clones and 5/5 consecutive boots of one overlay located.
 - **The permission prompt shows on the first two uses**, then no more (measured on
   one overlay: boots 1 and 2 prompt, 3-5 don't). locationd keeps client
-  authorisation in memory and writes `clients-b.plist` only when it exits cleanly
+  authorization in memory and writes `clients-b.plist` only when it exits cleanly
   ("IoManager Shutdown Sync"); QEMU is killed, never shut down, so that file is
   never written (a 0-byte `.temp` is all that lands) and only the `KnownClients`
   key in its preferences survives. A clean guest shutdown would keep it.

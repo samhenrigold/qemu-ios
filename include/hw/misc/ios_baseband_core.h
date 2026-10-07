@@ -95,7 +95,7 @@ typedef struct IosBbCore {
     char operator_long[33];
     char operator_short[17];
     char plmn[7];              /* MCC+MNC digits */
-    char sca[24];              /* service centre number, "" = none */
+    char sca[24];              /* service center number, "" = none */
     char voicemail[24];
     int signal_dbm;
     int battery;               /* percent, from the board's charger/PMU model */
@@ -141,7 +141,7 @@ typedef struct IosBbCore {
     bool xsigstr_on;           /* +xsigstr=1 (iOS 6): +XSIGSTR signal reports instead of +xcgedpage polls */
     int xsigstr_ch;
     int cgreg_n, cgreg_ch;
-    int xciev_ch, xsim_ch, call_ch, sms_ch;   /* learnt from where each is enabled */
+    int xciev_ch, xsim_ch, call_ch, sms_ch;   /* learned from where each is enabled */
     int s0;                    /* auto-answer register (at s0=n) */
     int last_rssi, last_batt;  /* what the host was last told, to send +XCIEV on change only */
     bool sim_last;            /* last SIM presence pushed, to send +XSIM on change only */

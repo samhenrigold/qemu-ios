@@ -63,7 +63,7 @@ That is how the host learns a `SET_ADDRESS` has taken effect.
 
 A negative `length` in a reply is a QEMU `USB_RET_*` code, not a size:
 
-| Value | Meaning | Host behaviour |
+| Value | Meaning | Host behavior |
 | --- | --- | --- |
 | `-1` | `NODEV` | fatal |
 | `-2` | `NAK` | **retry** |

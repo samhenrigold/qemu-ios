@@ -147,7 +147,7 @@ static int fe_es2(void)
  * glTexImageCoreSurfaceAPPLE is the core's BindCoreSurface and the host samples GL_TEXTURE_RECTANGLE. ES 2.0
  * answers as the SGX, which an ES2 app checks before it compiles anything. */
 /* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
- * next, so a fence is signalled the moment it exists. Answered here, nothing goes to the host. */
+ * next, so a fence is signaled the moment it exists. Answered here, nothing goes to the host. */
 #define FE_GL_ALREADY_SIGNALED 0x911A
 static unsigned fe_fenceSync(void *gc, unsigned condition, unsigned flags)
 {
@@ -905,7 +905,7 @@ static void fe_own(ca_view_t *v, void *surf)
     *slot = surf;
 }
 
-/* An IOSurface as the colour renderbuffer: this GC's view surface, the host drawable sized to it. */
+/* An IOSurface as the color renderbuffer: this GC's view surface, the host drawable sized to it. */
 static int fe_attach_renderbuffer(GuestGC *gc, void *surf)
 {
     ca_view_t *v = ca_view_for_gc(gc, 1);
@@ -933,7 +933,7 @@ static unsigned fe_gl_fourcc(unsigned fmt, unsigned type)
     return 0;
 }
 
-/* The framebuffer's swap, signalled once this GC's frame is in its surface: what stock EAGL does for a context the
+/* The framebuffer's swap, signaled once this GC's frame is in its surface: what stock EAGL does for a context the
  * GPU does not complete swaps for (8C148 -[EAGLContext swapNotification:...] 0x3555737c,
  * IOMobileFramebufferSwapSignal on the framebuffer it is given). */
 static void *(*p_fbGetMain)(void **);
@@ -1327,7 +1327,7 @@ __attribute__((visibility("default")))
     if (!GLESCreateSharegroup(&_private)) { [self release]; return 0; }
     return self;
 }
-/* 3.x's and 4.x/5.x's internal initialisers (QuartzCore makes its groups with -init). */
+/* 3.x's and 4.x/5.x's internal initializers (QuartzCore makes its groups with -init). */
 - (id)initWithAPI:(NSUInteger)api { if ((self = [self init])) _api = api; return self; }
 - (id)initWithAPI:(NSUInteger)api require_acceleration:(BOOL)accel { (void)accel; return [self initWithAPI:api]; }
 - (id)initWithAPI:(NSUInteger)api sharedWithCompute:(BOOL)compute { (void)compute; return [self initWithAPI:api]; }

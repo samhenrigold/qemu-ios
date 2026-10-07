@@ -76,5 +76,5 @@ int main(void) {
     memset(m.roots,0xff,sizeof m.roots);copy_packet(0xa00000,packet,16);
     assert(submit(NULL)==MBX_FILL_DONE && writes==153600);
     for(unsigned i=0;i<150*4096;i+=4)assert(load(packet[1]+i)==0xff000000);
-    puts("PASS: actual N72 fill encoding on synthetic discontiguous pages; 153600 exact writes; <=4096-byte spans; in-flight leaf state; reset; malformed/unsupported/batch/MMIO/late PTE rejection without writes; frozen alias translations; unmeasured colour/geometry refusal");
+    puts("PASS: actual N72 fill encoding on synthetic discontiguous pages; 153600 exact writes; <=4096-byte spans; in-flight leaf state; reset; malformed/unsupported/batch/MMIO/late PTE rejection without writes; frozen alias translations; unmeasured color/geometry refusal");
 }

@@ -2,12 +2,12 @@
  * it_gltest -- a GL fixture that needs no app launch (so no activation): a
  * launchd job that draws a known ES 1.1 scene into a CAEAGLLayer on its own
  * remote CAContext, which SpringBoard's CoreAnimation server composites above
- * everything else. tests/ipad1/gltest.py screendumps it and counts colours as
+ * everything else. tests/ipad1/gltest.py screendumps it and counts colors as
  * the iPod GLES check does.
  *
  * The scene, in a 400x600 layer at (100,100): magenta field, cyan left half
  * (a vertex-array quad), yellow lower-right quarter (a scissored clear). None
- * of the three colours appears in the iOS UI. The quad's vertices and indices
+ * of the three colors appears in the iOS UI. The quad's vertices and indices
  * are static tables, each alone in a page nothing else touches (vertices in
  * __DATA, indices in __TEXT), so the host has to fault them in the way the
  * GPU's reads would: a static table used to draw nothing. glGenTextures writes
@@ -76,7 +76,7 @@ static unsigned gen_ids[1024] __attribute__((aligned(4096)));
 int main(void)
 {
     static const char *const names[] = { "magenta", "cyan", "yellow", "other" };
-    /* (x, y) in GL window coordinates, origin bottom-left: expected colour */
+    /* (x, y) in GL window coordinates, origin bottom-left: expected color */
     static const int probe[4][3] = { { 50, 500, 1 }, { 350, 500, 0 }, { 350, 100, 2 }, { 50, 100, 1 } };
     unsigned rb = 0, fb = 0, frame;
     int ok = 1, i;

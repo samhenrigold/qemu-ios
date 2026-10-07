@@ -19,7 +19,7 @@
  * The boot security epoch this iBoot demands of SYSIC POWER_ID[31:24] in
  * miu_init ("Epoch Mismatch" otherwise): the floor its epoch helper applies
  * to the chip ID fuse field. The LLB latches that byte on a real boot; a
- * board that jumps straight into iBoot has to synthesise it. 0 = not found.
+ * board that jumps straight into iBoot has to synthesize it. 0 = not found.
  */
 uint32_t it_iboot_find_epoch(const uint8_t *image, size_t size);
 

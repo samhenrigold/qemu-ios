@@ -10,7 +10,7 @@
 /*
  * IT_PMU_TRACE=1 logs every PMU register access in hex together with the guest
  * PC/LR that made it. That caller pair is what identifies which driver routine
- * a register belongs to -- the D1759 kext is unsymbolised, so the register map
+ * a register belongs to -- the D1759 kext is unsymbolized, so the register map
  * is only recoverable by correlating writes with the kernel's own serial
  * output. Off by default: the PMU is polled continuously for the battery gauge.
  */
@@ -338,7 +338,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         default:
             // Falls through to the register file, which is what the RTC offset
             // at PMU_RTC_OFFSET (0x64..0x67) wants: zero until the guest writes
-            // an offset of its own. 0x67 used to be forced to 1 here, labelled
+            // an offset of its own. 0x67 used to be forced to 1 here, labeled
             // "whether we should enable debug UARTS" -- nothing reads it for
             // that (traced over a whole 2.1.1 and a whole 3.1.3 boot: the only
             // reader of 0x67 is the RTC driver's four-byte offset read). All it

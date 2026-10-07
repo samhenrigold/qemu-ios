@@ -9,7 +9,7 @@ Every check boots its own copy-on-write overlay of golden-pristine (the base is 
 usbmuxd-qemu's ipad1 build as the USB host where the check talks USB (otherwise the machine's built-in
 host). Checks run in parallel, each on its own QEMU.
 
-  boot     lock screen on the panel: lit and a picture (many colours), not a solid fill; then, unlocked with
+  boot     lock screen on the panel: lit and a picture (many colors), not a solid fill; then, unlocked with
            the USB keyboard attached, no stock "USB device not supported" alert and Hold locks the panel
            (--guest-package DIR: it_boot must report the offered serial; a package installed this boot
            means one more boot on the same overlay, the first one's mounter ran the old shim)
@@ -78,8 +78,8 @@ PENDING = {"appinstall": "use `app` (install + launch; needs a device whose reci
 HARNESS_IPA = os.path.join(ROOT, "contrib/it-harness/build/Harness.ipa")   # contrib/it-harness/build.sh
 # Scanout is 1024x768 with the portrait UI turned on it. The boot logo is a small Apple on black (a few %
 # lit); the lock screen is a full wallpaper (~99% lit, unlike the iPod's dark panel). A stalled panel's
-# solid fill is also fully lit, so the frame must also be a picture: many distinct colours.
-LIT_MIN_FRACTION, MIN_COLOURS, HOME_CONFIRM_S = 0.5, 64, 2
+# solid fill is also fully lit, so the frame must also be a picture: many distinct colors.
+LIT_MIN_FRACTION, MIN_COLORS, HOME_CONFIRM_S = 0.5, 64, 2
 # Panel coordinates of the upright portrait UI (interface 1, the default accel-orientation): the portrait
 # top (status bar) is the panel's left edge, portrait left its bottom edge.
 UNLOCK_FROM, UNLOCK_TO = (959, 477), (959, 47)
@@ -205,8 +205,8 @@ class Boot:
         except Exception:
             return False, "no screendump"
         lit = sum(1 for v in pix[::7] if v > ipod.LIT_THRESHOLD) / len(pix[::7])
-        colours = len({bytes(pix[i:i + 3]) for i in range(0, len(pix) - 2, 3 * 97)})
-        return lit >= LIT_MIN_FRACTION and colours >= MIN_COLOURS, "lit %.0f%%, %d colours" % (lit * 100, colours)
+        colors = len({bytes(pix[i:i + 3]) for i in range(0, len(pix) - 2, 3 * 97)})
+        return lit >= LIT_MIN_FRACTION and colors >= MIN_COLORS, "lit %.0f%%, %d colors" % (lit * 100, colors)
 
     def lit(self, name="screen"):
         """Fraction of lit samples: ~1 on the lock or home screen, ~0 with the panel off."""
@@ -562,7 +562,7 @@ ocr_lock = threading.Lock()
 
 
 def ocr(ppm):
-    """{text: (panel x, y) of its centre} for the text on a screendump, read upright by Vision
+    """{text: (panel x, y) of its center} for the text on a screendump, read upright by Vision
     (tests/ipad1/ocr.swift, built here once). Of two pieces with the same text, the one nearer the top."""
     with ocr_lock:
         if not os.path.exists(OCR_BIN) or os.path.getmtime(OCR_BIN) < os.path.getmtime(OCR_SRC):
@@ -603,7 +603,7 @@ def page_title(found):
 # pages it shows depend on the device's state (without a Wi-Fi join it skips the Apple ID page; with an
 # activation hook it never shows activation), so the walk reads each page off the screen (its title) and
 # answers it by label: the pick below if the page has one, then its Next. The language page has no title
-# and its Next is an unlabelled arrow. An alert (navy buttons in ALERT) is answered by the first of
+# and its Next is an unlabeled arrow. An alert (navy buttons in ALERT) is answered by the first of
 # ALERT_YES it offers. "Start Using iPad" ends it.
 SETUP_PICKS = {"language": "English", "Country or Region": "Australia",
                "Location Services": "Disable Location Services", "Set Up iPad": "Set Up as New iPad",
@@ -616,7 +616,7 @@ SETUP_DONE = tuple("Start Using " + d for d in ("iPad", "iPod touch", "iPhone"))
 ALERT_YES = ("Skip", "Agree", "Continue", "OK", "Disable")
 NEXT_ARROW = (42, 28)
 TITLE, ALERT = (20, 150, 65, 620), (548, 255, 605, 515)
-TITLE_TEXT = (25, 150, 65, 620)     # where a title's text centre sits (TITLE is the band compared for a page change)
+TITLE_TEXT = (25, 150, 65, 620)     # where a title's text center sits (TITLE is the band compared for a page change)
 
 
 def alert_up(ppm):
@@ -753,10 +753,10 @@ def check_gles(cfg, r):
     """The GL bridge under SpringBoard's own compositor: lock screen, home screen, a page swipe, Safari;
     nothing refused, nothing painted magenta. On 5.x a fresh device first walks the Setup Assistant
     (setup_assistant_5, page by page; the device needs an activation hook), swipes to Spotlight and back, and closes Safari. With a --gl-test device, tests/ipad1/gltest.py's fixture
-    scene as well (its readback, colour census and counters)."""
+    scene as well (its readback, color census and counters)."""
     if getattr(cfg, "gl_test", False):
         # The fixture job covers SpringBoard's screens from 12 s into every boot, so on such a
-        # device the fixture IS the gles leg: its readback and colour census, and the counters.
+        # device the fixture IS the gles leg: its readback and color census, and the counters.
         p = subprocess.run([sys.executable, os.path.join(HERE, "gltest.py"), os.path.dirname(os.path.abspath(cfg.nand)),
                             "--qemu", cfg.qemu, "--out", os.path.join(cfg.out, "gltest")], capture_output=True, text=True)
         lines = p.stdout.strip().splitlines()
@@ -1169,12 +1169,12 @@ def check_app(cfg, r):
         # The scene is a white triangle on cyan and magenta halves between the harness's toolbar and its frame counter.
         w, h, pix = itqmp.read_ppm(b.shot("app-gl-scene"))
         scene = {bytes(pix[(y * w + x) * 3:(y * w + x) * 3 + 3]) for y in range(140, 820, 8) for x in range(0, w, 8)}
-        if len(scene) < 3:   # the triangle scene is four flat colours (black, cyan, magenta, white)
-            return r.set(False, detail + "; the GL scene ran (%d bridge lines) but its view shows %d colour(s)"
+        if len(scene) < 3:   # the triangle scene is four flat colors (black, cyan, magenta, white)
+            return r.set(False, detail + "; the GL scene ran (%d bridge lines) but its view shows %d color(s)"
                          % (draws, len(scene)))
         # The scene's own background is magenta, so judge the bridge by its refusal counters, not gl_clean's paint.
         rejects = b.qmp.cmd("qom-get", path="/machine", property="gles-rejects").strip()
-        r.set(not rejects, detail + "; GL scene drawn (%d colours, %d bridge log lines); bridge refused %s"
+        r.set(not rejects, detail + "; GL scene drawn (%d colors, %d bridge log lines); bridge refused %s"
               % (len(scene), draws, rejects.replace("\n", ", ") or "nothing"))
     finally:
         b.stop()
@@ -1264,9 +1264,9 @@ def main():
             portrait_layout()
     device_args(a)
     if a.major >= 7:
-        # 7.x's Setup "Hello" is a few thin grey words on white: 25-80 colours, against 64 for a lit picture
-        global MIN_COLOURS
-        MIN_COLOURS = 16
+        # 7.x's Setup "Hello" is a few thin gray words on white: 25-80 colors, against 64 for a lit picture
+        global MIN_COLORS
+        MIN_COLORS = 16
     import ffmpeg_guard                     # imgtools; stock FFmpeg breaks iPod H.264
     why = ffmpeg_guard.check(a.qemu)
     if why:

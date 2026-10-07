@@ -26,8 +26,8 @@ metadata in `uikit1.h` (class-dump headers, in effect), and a `UIApplication` su
   the ball in `drawRect:` through `UICurrentContext()` and CGContext calls, with a low-pass filter on
   the samples. The ball is green when the phone is level. On the emulator, tilt it from the host with
   QMP: `qom-set /machine accel-pose flat`, then `accel-roll` and `accel-pitch` in degrees.
-  Measured: flat reads x 0.00 y 0.00 with the ball centred and green; roll 12 and pitch -15 move it
-  off-centre and orange. Flat reads z -0.43: 1.0's own driver scale (1/128 g per
+  Measured: flat reads x 0.00 y 0.00 with the ball centered and green; roll 12 and pitch -15 move it
+  off-center and orange. Flat reads z -0.43: 1.0's own driver scale (1/128 g per
   count) on the LIS302DL's 18 mg counts, what a real phone on 1.0 reads (README, notes for guest software).
 
 | Step | What | Why |
@@ -69,7 +69,7 @@ The script reads these parts of it:
   listed at +0x110.
 - **Pages.** A logical page goes to its log block's page when the log holds it, otherwise to
   `map[lbn]` at the same offset. A virtual page maps to bank and page by N45NAND's striping, with
-  virtual block 0 at physical block 201. The overlay's `blk<N>.erased` markers are honoured.
+  virtual block 0 at physical block 201. The overlay's `blk<N>.erased` markers are honored.
 
 Measured on the M68: Hello was sideloaded, then the device was booted, Hello was used, and the device
 was powered off with `system_powerdown`. The guest had moved its context to virtual block 3 and had eight
@@ -88,7 +88,7 @@ launched Hello2.
   and refuses only new findings.
 
 Boot as usual with the overlay (`KEEPOVL=1 RUN=... tools/boot.py` keeps it). The icon appears after the
-stock apps on the home screen, labelled with the bundle's directory name (1.0 ignores CFBundleName).
+stock apps on the home screen, labeled with the bundle's directory name (1.0 ignores CFBundleName).
 A tap launches the app.
 
 ## Debugging it

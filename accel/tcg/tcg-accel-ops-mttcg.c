@@ -107,7 +107,7 @@ static void mttcg_request_performance_core(void)
  * guest spent halted (WFI) waiting for an interrupt, and "io" is everything
  * else -- taking the BQL back, servicing run_on_cpu work, the main loop. If a
  * slow emulator is not spending its time in "run", the engine is not the
- * bottleneck and optimising it is wasted effort.
+ * bottleneck and optimizing it is wasted effort.
  *
  * cpu_exec() returns EXCP_HALTED without executing anything when the guest is
  * halted, which is what lets the two be told apart from out here.

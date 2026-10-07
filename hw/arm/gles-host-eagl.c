@@ -15,7 +15,7 @@
  * gles_present_to_surface), so the host context never needs a CAEAGLLayer, a
  * window or presentRenderbuffer. An offscreen FBO in a bare EAGLContext is the
  * entire requirement -- with, since the present has to be cheap on a tiler, an
- * IOSurface for its colour attachment rather than plain texture storage. That
+ * IOSurface for its color attachment rather than plain texture storage. That
  * second half is the rest of this file.
  *
  * WHY C AND objc_msgSend RATHER THAN AN .m FILE. This is three message sends,
@@ -172,7 +172,7 @@ void gles_eagl_make_current(void)
  * memory as its backing store, so once the GPU is done the pixels are simply
  * THERE and the present is a memcpy out of a mapped page.
  *
- * ORDERING. IOSurfaceLock without kIOSurfaceLockAvoidSync is the synchronising
+ * ORDERING. IOSurfaceLock without kIOSurfaceLockAvoidSync is the synchronizing
  * read: that flag exists to let a caller BAIL OUT of "a potentially expensive
  * paging operation (such as readback from a GPU to system memory)", which is
  * Apple documenting that the default lock performs exactly that wait. So the
@@ -290,7 +290,7 @@ void gles_eagl_iosurface_unlock(void)
 {
     if (gles_surf) {
         /* Symmetrical with the lock's flags; the header calls anything else
-         * undefined behaviour. */
+         * undefined behavior. */
         IOSurfaceUnlock(gles_surf, kIOSurfaceLockReadOnly, NULL);
     }
 }

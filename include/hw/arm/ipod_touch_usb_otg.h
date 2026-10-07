@@ -230,7 +230,7 @@ typedef struct synopsys_usb_state
 	uint32_t server_port;
 	tcp_usb_state_t tcp_state;
 	bool tcp_connected;
-	bool cable_attached;      /* no dialling while unplugged */
+	bool cable_attached;      /* no dialing while unplugged */
 	QEMUTimer *tcp_retry_timer;
 
 	/* Built-in host (no bridge configured): enumerates and configures the

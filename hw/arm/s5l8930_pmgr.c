@@ -150,7 +150,7 @@ static const struct {
     { PMGR_POWER_ID, 0x01000001 },   /* measured on a real K48AP (epoch 1); board-id ORed in */
 };
 
-static bool pmgr_modelled(hwaddr off)
+static bool pmgr_modeled(hwaddr off)
 {
     return off < PLL_END ||
            (off >= CLKCFG_START && off < DPSM_END) ||
@@ -258,8 +258,8 @@ static uint64_t s5l8930_pmgr_read(void *opaque, hwaddr off, unsigned size)
     S5L8930PMGRState *s = opaque;
     uint32_t val = s->regs[off / 4];
 
-    if (!pmgr_modelled(off)) {
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled read 0x%04x\n",
+    if (!pmgr_modeled(off)) {
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled read 0x%04x\n",
                       __func__, (unsigned)off);
         return val;
     }
@@ -304,8 +304,8 @@ static void s5l8930_pmgr_write(void *opaque, hwaddr off, uint64_t val64,
     S5L8930PMGRState *s = opaque;
     uint32_t val = val64;
 
-    if (!pmgr_modelled(off)) {
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled write 0x%04x <- 0x%08x\n",
+    if (!pmgr_modeled(off)) {
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled write 0x%04x <- 0x%08x\n",
                       __func__, (unsigned)off, val);
         s->regs[off / 4] = val;
         return;

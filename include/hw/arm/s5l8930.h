@@ -41,9 +41,9 @@
 #define S5L8930_CDMA_SIZE        0x26000
 #define S5L8930_AES_BASE         0x87800000   /* CDMA AES filter contexts, ctx n at n<<12 */
 #define S5L8930_AES_SIZE         0x9000
-#define S5L8930_PWM_BASE         0x83500000   /* codec MCLK source; unmodelled */
+#define S5L8930_PWM_BASE         0x83500000   /* codec MCLK source; unmodeled */
 #define S5L8930_AMC_BASE         0x84100000   /* audio media codec registers */
-#define S5L8930_AMC_AUX_BASE     0x84300000   /* third AMC window, unmodelled */
+#define S5L8930_AMC_AUX_BASE     0x84300000   /* third AMC window, unmodeled */
 #define S5L8930_AMC_AUX_SIZE     0x5000
 #define S5L8930_AMC_PORT_BASE    0x84800000   /* AMC output port (CDMA 0x17 FIFO at +0x2c) */
 #define S5L8930_I2S_BASE(n)      (0x84500400 + (n) * 0x1000)

@@ -17,7 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  *
  * Recovered from the dfu_s5l8720 branch. Differences from the original, all of
- * them bug fixes rather than behaviour changes:
+ * them bug fixes rather than behavior changes:
  *
  *  - I/O errors were classified by comparing the return value against
  *    EWOULDBLOCK, which is an errno value, not a return value. Every error

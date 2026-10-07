@@ -29,7 +29,7 @@
  * runs on the thread that started playback.
  *
  * Historical register-only path (still the default): it is a plain register file plus one
- * piece of behaviour -- an interrupt source reports itself pending as soon as
+ * piece of behavior -- an interrupt source reports itself pending as soon as
  * the driver enables it. That is what lets the wait above complete and the
  * driver unwind normally. No audio is produced; the AMC is a hardware AAC/MP3
  * decode/encode engine with its own DE program, MMU and linked-list DMA, and
@@ -981,7 +981,7 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
  * AMC 2.1 engine 0: a linked list of {next, control, src, dst} moves that the
  * driver queues to collect a decoded frame (7B500 c06e2b28, links built by
  * c06e9b08): a 5-word job and its commit word into the transfer unit (dst
- * AMC_XFER_FIFO, in the third DT window), the acknowledgement of the DE's
+ * AMC_XFER_FIFO, in the third DT window), the acknowledgment of the DE's
  * completion (dst 0xc48) and a cleared slot status (dst block + 8). Control
  * holds the byte count in its high half and the destination space in bits
  * 3:2: 2 = an AMC register, 1 = engine-local memory, 0 = the transfer unit.
@@ -993,7 +993,7 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
  * CDMA completion has released its IODMACommand: "line 3419" busy, a leaked
  * list slot per frame, and Music stalls after 16 frames).
  * ponytail: the two unknown job words and the transfer unit's other registers
- * are not modelled; add them when a driver uses another channel.
+ * are not modeled; add them when a driver uses another channel.
  */
 static bool amc_engine0(IPodTouchAMCState *s, uint32_t head)
 {

@@ -26,7 +26,7 @@ the evidence base for *mechanisms*; every *address* in them is 7B367 and is re-d
   MMIO literals at the same VAs, same security-policy word `[0x5FF2CFC0]`, same IOP vector table, stacks
   and config offsets. The iBoot boot-path and IOP mailbox specs transfer verbatim; the IOP blob sits at
   0xc074e000 in the kernelcache (was 0xc074c000).
-- **Device tree:** no behavioural differences.
+- **Device tree:** no behavioral differences.
 - **Kernel:** entry 0xc0063040, `boot_args` revision 2, CommandLine at +0x38. AMFI's four boot-args are
   still gated on `debug-enabled`. The `debug_enabled` global is **still VA 0xc02787b8 / phys 0x402787b8**
   (verified directly; the agent's "moved to 0x...d8" was wrong). New: `mac_proc_check_get_task{,_name}`
@@ -156,7 +156,7 @@ LIS331DLH accelerometer, bq27545 gas gauge, buttons, orientation.
 **M6 — GLES 1.1 via mbxshim (≈1–2 weeks).** mbxshim does not run unmodified: the dispatch table grew
 822 → 826 slots (3 inserted at 761–763, one new at 825). Set `N_SLOTS=826`, regenerate `slotmap.txt`, add 3
 to the 23 hard-coded indices ≥761. Still needs the `"AppleMBXDevice"` patch (cache 0x336bdb5c) and
-`MBXGLEngine.bundle`. ES1 only on 3.2 — CA stays in software. May be skipped in favour of M7.
+`MBXGLEngine.bundle`. ES1 only on 3.2 — CA stays in software. May be skipped in favor of M7.
 
 **M7 — GLES 1.1 + 2.0 via a GLI shim.** Replace `GLEngine.bundle/GLEngine` (one rootfs file, no
 shared-cache patch): 12 of the 19 `gli*` entries are called; `gliGetVersion` returns 1 so no
@@ -271,7 +271,7 @@ a ~1 s stall about every 12 s. That's BluetoothManager blocking on BTServer: res
 (control: 790 ms on every tap). Hiding the DT node (uart3/bluetooth compatible=none) does not help.
 So `ipad1_rootfs.py bake` sets `Disabled` in `com.apple.BTServer.plist` by default
 (`--keep-bluetooth` to skip). With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
-General shows Bluetooth greyed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
+General shows Bluetooth grayed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
 Sam: no Bluetooth is fine.
 
 Parked work, for whoever wants a real controller. In the ipad1-kbd worktree, `git stash@{0}` and

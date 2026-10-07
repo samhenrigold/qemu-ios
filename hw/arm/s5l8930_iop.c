@@ -172,7 +172,7 @@ bool s5l8930_iop_io_failed(void)
 #define FMI_STATUS_OK           1
 #define FMI_STATUS_BLANK        2           /* kIOReturnUnformattedMedia */
 #define FMI_STATUS_UECC         0x80000001  /* "device error" */
-#define FMI_STATUS_PARAM        0x80000004  /* fw: unrecognised opcode too */
+#define FMI_STATUS_PARAM        0x80000004  /* fw: unrecognized opcode too */
 #define FMI_STATUS_SOME_BLANK   0x80000023  /* read_multi: blank + good mix */
 #define FMI_STATUS_SOME_UECC    0x80000024
 #define FMI_STATUS_ALL_UECC     0x80000025
@@ -1083,7 +1083,7 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
         s->running = false;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: unrecognised host opcode 0x%08x\n",
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: unrecognized host opcode 0x%08x\n",
                       __func__, op);
         st = 1;
         break;
@@ -1260,7 +1260,7 @@ static uint64_t iop_ctrl_read(void *opaque, hwaddr offset, unsigned size)
     case 0x00 ... 0x3c:
         return s->ctrl_regs[offset / 4];
     default:
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled read 0x%04" HWADDR_PRIx "\n",
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled read 0x%04" HWADDR_PRIx "\n",
                       __func__, offset);
         return 0;
     }
@@ -1312,7 +1312,7 @@ static void iop_ctrl_write(void *opaque, hwaddr offset, uint64_t value,
                       __func__, offset, value);
         break;
     default:
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled write 0x%04" HWADDR_PRIx
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled write 0x%04" HWADDR_PRIx
                       " <- 0x%08" PRIx64 "\n", __func__, offset, value);
         break;
     }
@@ -1333,7 +1333,7 @@ static uint64_t iop_vic_read(void *opaque, hwaddr offset, unsigned size)
     hwaddr reg = offset % IOP_VIC_STRIDE;
 
     if (reg >= IOP_VIC_REGS) {
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled read 0x%05" HWADDR_PRIx "\n",
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled read 0x%05" HWADDR_PRIx "\n",
                       __func__, offset);
         return 0;
     }
@@ -1351,7 +1351,7 @@ static void iop_vic_write(void *opaque, hwaddr offset, uint64_t value,
     hwaddr reg = offset % IOP_VIC_STRIDE;
 
     if (reg >= IOP_VIC_REGS) {
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled write 0x%05" HWADDR_PRIx
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled write 0x%05" HWADDR_PRIx
                       " <- 0x%08" PRIx64 "\n", __func__, offset, value);
         return;
     }

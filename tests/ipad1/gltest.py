@@ -7,13 +7,13 @@ DEVICE is a device dir made with `imgtools/ipad1_device.py create MANIFEST DEVIC
 firmware; the job starts 12 s into every boot). Boots it on a throwaway overlay and private NOR copy,
 waits for the fixture's first present, wakes the panel (Home), then:
   readback  the fixture's own glReadPixels of four probes says PASS (the host drew the scene)
-  scene     two screendumps 3 s apart each hold magenta, cyan and yellow, the colours nothing in the
+  scene     two screendumps 3 s apart each hold magenta, cyan and yellow, the colors nothing in the
             iOS UI uses, in the 400x600 layer's proportions (1/4, 1/2, 1/4 of it) and no more than the
             layer's area: CoreAnimation composited the GL layer where it was placed
   fps       the fixture's own present rate (its "frame N at T" lines), and back-to-back screendumps
             while its blue band sweeps: distinct frames/s (bounded by screendump speed), and
             tests/ipad1/tearcheck.py --analyze scores those frames for tearing
-Colours are classified against the frame's own maximum (the backlight scales pixels), as the iPod
+Colors are classified against the frame's own maximum (the backlight scales pixels), as the iPod
 GLES check does. Exit 0 if readback and scene pass; fps is reported, not judged.
 """
 import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time
@@ -29,7 +29,7 @@ WANT = {"magenta": LAYER / 4, "cyan": LAYER / 2, "yellow": LAYER / 4}
 
 
 def census(path):
-    """{colour: fraction of the frame}."""
+    """{color: fraction of the frame}."""
     im = Image.open(path).convert("RGB")
     px = list(im.get_flattened_data()) if hasattr(im, "get_flattened_data") else list(im.getdata())
     hi = max(max(p) for p in px) or 1

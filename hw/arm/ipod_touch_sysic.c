@@ -103,7 +103,7 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
              * 636 on). A normal boot gets that top byte latched by the boot
              * chain before iBoot runs; when we substitute it (direct-iboot) the
              * ROM and LLB never run and iBoot's own power-control writes here
-             * would clobber it, so synthesise the byte on read from the staged
+             * would clobber it, so synthesize the byte on read from the staged
              * image's own floor (it_iboot_find_epoch, set by the machine after
              * staging). Configuration-gated: a normal 2.1.1 boot is untouched.
              */

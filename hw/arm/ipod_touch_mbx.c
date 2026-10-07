@@ -101,7 +101,7 @@ static uint32_t mbx_guest_pc(void)
  */
 #define MBX_MMU_CTRL_REG 0x1020
 #define MBX_MMU_ENABLE   0x00000001   /* driver's request */
-#define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgement */
+#define MBX_MMU_ACK      0x00010000   /* hardware's acknowledgment */
 #define MBX_SUBMIT_REG   0x130        /* interrupt mask, per the notes above */
 #define MBX_STATUS_REG   0x12c
 #define MBX_INTCLR_REG   0x134        /* write-1-to-clear for 0x12c */
@@ -183,7 +183,7 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
     {
         case MBX_STATUS_REG:
             /* 0x40 was pinned here unconditionally; keep that as the base so
-             * behaviour is unchanged when the shim is off.
+             * behavior is unchanged when the shim is off.
              *
              * 0x100 is pinned for the same reason, and it is what stopped
              * Doodle Jump dead. DECODED FROM THE HANG, not guessed: with the
@@ -203,7 +203,7 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
              * Worth knowing WHY this only surfaced now: it is not a regression.
              * Improvements to the GLES layer let the app render further than it
              * ever had (its background draws now), which walked it into an MBX
-             * path we had never reached, let alone modelled.
+             * path we had never reached, let alone modeled.
              */
             val = 0x40 | 0x100 | s->status;
             /* STATUS is observational. The driver acknowledges only its
@@ -215,7 +215,7 @@ static uint64_t ipod_touch_mbx1_read(void *opaque, hwaddr addr, unsigned size)
         case MBX_MMU_CTRL_REG:
             /*
              * Bit 0 is the driver's enable *request*; bit 16 is the hardware's
-             * *acknowledgement*. AppleMBXMMU drives them as a handshake:
+             * *acknowledgment*. AppleMBXMMU drives them as a handshake:
              *
              *   enable  (0xc04ee224): set bit 0,   spin until bit 16 sets
              *   disable (0xc04ee770): clear bit 0, spin until bit 16 clears
@@ -432,10 +432,10 @@ static void ipod_touch_mbx_init(Object *obj)
  *
  * addr backs register 0x1020, whose bit 0 is the driver's MMU enable request.
  * The guest clears it on the way down, so without a reset the next boot starts
- * with the MMU marked disabled and AppleMBXDevice initialises against the
+ * with the MMU marked disabled and AppleMBXDevice initializes against the
  * previous boot's state. That matters beyond the GPU: CoreSurface uses the MBX
  * as its swap device ("AppleMBX: Using AppleM2CLCD as legacy swap device"), so
- * a half-initialised MBX stops SpringBoard ever programming its framebuffer
+ * a half-initialized MBX stops SpringBoard ever programming its framebuffer
  * into the display controller -- the panel stays on the boot logo even though
  * SpringBoard is running and has attached to IOMobileFramebuffer.
  */

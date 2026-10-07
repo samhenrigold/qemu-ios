@@ -10,7 +10,7 @@ correlating >= 0.8 with the file at 1.00x (tests/ipad1/audio-check.py's judge).
 
 Fails with no sound at all when the baseband's I2S port (0x3CD00000) is plain RAM: AppleBasebandOutput's DMA
 start never sees its ready interrupt and mediaserverd's StartIO fails for every sound. Only one sound: the
-1G's wake from sleep is not modelled (docs/ipod1g debt 9), so the device stays asleep after it.
+1G's wake from sleep is not modeled (docs/ipod1g debt 9), so the device stays asleep after it.
 """
 import argparse, importlib.util, json, os, shutil, subprocess, sys, tempfile, time
 

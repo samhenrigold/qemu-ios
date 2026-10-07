@@ -3,9 +3,9 @@
  *
  * iBSS trains two DLLs via +0x140/+0x180 and polls bits 0/1 in
  * their status registers (+4), then uses the 10-bit delay at bits 16..25.
- * Emulated RAM has no analogue timing: a started DLL locks immediately
+ * Emulated RAM has no analog timing: a started DLL locks immediately
  * with a stable midpoint delay. Timing/configuration registers read back.
- * This models initialization, not DRAM power or timing behaviour.
+ * This models initialization, not DRAM power or timing behavior.
  */
 #include "qemu/osdep.h"
 #include "qemu/module.h"

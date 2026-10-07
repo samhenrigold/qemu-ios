@@ -24,7 +24,7 @@ struct IPodSWIState {
  * followed by the 11-bit level code. 4.x/5.x ramp it to 0x7ff, 6.x/7.x step it through the DT's
  * backlight-table (0x7b3 at the top on the n90); channel 0x18 is the core voltage.
  * ponytail: the level as last sent. The driver's state across the D1815's WLED enable (0x50 bit 6) is not
- * modelled: 7.1.2 can enable it at a new level (its kernel logs one) without a word on this channel.
+ * modeled: 7.1.2 can enable it at a new level (its kernel logs one) without a word on this channel.
  */
 static int swi_backlight_level(void *opaque)
 {

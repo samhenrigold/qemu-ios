@@ -68,7 +68,7 @@ typedef enum {
     // the guest-side MBXGLEngine replacement. See guest-services/gles.h.
     //
     // Unlike every other call here, this one is issued from PL0: the QEMU_CALL
-    // cp15 register is declared PL0_RW and cp_access_ok honours that, so an
+    // cp15 register is declared PL0_RW and cp_access_ok honors that, so an
     // unprivileged `mcr p15,3,r0,c15,c15,0` traps straight to the host with no
     // kernel patch in the way. That is what makes a pure userspace shim
     // possible -- measured, not assumed; see the QC_GLES_PING probe.

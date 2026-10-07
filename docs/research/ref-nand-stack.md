@@ -2,7 +2,7 @@
 
 # A4 (iPad1,1 / K48AP / iOS 3.2 7B367) NAND stack — findings for a synthetic-NAND generator and an H2FMI model
 
-Scratch artefacts produced (all under the scratchpad, nothing in any repo): `scratchpad/fw/7B367_keys.json` (api.ipsw.me keys), `scratchpad/fw/dec/{DeviceTree.k48ap.bin, iBoot.k48ap.bin, LLB.k48ap.bin, kernelcache.lzss, kernelcache.bin}` (decrypted with openssl; kernelcache LZSS-decompressed, 9,375,730 B, Mach-O), `scratchpad/fw/dec/img3dec.py`, `scratchpad/fw/dec/dtparse.py`.
+Scratch artifacts produced (all under the scratchpad, nothing in any repo): `scratchpad/fw/7B367_keys.json` (api.ipsw.me keys), `scratchpad/fw/dec/{DeviceTree.k48ap.bin, iBoot.k48ap.bin, LLB.k48ap.bin, kernelcache.lzss, kernelcache.bin}` (decrypted with openssl; kernelcache LZSS-decompressed, 9,375,730 B, Mach-O), `scratchpad/fw/dec/img3dec.py`, `scratchpad/fw/dec/dtparse.py`.
 
 ## 0. Architecture facts that change the plan (read first)
 
@@ -10,7 +10,7 @@ Scratch artefacts produced (all under the scratchpad, nothing in any repo): `scr
 2. **iPad 1 boots from NOR, not NAND.** DT has `arm-io/spi0/nor-flash` with `nvram` (0xFC000/0xFE000 ×0x2000), `diagnostic-data` (0x6000, 0x4000), `raw-device` 0x8000.. (dtparse output); openiBoot iPad1G target adds module `nor-spi` (`plat-a4/iPad1G.SConscript:15-17`) and uses `reserved_blocks = 1` (not 16) for the VFL (`vfl-vsvfl/vsvfl.c:1127-1131`). So there is **no** IOFlashPartitionScheme (`ndrG` page-0 table), no `boot/plog/nvrm/firm` NAND partitions, no effaceable-lockers unit on NAND for this device. The NAND holds only the VFL/FTL "filesystem" area plus special pages.
 3. **iOS 3.2 kernel can format NAND itself**: strings `AND: NAND initialisation failed due to format mismatch or uninitialised NAND.`, `AND: Please reboot with reformatting enabled.`, `[WMR:INF] Formatting with metadata whitening`, `[FTL:ERR] FTL_Format failed _EraseAndMarkEC`, boot-arg `nand-enable-reformat` (kernelcache.bin @≈0x4A3888) and iBoot's restore boot-args `rd=md0 nand-enable-reformat=1 -progress` (iBoot strings). The kernel also has a full yaFTL restore (`[FTL:WRN] Recovering NAND Data Structures - this will take some time!`). openiBoot has neither format nor restore (see §3).
 
-## 1. H2FMI register-level behaviour (from `openiBoot/plat-a4/h2fmi.c` + `includes/hardware/h2fmi.h`)
+## 1. H2FMI register-level behavior (from `openiBoot/plat-a4/h2fmi.c` + `includes/hardware/h2fmi.h`)
 
 Bases: FMI0 0x81200000, FMI1 0x81300000, clock gates 0x27/0x29, IRQs 0x22/0x23 (`plat-a4/includes/hardware/h2fmi.h:4-10`). DT confirms: `flash-controller0` `compatible = "fmi,s5l8920x"`, `reg = {0x01200000,0x01240000,0x01280000,0x01300000,0x01340000,0x01380000} ×0x1000` (arm-io +0x80000000 → 0x81200000 / +0x40000 / +0x80000 for each FMI), `interrupts = 0x22,0x23`, `clock-gates = 0x35,0x37,0x36,0x38`. 16 CE slots (8 per bus, `H2FMI_CE_PER_BUS`, h2fmi.c:347). CDMA data channels: FMI0 data=5, meta=6; FMI1 data=7, meta=8 (h2fmi.c:321-339). The IOP firmware's own debug dump names the registers: `fmi{CFG,CTRL,STAT,INTPND,INT_EN,DBG0..3,DATSIZ}`, `fmc{ON,IFCTRL,CECTRL,RWCTRL,CMD,ADDR0,ADDR1,STATUS,RBB_CFG}`, `ecc{PND,MASK}` (kernelcache.bin IOP region strings). Mapping (openiBoot macro → semantics → firmware name, best effort):
 

@@ -22,7 +22,7 @@
  * looks like from the guest's point of view, and it means we no longer care
  * which boot graphic iBoot decides to draw (logo / recovery / needservice /
  * battery / glyph all shift the invocation order), nor how many images a given
- * firmware loads.  An unrecognised KBAG is reported and fatal instead of
+ * firmware loads.  An unrecognized KBAG is reported and fatal instead of
  * silently yielding some other image's key.
  *
  * Ciphertexts below were read out of the real img3 containers (the NOR image

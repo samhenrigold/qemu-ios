@@ -1,6 +1,6 @@
 /* Does an unprivileged process actually reach QEMU_CALL?
  *
- * QEMU_CALL is declared PL0_RW in ipod_touch_2g.c and cp_access_ok honours
+ * QEMU_CALL is declared PL0_RW in ipod_touch_2g.c and cp_access_ok honors
  * that, so in principle a bare `mcr p15,3,r0,c15,c15,0` from user mode traps to
  * the host with no kernel patch anywhere. That is the whole foundation of a
  * userspace GLES shim, and nobody has ever executed it from PL0 on this

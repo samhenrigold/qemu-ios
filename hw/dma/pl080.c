@@ -283,7 +283,7 @@ again:
             /*
              * Flow control. Historically this model ignored the peripheral
              * request lines entirely for cases 1 and 2 -- nothing in this tree
-             * drives them, so honouring them would have stalled every channel
+             * drives them, so honoring them would have stalled every channel
              * forever. The cost was that a memory->peripheral descriptor was
              * drained at infinite speed inside the Config write: the iPod
              * touch's audio path programmed an 18-period, 72 KB ring and this

@@ -75,7 +75,7 @@ void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque);
 void qemu_ios_ui_vm_started(void);
 
 /*
- * True only while the emulator is initialised and its main loop is running.
+ * True only while the emulator is initialized and its main loop is running.
  * Entry points that schedule bottom halves must check this: before qemu_init()
  * the AioContext is NULL, and after the main loop returns nothing services it.
  */
@@ -105,7 +105,7 @@ bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
 void qemu_ios_ui_frame_size(int *width, int *height);
 
 /*
- * Touch position is normalised 0..1 over the guest screen, y downwards.
+ * Touch position is normalized 0..1 over the guest screen, y downwards.
  * One finger only for now -- see the note in qemu-ios-ui.c.
  */
 void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);

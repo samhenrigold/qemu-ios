@@ -48,7 +48,7 @@ static int peer;
 static void *writer(void *x) { struct timespec t={0,300000};nanosleep(&t,0);assert(write(peer,"x",1)==1);return 0; }
 static void *closer(void *x) { struct timespec t={0,300000};nanosleep(&t,0);close(peer);return 0; }
 static void sig(int n) {}
-static void *signaller(void *x) { struct timespec t={0,300000};nanosleep(&t,0);pthread_kill(*(pthread_t*)x,SIGUSR1);return 0; }
+static void *signaler(void *x) { struct timespec t={0,300000};nanosleep(&t,0);pthread_kill(*(pthread_t*)x,SIGUSR1);return 0; }
 static long long stamp(void) { struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (long long)t.tv_sec*1000000000+t.tv_nsec; }
 int main(void) {
  int p[2];pthread_t th;assert(!pipe(p));peer=p[1];
@@ -61,7 +61,7 @@ int main(void) {
  assert(!pthread_create(&th,0,closer,0));assert(qemu_poll_ns_darwin(fds,3,20000000)==1);pthread_join(th,0);GPollFD expected={p[0],G_IO_IN,0};assert(g_poll(&expected,1,0)==1);assert(fds[0].revents==expected.revents);close(p[0]);
  GPollFD bad={p[0],G_IO_IN,0};GPollFD expected_bad=bad;int expected_rc=g_poll(&expected_bad,1,0);assert(qemu_poll_ns_darwin(&bad,1,300000)==expected_rc);assert(bad.revents==expected_bad.revents);
  int sp[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,sp));GPollFD out={sp[0],G_IO_OUT,0};assert(qemu_poll_ns_darwin(&out,1,300000)==1&&out.revents&G_IO_OUT);close(sp[0]);close(sp[1]);
- struct sigaction a={0};a.sa_handler=sig;sigemptyset(&a.sa_mask);assert(!sigaction(SIGUSR1,&a,0));pthread_t self=pthread_self();assert(!pthread_create(&th,0,signaller,&self));assert(qemu_poll_ns_darwin(0,0,20000000)==-1&&errno==EINTR);pthread_join(th,0);
+ struct sigaction a={0};a.sa_handler=sig;sigemptyset(&a.sa_mask);assert(!sigaction(SIGUSR1,&a,0));pthread_t self=pthread_self();assert(!pthread_create(&th,0,signaler,&self));assert(qemu_poll_ns_darwin(0,0,20000000)==-1&&errno==EINTR);pthread_join(th,0);
  /* Zero/infinite/unsupported masks stay on poll; readiness remains identical. */
  assert(!pipe(p));assert(write(p[1],"x",1)==1);GPollFD unknown={p[0],G_IO_IN|G_IO_PRI,0};assert(qemu_poll_ns_darwin(&unknown,1,-1)==1&&unknown.revents==G_IO_IN);assert(qemu_poll_ns_darwin(&unknown,1,0)==1);close(p[0]);close(p[1]);
  long long old=0,new=0;for(int i=0;i<100;i++){long long t=stamp();g_poll(0,0,1);old+=stamp()-t;t=stamp();assert(!qemu_poll_ns_darwin(0,0,100000));new+=stamp()-t;}

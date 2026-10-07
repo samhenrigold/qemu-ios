@@ -113,7 +113,7 @@ static uint64_t s5l8930_i2c_read(void *opaque, hwaddr offset, unsigned size)
     case I2C_CMD:
         return 0;
     default:
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled read 0x%04x\n",
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled read 0x%04x\n",
                       TYPE_S5L8930_I2C, (unsigned)offset);
         return 0;
     }
@@ -153,7 +153,7 @@ static void s5l8930_i2c_write(void *opaque, hwaddr offset, uint64_t value,
         }
         break;
     default:
-        qemu_log_mask(LOG_UNIMP, "%s: unmodelled write 0x%04x <- 0x%08x\n",
+        qemu_log_mask(LOG_UNIMP, "%s: unmodeled write 0x%04x <- 0x%08x\n",
                       TYPE_S5L8930_I2C, (unsigned)offset, (unsigned)value);
     }
 }
@@ -251,7 +251,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 /*
  * AppleD1815PMU's restart method (vtable +0x358: 8C148 807b9200, 8L1 809fa498)
  * writes 0x0b here after IOPMUBootStage = 0, and the kernel then spins in
- * PEHaltRestart waiting to be reset; its neighbour (+0x354) writes 0x0f / 0x0e.
+ * PEHaltRestart waiting to be reset; its neighbor (+0x354) writes 0x0f / 0x0e.
  * ponytail: only the restart value is decoded; the others are stored.
  */
 #define PMU_SYS_CTRL        0x7B
@@ -925,7 +925,7 @@ static const TypeInfo s5l8930_tsl2581_info = {
  * The TSL2561 (iPhone 3GS, "als,tsl2561" at I2C2 0x49): the same COMMAND
  * byte (0x80 | reg) and CONTROL/TIMING, ID at 0x0a (PARTNO 5: T/FN/CL) and
  * the channels at 0x0c/0x0e. 3.1.3's AppleTSL2561 then arms a threshold
- * interrupt (INTERRUPT 0x06) that is not modelled: it keeps the first reading.
+ * interrupt (INTERRUPT 0x06) that is not modeled: it keeps the first reading.
  */
 static void tsl2561_init(Object *obj)
 {
@@ -949,8 +949,8 @@ static const TypeInfo s5l8930_tsl2561_info = {
  * EHXGA..EHZGA (0x66-0x68), MS1 = 3 (power down), then the gains are copied
  * into HXGA..HZGA (0xE4-0xE6). A reading (c050e368): MS1 = 0, wait for ST
  * bit0 (data ready), then TMPS (0xC1) and H1X..H1Z (0xC2-0xC4), each an
- * unsigned byte centred on 128. The DAC offsets (0xE1-0xE3) are stored but
- * do not shift the output: the modelled field sits mid-range already.
+ * unsigned byte centered on 128. The DAC offsets (0xE1-0xE3) are stored but
+ * do not shift the output: the modeled field sits mid-range already.
  *
  * The field is the Earth's for a host-set heading: degrees clockwise from
  * magnetic north of the way the device faces, i.e. its top edge, or its back
@@ -1148,7 +1148,7 @@ static const TypeInfo s5l8930_ak8973_info = {
  * same address reads reg 0 (reserved here, 0) and gives up.
  *
  * gpio-out 0 is INT1, 1 is INT2, at the pin's level (CTRL_REG3 H_Lactive).
- * INT1's threshold events are not modelled: the device sits still.
+ * INT1's threshold events are not modeled: the device sits still.
  * ponytail: zero rate on every axis; QOM rate properties when the host has a
  * gyro control (the attitude path only moves the accelerometer today).
  */

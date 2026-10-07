@@ -134,4 +134,4 @@ with tempfile.TemporaryDirectory(prefix='pvrtc-check-') as directory:
     assert decode(punch, 4, 4, 4) == b'\xff\xff\xff\0' * 16
     assert decode(punch, 4, 4, 4, False) == b'\xff' * 64
 
-print('PASS: 20 vendor vectors, all 2/4bpp modes, mixed neighbours, RGB alpha, tiny mips; ASan/UBSan')
+print('PASS: 20 vendor vectors, all 2/4bpp modes, mixed neighbors, RGB alpha, tiny mips; ASan/UBSan')

@@ -136,7 +136,7 @@ AppleBCMWLAN (Broadcom 802.11 Driver, AppleBCMWLAN-2.60)
   - `interrupts` 0x26, `clock-gates` 0x30, `clock-ids` 0x129
   - `dma-channels` 3 @ 0x80000020
   - `function-device_reset` = TCA6408 expander (phandle 0x920970) pin 1, active high.
-    The expander is already modelled (`s5l8930.tca6408`). `wlan` is expander pin 3
+    The expander is already modeled (`s5l8930.tca6408`). `wlan` is expander pin 3
     in `event_name-gpio3`.
   - No `function-power_enable`. The kext looks for one and logs if it's missing.
     Nothing on the unit suggests that's fatal.
@@ -194,7 +194,7 @@ IO80211Interface    en0, SSID "<home SSID>", ch 6, 2.4 GHz
 - **No ssh needed.** Everything above came from the IPSW rootfs, the kernelcache
   and the IORegistry dump already captured from the unit. If one fact needs the
   live unit later, it is `ioreg -l` of `IOSDIOIoCardDevice` for the raw CIS tuple
-  bytes (`IOSDIOManufacturerTuple` did not serialise in the capture).
+  bytes (`IOSDIOManufacturerTuple` did not serialize in the capture).
 
 ## 3. The minimum device model
 
@@ -249,7 +249,7 @@ regress `wifi` check has to stay green from stage 2 on.
 |---|---|---|---|
 | 0. MAC | firmwarekit's KBoot fills `sdio/local-mac-address` (+ `wireless-board-snum`) | selfcheck; DT dump | ½ day |
 | 1. Enumerate | Reverse IOPSDIO ops 2-7 argument layout (kext 0xc0584000, 24 KB). Implement them in `s5l8930_iop.c` against a card behind an SDIO-card API; add the SDHC IRQ register block. | `IOSDIOIoCardDevice` with `s=B1`/`P=K48 m=u80`, `AppleBCMWLAN::start` on the K48 personality | 3-5 days |
-| 2. Share the card model | Move the card and dongle half of `ipod_touch_sdio.c` into a chip-parametrised model (4325/4329: IDs, CIS, cores, RAM). The iPod host keeps its register interface. | iPod regress `wifi` still associates | 2-3 days |
+| 2. Share the card model | Move the card and dongle half of `ipod_touch_sdio.c` into a chip-parametrized model (4325/4329: IDs, CIS, cores, RAM). The iPod host keeps its register interface. | iPod regress `wifi` still associates | 2-3 days |
 | 3. Firmware up | 4329 chipcommon/cores/SOCRAM, OTP, download + verify, dongle-ready mailbox. wifiFirmwareLoader runs unmodified. | "BCM4329 revision B1", firmware version logged, `IO80211Interface` en0 attached, Settings shows "Not Connected" | 2-4 days |
 | 4. Scan | Re-verify CDC/BDC/event framing against 2.60; `iscan` → delayed scan-complete → `iscanresults` | a fake open SSID in Settings > Wi-Fi | 1-3 days |
 | 5. Join | `SET_SSID` → SET_SSID/ASSOC/LINK events, `GET_BSSID`/`BSS_INFO`, status-bar bars | "Connected", en0 up | 1-2 days |

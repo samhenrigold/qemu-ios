@@ -12,7 +12,7 @@
  *   +0x20  H0..H4, each stored byte-swapped (the kext rev()s on both the
  *          preload write and the digest read)
  *   +0xA0  data FIFO, written a word at a time by CDMA channel 4
- * Completion is signalled by the DMA channel, not by this block; the kext
+ * Completion is signaled by the DMA channel, not by this block; the kext
  * never touches IRQ 0x25.
  *
  * iBoot (817.29 sha1 driver at 0x5ff090c4, register table 0x5ff296a8) feeds

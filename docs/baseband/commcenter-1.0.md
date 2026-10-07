@@ -7,7 +7,7 @@ CommCenter's own code is Thumb, symbols are stripped except the coalesced templa
 (text at 0x1000 = file offset 0) and are notes for the next reader, not something any model keys on.
 
 This is what `hw/misc/ios_baseband_core.c` implements. Everything here is "what the 1.0 host sends and
-what it parses"; where Infineon's real behaviour is unknown the model picks the reply the parser accepts
+what it parses"; where Infineon's real behavior is unknown the model picks the reply the parser accepts
 and says so.
 
 ## Transport stack

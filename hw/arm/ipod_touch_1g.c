@@ -1114,8 +1114,8 @@ static void n45_machine_init(MachineState *machine)
      */
     const S5L8900Board *bd = s->board;
     /*
-     * N45: no host voice. The WM8758's analogue side (the headphone jack) is
-     * not modelled, and the guest's Beep PCM here replays the ring's tail every
+     * N45: no host voice. The WM8758's analog side (the headphone jack) is
+     * not modeled, and the guest's Beep PCM here replays the ring's tail every
      * 0.37 s after a sound. The Mac hears the piezo (ipod_touch_piezo.c), what
      * an N45 with nothing in the jack plays. The M68 has no piezo: its clicks
      * and ringer are this PCM, so the host plays it.

@@ -100,7 +100,7 @@ the 1G's row, unchanged.
 | UART1 receive FIFO | 16 deep on the M68 (`rx-size`): the 4-bit UFSTAT count wraps at 256 | property | R |
 | Baseband | `ios-baseband` on UART1 (H5, 27.010 mux, AT engine, radio nvram) | shared model | H |
 | Bluetooth (UART3) | CSR BlueCore in H4 (`hw/arm/ipod_touch_bt.c`, `csr`): one Hardware Error for BlueTool's autobaud pattern, HCI command complete, BCCMD (0xFC00, descriptor 0xC2) answered as a vendor event 0xFF GETRESP; warm reset unanswered. Enough for BTServer's deepsleep.script ("Deep Sleep Entered!"). UART3 is 16 deep, as UART1 | H | H |
-| Camera, ALS | not modelled (I2C NACKs) | — | — |
+| Camera, ALS | not modeled (I2C NACKs) | — | — |
 
 The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultitouchSPI where they differ):
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
@@ -121,7 +121,7 @@ within 0.1 px of their aim over the whole panel (fitted from the points 1.0's Gr
    launches started 2-6 s after the tap or not within 10 s, and drags stalled for seconds. With BTServer
    running and the BlueCore model answering, launches start 0.09 s after the tap (4 of 4) and a Settings
    drag scrolls at 16-50 ms per frame. Needs the device made with BTServer kept (FirmwareKit's M68 recipe).
-   Bluetooth on (Settings) is not modelled: after BlueTool's warm reset the chip talks H5 (three-wire UART),
+   Bluetooth on (Settings) is not modeled: after BlueTool's warm reset the chip talks H5 (three-wire UART),
    which the model does not answer.
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).

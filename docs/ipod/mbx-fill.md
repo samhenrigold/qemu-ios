@@ -2,7 +2,7 @@
 
 The experimental property `-global driver=ipodtouch.mbx,property=x-2d-fill,value=on` selects a
 strict command consumer, default off. It rejects `IT_MBX_COMPLETE` and
-`IT_MBX_RAM`, does not synthesize startup/EVM/context acknowledgements, and
+`IT_MBX_RAM`, does not synthesize startup/EVM/context acknowledgments, and
 therefore is not presently a usable stock-device boot mode. Default behavior
 and the existing GLES compatibility path remain unchanged.
 

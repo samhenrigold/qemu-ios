@@ -5,7 +5,7 @@
     imgtools/record.py --qmp 4444 --out demo.mp4 --fps 15 --duration 30
     imgtools/record.py --qmp 4444 --out demo.gif
 
-Stop with Ctrl-C; the file is finalised on the way out.
+Stop with Ctrl-C; the file is finalized on the way out.
 
 WHY THIS AND NOT SOMETHING IN QEMU
 ----------------------------------
@@ -40,7 +40,7 @@ a dark video. --gain 1 disables it, --gain <n> forces a factor.
 ROTATION
 --------
 The console resizes when the guest rotates, and a video cannot change size
-half way through. The first frame fixes the canvas and later frames are centred
+half way through. The first frame fixes the canvas and later frames are centered
 into it, so a recording that starts in portrait shows a landscape guest
 letterboxed rather than ending at the rotation.
 """
@@ -59,7 +59,7 @@ from itqmp import QMP, read_ppm
 
 
 def fit(pix, w, h, cw, ch):
-    """Centre a w x h frame into a cw x ch black canvas."""
+    """Center a w x h frame into a cw x ch black canvas."""
     if (w, h) == (cw, ch):
         return pix
     out = bytearray(cw * ch * 3)

@@ -1020,7 +1020,7 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
 
 /*
  * IT_DIRECT_IBOOT / IT_DIRECT_LLB: boot-chain substitution (explicitly
- * authorised for the 3.1.3 bring-up).
+ * authorized for the 3.1.3 bring-up).
  *
  * This is an explicit compatibility/debugging shortcut, not evidence of a
  * SecureROM or LLB limitation. Stock 7E18 signatures validate independently,
@@ -1033,9 +1033,9 @@ static void ipod_touch_load_bootrom(IPodTouchMachineState *nms)
  * The decrypted images are raw (they begin with the ARM vector table). Their
  * intended load address is the absolute value baked into the vector table at
  * offset 0x20: 7E18 iBoot -> 0x0ff00000 (== IBOOT_MEM_BASE), 7E18 LLB ->
- * 0x22000000 (== LLB region). We honour those.
+ * 0x22000000 (== LLB region). We honor those.
  *
- * IT_DIRECT_LLB, if set, is staged first (it is what normally initialises DRAM
+ * IT_DIRECT_LLB, if set, is staged first (it is what normally initializes DRAM
  * on real hardware); on QEMU DRAM is always-present RAM so iBoot alone is
  * usually enough, but this lets us reproduce the full LLB->iBoot handoff if
  * iBoot turns out to depend on state LLB leaves behind.
@@ -1366,7 +1366,7 @@ static void ipod_touch_load_direct_boot(IPodTouchMachineState *nms)
          * iBoot's miu_init reads SYSIC[0x44] bits[31:24] as the boot security
          * epoch and panics ("Epoch Mismatch") unless it equals the epoch baked
          * into the image: 3 for iBoot-596 (3.0), 4 for 636 on. The boot chain
-         * we skip would have latched it, so the SYSIC model synthesises the
+         * we skip would have latched it, so the SYSIC model synthesizes the
          * byte on read from the staged image's own value (see
          * ipod_touch_sysic_read()).
          */
@@ -1398,7 +1398,7 @@ static void ipod_touch_cpu_reset(void *opaque)
 
     if (nms->direct_iboot[0]) {
         /* Boot-chain substitution: enter the decrypted iBoot directly, skipping
-         * the bootrom + LLB signature/personalisation checks. */
+         * the bootrom + LLB signature/personalization checks. */
         ipod_touch_load_direct_boot(nms);
         cpu_set_pc(CPU(cpu), nms->direct_llb[0] ? LLB_LOAD_BASE : IBOOT_MEM_BASE);
         return;
@@ -2463,7 +2463,7 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  *
  * QEMU's own system_powerdown is the trigger, which is exactly what it means
  * elsewhere: ACPI machines send the guest a power-button event and let the OS
- * shut itself down. Here the "power button event" is a synthesised press plus
+ * shut itself down. Here the "power button event" is a synthesized press plus
  * the slide the guest insists on.
  *
  * Everything is timed on QEMU_CLOCK_VIRTUAL so the sequence is deterministic
@@ -2473,7 +2473,7 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * The slider geometry is in display pixels on the 320x480 panel. The knob's Y
  * is FOUND, not assumed: it was hardcoded to 68, measured off a 2.1.1
  * screendump, and 3.1.3 puts its sheet at the top of the screen with the knob
- * centred at y=51 -- five pixels above where the synthetic finger came down. It
+ * centered at y=51 -- five pixels above where the synthetic finger came down. It
  * missed the knob entirely, the slide never happened, the PMU latch never
  * cleared, and QEMU sat until the caller's timeout and got killed. The visible
  * damage was two unrelated-looking regression failures (fsck "volume found
@@ -2489,7 +2489,7 @@ static const QemuInputHandler ipod_touch_kbd_handler = {
  * merely downstream of the unclean unmount.
  *
  * Measured on 3.1.3: the sheet DOES appear, and its knob is a red bar spanning
- * rows 39..63 (centre 51, x 24..91), i.e. 68 lands five pixels below the knob.
+ * rows 39..63 (center 51, x 24..91), i.e. 68 lands five pixels below the knob.
  * But dragging at the measured 51 does NOT fix it either, and neither does
  * waking the digitizer with a Home press first. So the miss is real but there
  * is a second cause -- the likeliest suspect is ipod_touch_synth_touch(), which
@@ -2763,7 +2763,7 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	 *
 	 * DISPROVEN RATIONALE, KEPT AS A WARNING. This was added believing that a
 	 * real device refuses to power off while plugged in and that 3.1.3 was
-	 * faithfully honouring that. **That is false.** Tested on real hardware
+	 * faithfully honoring that. **That is false.** Tested on real hardware
 	 * (iPod touch 2G, MB528, build 7E18, tethered over USB the whole time):
 	 * hold power, slide, and it powers off normally with the cable attached.
 	 * So the guest's refusal here is OUR bug, not emulated fidelity.
@@ -2816,7 +2816,7 @@ static Notifier ipod_touch_powerdown_notifier = {
  *
  * The cost is that the OSK must be visible, and that we have to track its page
  * and shift state. We only ever change those states ourselves, so tracking is
- * exact as long as the guest does not auto-capitalise behind our back - turn
+ * exact as long as the guest does not auto-capitalize behind our back - turn
  * "Auto-Capitalization" off in Settings > General > Keyboard (or bake
  * KeyboardAutocapitalization=false into the image) before relying on case.
  */
@@ -2827,11 +2827,11 @@ static Notifier ipod_touch_powerdown_notifier = {
 enum { OSK_IDLE = 0, OSK_DOWN, OSK_GAP };
 
 /*
- * Key centres in panel pixels for the portrait QWERTY keyboard, 320x480.
+ * Key centers in panel pixels for the portrait QWERTY keyboard, 320x480.
  * The keyboard occupies the bottom 216 px (y 264..480); rows are 44 px apart.
  *
  * MEASURED from a real 2.1.1 keyboard (Notes, portrait) by locating the light
- * key faces in a screendump: row 1 has ten 32px-pitch keys centred on 32i+15,
+ * key faces in a screendump: row 1 has ten 32px-pitch keys centered on 32i+15,
  * row 2 nine on 32i+31, row 3 seven on 32i+63, rows 54px apart. Verified by
  * typing: 'qwerty 42' came out exactly right, 9/9 characters.
  */
@@ -2855,7 +2855,7 @@ static const char osk_num_row2[]   = "-/:;()$&@\"";
 static const char osk_num_row3[]   = ".,?!'";
 
 /*
- * Measured key centres. The three letter rows are each evenly spaced at a 32px
+ * Measured key centers. The three letter rows are each evenly spaced at a 32px
  * pitch but start at a different left offset, so index them by row rather than
  * deriving the offset from the key count.
  */
@@ -2919,12 +2919,12 @@ static bool osk_locate(uint16_t ch, int *x, int *y, bool *numeric, bool *shift)
 	 * coordinates here put a tap on "#+=", stranding the keyboard on the
 	 * symbols page, after which every subsequent coordinate was wrong and
 	 * characters landed silently in the wrong places (observed: typing "Zz"
-	 * produced ".."). Failing loudly is much better than desynchronising.
+	 * produced ".."). Failing loudly is much better than desynchronizing.
 	 *
 	 * To support . , ? ! ' properly, measure that row on the numeric page and
 	 * add it with its own offsets, exactly as the letter rows are handled.
 	 */
-	return false;   /* not typeable without modelling the #+= third page */
+	return false;   /* not typeable without modeling the #+= third page */
 }
 
 static void osk_push_tap(IPodTouchMachineState *nms, int x, int y)

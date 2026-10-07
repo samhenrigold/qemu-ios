@@ -34,7 +34,7 @@
     CGRect rect = [UIHardware fullScreenApplicationContentRect];
     rect.origin.x = rect.origin.y = 0;
     UIWindow *window = [[UIWindow alloc] initWithContentRect:rect];
-    CGColorRef blue = rgb(0.09, 0.16, 0.32), white = rgb(1, 1, 1), grey = rgb(0.72, 0.78, 0.88);
+    CGColorRef blue = rgb(0.09, 0.16, 0.32), white = rgb(1, 1, 1), gray = rgb(0.72, 0.78, 0.88);
 
     HelloView *main = [[HelloView alloc] initWithFrame:rect];
     main->app = self;
@@ -48,7 +48,7 @@
 
     [main addSubview:label((CGRect){ { 0, 130 }, { rect.size.width, 50 } }, @"Hello, 2007!", 36, white, blue)];
     [main addSubview:label((CGRect){ { 0, 190 }, { rect.size.width, 24 } }, @"iPhone OS 1.0, no SDK required", 16,
-                           grey, blue)];
+                           gray, blue)];
     counter = label((CGRect){ { 0, 300 }, { rect.size.width, 24 } }, @"Tap Hello, or anywhere.", 18, white, blue);
     [main addSubview:counter];
 

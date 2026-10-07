@@ -1719,7 +1719,7 @@ bool ios_bb_sms_sender_ok(const char *number)
     }
     for (const char *p = number; *p; p++) {
         if (*p < '0' || *p > '9') {
-            return false;                        /* alphanumeric senders not modelled */
+            return false;                        /* alphanumeric senders not modeled */
         }
     }
     return true;
@@ -2426,7 +2426,7 @@ static const char *arg_after(const char *cmd, const char *pat, const void *unuse
 
 /*
  * Raw IP from the guest. Frames need not line up with packets, so packets are cut
- * by the IPv4 total length; anything that is not IPv4 resynchronises by dropping.
+ * by the IPv4 total length; anything that is not IPv4 resynchronizes by dropping.
  */
 static void data_chan_input(IosBbCore *bb, const uint8_t *data, unsigned len)
 {

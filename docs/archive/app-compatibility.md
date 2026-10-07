@@ -149,7 +149,7 @@ engineering we can do.
 
 ## Runtime status
 
-**Most of this document is static analysis. Runtime behaviour was only spot
+**Most of this document is static analysis. Runtime behavior was only spot
 -checked, and most candidates have never been launched.**
 
 Verified by running (2026-08-05):
@@ -163,7 +163,7 @@ Verified by running (2026-08-05):
   drawable is RGB565 (fourcc `'L565'`, stride 640 for a 320-wide surface) and
   the surface plausibility check in `contrib/it-gles/mbxshim.c` hardcodes 4
   bytes per pixel (`stride < width * 4`), so the surface is rejected and the
-  app draws into a framebuffer with no colour attachment. Plans 03 and 04
+  app draws into a framebuffer with no color attachment. Plans 03 and 04
   cannot make this app draw a pixel until that check accounts for 16-bit
   drawables.
 
