@@ -1045,6 +1045,13 @@ static bool amc_engine0(IPodTouchAMCState *s, uint32_t head)
                 uint32_t *x = s->xfer + 3 * s->xfers++;
                 x[0] = n; x[1] = from; x[2] = to;
                 have_job = false;
+                /* Engine 0 runs its list in order: the links after a transfer (the frame's completion, the
+                 * slot status the driver copies out and clears) run once it has moved the frame. Run at
+                 * once, they hand the driver the slot status from before the frame: iOS 7's AppleAMC
+                 * (n90ap 11D257) then restarts the stream after a few frames, and a ringtone plays as
+                 * silence. 3.2's lists end at the job's completion, which the order doesn't change. */
+                s->e0_resume = le32_to_cpu(w[0]);
+                return true;
             }
             break;
         }
@@ -1072,6 +1079,14 @@ static void amc_decode_tick(void *opaque)
     }
 #endif
     amc_decode_publish(s);
+    /* Engine 0's list goes on once its transfer has moved the frame (amc_engine0). */
+    if (s->e0_resume && !s->xfers) {
+        uint32_t head = s->e0_resume;
+        s->e0_resume = 0;
+        if (!amc_engine0(s, head)) {
+            warn_report("AMC: engine 0 command list rejected");
+        }
+    }
 #ifdef IT_HAVE_AVCODEC
     d = s->decoder;
     /* AudioQueue treats completion of its final input as end-of-stream.
@@ -1252,7 +1267,7 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
             uint8_t clear[0x12] = { 0 };
             amc_decoder_close(s);
             s->pending = 0;
-            s->xfers = s->port_len = 0;
+            s->xfers = s->port_len = s->e0_resume = 0;
             AMC_REG(0x100) = 0;
             address_space_write(&address_space_memory,
                 s->buf_base + s->result_offset, MEMTXATTRS_UNSPECIFIED,
@@ -1291,7 +1306,7 @@ static void ipod_touch_amc_reset(DeviceState *dev)
     amc_decoder_close(s);
     timer_del(s->decode_timer);
     s->pending = 0;
-    s->xfers = s->port_len = 0;
+    s->xfers = s->port_len = s->e0_resume = 0;
     s->codec_decode = s->mode == AMC_MODE_DECODE;
     if (s->codec_decode) {
         timer_mod(s->decode_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
@@ -1505,7 +1520,7 @@ static int amc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_amc = {
     .name = TYPE_IPOD_TOUCH_AMC,
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .pre_save = amc_pre_save,
     .pre_load = amc_pre_load,
@@ -1523,6 +1538,7 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
         VMSTATE_UINT32_ARRAY_V(xfer, IPodTouchAMCState, AMC_XFER_QUEUE * 3, 3),
         VMSTATE_UINT8_ARRAY_V(port, IPodTouchAMCState, AMC_PORT_BYTES, 3),
         VMSTATE_UINT32_V(port_len, IPodTouchAMCState, 3),
+        VMSTATE_UINT32_V(e0_resume, IPodTouchAMCState, 4),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -148,6 +148,7 @@ typedef struct IPodTouchAMCState {
     uint32_t dma_done;      /* input DMA completion source, from rev21 */
     uint32_t xfers;         /* AMC 2.1: engine 0's queued transfer jobs */
     uint32_t xfer[AMC_XFER_QUEUE * 3];  /* {bytes, from, to} */
+    uint32_t e0_resume;     /* AMC 2.1: the list's next link after the job in flight; 0 none */
     uint8_t port[AMC_PORT_BYTES];
     uint32_t port_len;
     void (*port_kick)(void *opaque);    /* the board's DMA: data in the port */
