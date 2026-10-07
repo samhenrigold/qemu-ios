@@ -219,4 +219,7 @@ typedef struct IPodTouch1GMachineState {
     uint32_t panel_w, panel_h;       /* "panel=WxH" (issue #21); 0 = the shipped 320x480 */
 } IPodTouch1GMachineState;
 
+/* The M68's CSR BlueCore on UART3 (hw/arm/ipod_touch_bt.c); a user chardev for the port wins. */
+Chardev *it_bt_csr_chardev(Chardev *user);
+
 #endif

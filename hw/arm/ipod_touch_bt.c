@@ -30,6 +30,7 @@
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_2g.h"
+#include "hw/arm/ipod_touch_1g.h"
 
 /* chardev_new() asserts on the prefix; every chardev type carries it. */
 #define TYPE_CHARDEV_IT_BT "chardev-ipodtouch-bt-hci"
@@ -74,6 +75,16 @@ struct ItBtChardev {
      */
     QEMUTimer *timer;
     int64_t latency_ns;
+
+    /*
+     * The M68's CSR BlueCore (BC4) on UART3, H4 until BlueTool's warm reset: it answers
+     * BCCMD (HCI vendor command 0xFC00, channel descriptor 0xC2) with a vendor event 0xFF
+     * carrying the GETRESP, and a byte that starts no H4 packet (BlueTool's autobaud
+     * training pattern) with one Hardware Error event, the BlueCore's report of an H4
+     * framing error, which is what BlueTool's autobaud waits for.
+     */
+    bool csr;
+    bool framing_reported;
 };
 typedef struct ItBtChardev ItBtChardev;
 
@@ -310,12 +321,55 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
     }
 }
 
+/*
+ * BCCMD (CSR BlueCore Command): type, length (16-bit words, header included), seq,
+ * varid, status, then the value, all little endian. GETREQ and SETREQ are answered
+ * with GETRESP (type 1), status OK and the request's value; the PS keys BlueTool
+ * writes (clock, UART rate, coexistence, patches) are accepted. Warm and cold reset
+ * (varid 0x4002, 0x4001) restart the chip with no answer, as the chip does.
+ */
+static void bt_csr_bccmd(ItBtChardev *bt)
+{
+    const uint8_t *p = bt->cmd + 5;          /* past the H4 header and the 0xC2 descriptor */
+    unsigned n = bt->cmd[3] - 1;
+    uint8_t ev[3 + 255];
+
+    if (n < 10) {
+        return;
+    }
+    uint16_t varid = p[6] | p[7] << 8;
+    if (bt_trace()) {
+        fprintf(stderr, "[BT] BCCMD type %u varid 0x%04x\n", p[0] | p[1] << 8, varid);
+    }
+    if (varid == 0x4001 || varid == 0x4002) {
+        return;
+    }
+    ev[0] = H4_EVT;
+    ev[1] = 0xff;
+    ev[2] = 1 + n;
+    ev[3] = 0xc2;
+    memcpy(ev + 4, p, n);
+    ev[4] = 1;                               /* GETRESP */
+    ev[5] = 0;
+    ev[12] = ev[13] = 0;                     /* status OK */
+    bt_queue(bt, ev, 4 + n);
+}
+
 static int bt_chr_write(Chardev *chr, const uint8_t *buf, int len)
 {
     ItBtChardev *bt = IT_BT_CHARDEV(chr);
     int i;
 
     for (i = 0; i < len; i++) {
+        if (bt->csr && bt->cmd_len == 0 && buf[i] != H4_CMD && buf[i] != H4_ACL && buf[i] != H4_SCO) {
+            if (!bt->framing_reported) {
+                static const uint8_t hw_error[] = { H4_EVT, 0x10, 0x01, 0x00 };
+
+                bt->framing_reported = true;
+                bt_queue(bt, hw_error, sizeof(hw_error));
+            }
+            continue;
+        }
         if (bt->cmd_len == 0 && buf[i] != H4_CMD) {
             /*
              * ACL and SCO are silently dropped: with no radio there is nothing
@@ -340,7 +394,12 @@ static int bt_chr_write(Chardev *chr, const uint8_t *buf, int len)
                         bt->cmd[3]);
             }
             bt->cmd_len = 0;
-            bt_command_complete(bt, opcode);
+            bt->framing_reported = false;
+            if (bt->csr && opcode == 0xfc00 && bt->cmd[3] && bt->cmd[4] == 0xc2) {
+                bt_csr_bccmd(bt);
+            } else {
+                bt_command_complete(bt, opcode);
+            }
         }
     }
     return len;
@@ -364,6 +423,7 @@ static void bt_machine_reset(void *opaque)
     ItBtChardev *bt = IT_BT_CHARDEV(opaque);
 
     bt->cmd_len = 0;
+    bt->framing_reported = false;
     memcpy(bt->bd_addr, bt_default_addr, sizeof(bt->bd_addr));
     bt->resp_head = bt->resp_tail = 0;
     timer_del(bt->timer);
@@ -457,5 +517,16 @@ Chardev *it_bt_chardev(Chardev *user, bool enabled, uint32_t latency_us)
     Chardev *chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IT_BT, NULL, NULL,
                                     &error_abort);
     IT_BT_CHARDEV(chr)->latency_ns = (int64_t)latency_us * 1000;
+    return chr;
+}
+
+/* The M68's CSR BlueCore on UART3 (see ItBtChardev.csr); a -serial chardev for that port wins. */
+Chardev *it_bt_csr_chardev(Chardev *user)
+{
+    if (user) {
+        return user;
+    }
+    Chardev *chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IT_BT, NULL, NULL, &error_abort);
+    IT_BT_CHARDEV(chr)->csr = true;
     return chr;
 }

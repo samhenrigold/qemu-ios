@@ -145,6 +145,70 @@ static void restored_address(void)
     unlink(state);
 }
 
+/*
+ * The M68's CSR BlueCore on UART3 (0x3CC0C000), as BTServer's BlueTool drives it for
+ * deepsleep.script: autobaud (a training pattern that starts no H4 packet, answered by
+ * one Hardware Error), HCI_Reset, then a BCCMD (vendor command 0xFC00, descriptor 0xC2)
+ * answered by a vendor event 0xFF carrying the GETRESP. The port's FIFO is 16 deep.
+ */
+#define M68_UART3 0x3cc0c000ULL
+
+static void m68_bluecore(void)
+{
+    g_autofree char *nor_arg = g_strdup_printf("if=pflash,format=raw,readonly=on,file=%s", nor);
+    g_autofree char *rom64 = NULL;
+    g_autofree char *zero = g_malloc0(65536);
+    int fd = g_file_open_tmp("m68-bt-rom-XXXXXX", &rom64, NULL);
+    g_assert_cmpint(fd, >=, 0); close(fd);
+    g_assert_true(g_file_set_contents(rom64, zero, 65536, NULL));
+    QTestState *q = qtest_initf("-machine 'iPhone-2G,bootrom=%s,iboot=%s,nand=%s,baseband=off,wifi=off' "
+                                "-drive %s -display none -audio driver=none", rom64, rom64, nand, nor_arg);
+    static const uint8_t training[] = { 0xaa, 0x55, 0xa5, 0x5a, 0xa0, 0x50, 0xaf, 0x5f };
+    static const uint8_t hw_error[] = { 4, 0x10, 1, 0 };
+    static const uint8_t reset[] = { 1, 0x03, 0x0c, 0 };
+    static const uint8_t reset_done[] = { 4, 0x0e, 4, 1, 0x03, 0x0c, 0 };
+    static const uint8_t bccmd[] = { 1, 0x00, 0xfc, 19, 0xc2, 2, 0, 9, 0, 7, 0, 4, 0x50, 0, 0,
+                                     0x0a, 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t want[22] = { 4, 0xff, 19, 0xc2, 1, 0, 9, 0, 7, 0, 4, 0x50, 0, 0, 0x0a };
+
+    qtest_writel(q, M68_UART3 + 4, 1);
+    qtest_writel(q, M68_UART3 + 8, 7);
+    for (unsigned r = 0; r < 3; r++) {
+        for (unsigned i = 0; i < sizeof(training); i++) {
+            qtest_writeb(q, M68_UART3 + 0x20, training[i]);
+        }
+    }
+    qtest_clock_step(q, 3 * MSEC);
+    g_assert_cmpuint(qtest_readl(q, M68_UART3 + 0x18) & 0x1f, ==, sizeof(hw_error));
+    for (unsigned i = 0; i < sizeof(hw_error); i++) {
+        g_assert_cmphex(qtest_readb(q, M68_UART3 + 0x24), ==, hw_error[i]);
+    }
+    for (unsigned i = 0; i < sizeof(reset); i++) {
+        qtest_writeb(q, M68_UART3 + 0x20, reset[i]);
+    }
+    qtest_clock_step(q, 3 * MSEC);
+    g_assert_cmpuint(qtest_readl(q, M68_UART3 + 0x18) & 0x1f, ==, sizeof(reset_done));
+    for (unsigned i = 0; i < sizeof(reset_done); i++) {
+        g_assert_cmphex(qtest_readb(q, M68_UART3 + 0x24), ==, reset_done[i]);
+    }
+    for (unsigned i = 0; i < sizeof(bccmd); i++) {
+        qtest_writeb(q, M68_UART3 + 0x20, bccmd[i]);
+    }
+    /* 22 bytes through the 16-deep FIFO (UFSTAT's 4-bit count): 15 now, the rest once read. */
+    qtest_clock_step(q, 3 * MSEC);
+    g_assert_cmphex(qtest_readl(q, M68_UART3 + 0x18) & 0x1f, ==, 15);
+    for (unsigned i = 0; i < 15; i++) {
+        g_assert_cmphex(qtest_readb(q, M68_UART3 + 0x24), ==, want[i]);
+    }
+    qtest_clock_step(q, 3 * MSEC);
+    g_assert_cmpuint(qtest_readl(q, M68_UART3 + 0x18) & 0x1f, ==, 7);
+    for (unsigned i = 15; i < 22; i++) {
+        g_assert_cmphex(qtest_readb(q, M68_UART3 + 0x24), ==, want[i]);
+    }
+    qtest_quit(q);
+    unlink(rom64);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *zero = g_malloc0(1048576);
@@ -160,6 +224,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/bluetooth/address-programming", programming);
     qtest_add_func("/ipod/bluetooth/board-reset", board_reset);
     qtest_add_func("/ipod/bluetooth/restored-address", restored_address);
+    qtest_add_func("/ipod/bluetooth/m68-bluecore", m68_bluecore);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);
     g_free(rom); g_free(nor); g_free(nand);

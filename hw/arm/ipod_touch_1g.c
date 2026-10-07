@@ -933,13 +933,15 @@ static void n45_machine_init(MachineState *machine)
                                          N45_UART3_BASE, N45_UART4_BASE };
         dev = qdev_new("exynos4210.uart");
         qdev_prop_set_bit(dev, "s5l8720-irq", true);
-        qdev_prop_set_chr(dev, "chardev", i == 1 && modem ? modem : serial_hd(i));
+        /* The M68's UART3: the CSR BlueCore that BTServer's BlueTool brings up (the N45 has no Bluetooth). */
+        qdev_prop_set_chr(dev, "chardev", i == 1 && modem ? modem :
+                          i == 3 && s->board == &m68_board ? it_bt_csr_chardev(serial_hd(3)) : serial_hd(i));
         qdev_prop_set_uint32(dev, "channel", i);
-        /* 16 deep on the M68's modem port: the S5L8900's UFSTAT receive count is four
+        /* 16 deep on the M68's modem and Bluetooth ports: the S5L8900's UFSTAT receive count is four
          * bits (0..15, a full flag above), so a deeper FIFO reads back as a wrapped,
          * small count and the H5 driver stops reading mid-packet. (The console UARTs
          * keep 256: only the host types into them.) */
-        qdev_prop_set_uint32(dev, "rx-size", s->board == &m68_board && i == 1 ? 16 : 256);
+        qdev_prop_set_uint32(dev, "rx-size", s->board == &m68_board && (i == 1 || i == 3) ? 16 : 256);
         qdev_prop_set_uint32(dev, "tx-size", 256);
         /* The M68's baseband (UART1) and Bluetooth (UART3) ports flow-control on CTS. With
          * nothing attached the far end reads ready, so a write goes out and finds no answer. */

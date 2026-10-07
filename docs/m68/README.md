@@ -62,7 +62,7 @@ build/qemu-system-arm -M iPhone-2G,bootrom=$F/ipod1g/bootrom_s5l8900,iboot=DEV/i
 
 IMEI and MAC are `machine.imei` and `machine.wifi-mac` from DEV/device.lock.json. The bootrom is the 1G's
 (the same SoC). UART1 is the modem's; `baseband=off` takes the model off and leaves UART1 a plain
-`serial_hd(1)` (with nothing there iBoot's AT reads time out after about 3 s each). UART3 is the Bluetooth port, silent. iBoot prints its console only with `debug-uarts=3` in the NOR nvram.
+`serial_hd(1)` (with nothing there iBoot's AT reads time out after about 3 s each). UART3 is the Bluetooth port: the CSR BlueCore model (below). iBoot prints its console only with `debug-uarts=3` in the NOR nvram.
 SpringBoard is up about 100 s into a boot (guest time); give taps a few seconds after an app opens.
 
 Keys: the 1G's chords plus Cmd+- / Cmd+= for the volume buttons (see debts). Machine properties: everything the 1G has, plus `ring-switch` (bool, on = silent, pad 0x1603; settable at
@@ -99,7 +99,8 @@ the 1G's row, unchanged.
 | USB wrangler quirk | remove()'s vtable slot read from the matched instruction (0x94 in 1.0, 0x54 in 1.1) | P, as the 1G's | P |
 | UART1 receive FIFO | 16 deep on the M68 (`rx-size`): the 4-bit UFSTAT count wraps at 256 | property | R |
 | Baseband | `ios-baseband` on UART1 (H5, 27.010 mux, AT engine, radio nvram) | shared model | H |
-| Bluetooth, camera, ALS | not modelled (UART3 endpoint only; I2C NACKs) | — | — |
+| Bluetooth (UART3) | CSR BlueCore in H4 (`hw/arm/ipod_touch_bt.c`, `csr`): one Hardware Error for BlueTool's autobaud pattern, HCI command complete, BCCMD (0xFC00, descriptor 0xC2) answered as a vendor event 0xFF GETRESP; warm reset unanswered. Enough for BTServer's deepsleep.script ("Deep Sleep Entered!"). UART3 is 16 deep, as UART1 | H | H |
+| Camera, ALS | not modelled (I2C NACKs) | — | — |
 
 The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultitouchSPI where they differ):
 `C2` data packets (A-Speed) and a blank `C2 00 00 00` before the main firmware stream, `05 00 00 06` verify
@@ -114,9 +115,14 @@ within 0.1 px of their aim over the whole panel (fitted from the points 1.0's Gr
 1. **Modem gaps.** Unanswered commands get OK: `+crsm`, `+cnum`, `+xcfc`,
    `+xctms`, `+xdtmf`, `+cclk`, `+xlog`. No audio. Messages formats the sender oddly
    ("+55 51 234").
-2. **Taps lag.** The guest UI takes tens of seconds to open an app on a cold boot; scripted taps must wait for
-   screenshots, not fixed delays. A tap sent before a view is up is lost, which looks like dropped keypad
-   digits. Once the keypad is up, taps 0.25 s apart all register (8 of 8).
+2. ~~**Taps lag.**~~ (10-06) The cause was SpringBoard's main thread, not the taps: with no BTServer
+   (FirmwareKit removed it, as on the N45) every BluetoothManager call sleeps through MobileBluetooth's
+   session-attach retries (`usleep` in BTSessionAttach, "BT: BTSessionAttach: failed: 9" every 5 s), so app
+   launches started 2-6 s after the tap or not within 10 s, and drags stalled for seconds. With BTServer
+   running and the BlueCore model answering, launches start 0.09 s after the tap (4 of 4) and a Settings
+   drag scrolls at 16-50 ms per frame. Needs the device made with BTServer kept (FirmwareKit's M68 recipe).
+   Bluetooth on (Settings) is not modelled: after BlueTool's warm reset the chip talks H5 (three-wire UART),
+   which the model does not answer.
 3. **1.0's slow power-off sheet**: the gesture holds Hold 20 s (the sheet came up 13 s into a hold in one
    run). A run that releases too early locks the phone instead (`pmu go hib`).
 4. **lldb killed mid-command** (guestdev): twice a boot stopped taking taps after an lldb attached to the
