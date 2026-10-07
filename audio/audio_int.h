@@ -238,6 +238,7 @@ extern const char *audio_prio_list[];
 
 void audio_pcm_init_info (struct audio_pcm_info *info, const struct audsettings *as);
 void audio_pcm_info_clear_buf (struct audio_pcm_info *info, void *buf, int len);
+void audio_pcm_hw_set_freq_out(HWVoiceOut *hw, int freq);
 
 void audio_run(AudioMixengBackend *s, const char *msg);
 
