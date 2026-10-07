@@ -97,6 +97,8 @@ option('debug_remap', type: 'boolean', value: false,
        description: 'syscall buffer debugging support')
 option('tcg_interpreter', type: 'boolean', value: false,
        description: 'TCG with bytecode interpreter (slow)')
+option('tcg_threaded_interpreter', type: 'boolean', value: false,
+       description: 'TCG with threaded-dispatch bytecode interpreter (experimental and slow, but less slow than TCI)')
 option('safe_stack', type: 'boolean', value: false,
        description: 'SafeStack Stack Smash Protection (requires clang/llvm and coroutine backend ucontext)')
 option('asan', type: 'boolean', value: false,
@@ -392,3 +394,5 @@ option('rust', type: 'feature', value: 'disabled',
        description: 'Rust support')
 option('strict_rust_lints', type: 'boolean', value: false,
        description: 'Enable stricter set of Rust warnings')
+
+option('ltm_angle_prefix', type: 'string', value: '', description: 'Experimental ES1 ANGLE build prefix (same guest executor, no snapshots)')

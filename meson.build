@@ -81,8 +81,9 @@ python = import('python').find_installation()
 
 cc = meson.get_compiler('c')
 all_languages = ['c']
-enable_cpp = host_os == 'windows' or get_option('plugins')
-if enable_cpp and add_languages('cpp', required: false, native: false)
+# Darwin's guest GL executor uses Imagination's reference PVRTC decoder.
+enable_cpp = host_os in ['windows', 'darwin'] or get_option('plugins')
+if enable_cpp and add_languages('cpp', required: host_os == 'darwin', native: false)
   all_languages += ['cpp']
   cxx = meson.get_compiler('cpp')
 endif
@@ -934,6 +935,10 @@ if have_tcg
   endif
   if get_option('tcg_interpreter')
     tcg_arch = 'tci'
+  elif get_option('tcg_threaded_interpreter')
+    # tcg/aarch64-tcti targets the QEMU 10.0 backend interface; QEMU 11
+    # replaced it (tcg-target-has.h, the outop tables), so it is not built.
+    error('TCTI has not been ported to this QEMU\'s TCG backend interface')
   endif
   add_project_arguments('-iquote', meson.current_source_dir() / 'tcg' / tcg_arch,
                         language: all_languages)
@@ -1216,6 +1221,35 @@ cocoa = dependency('appleframeworks',
                    modules: ['Cocoa', 'CoreVideo', 'QuartzCore'],
                    required: get_option('cocoa'))
 
+# Host-side OpenGL for the iPod Touch's GLES high-level emulation. A legacy
+# CGL context is still a real fixed-function GL 2.1 on modern macOS, which is
+# what lets ES 1.1 entry points forward one-to-one with no shader translation.
+# iOS SDKs have no OpenGL.framework -- they have OpenGLES.framework, which
+# still ships the full fixed-function ES 1.1 the guest speaks, so there the same
+# renderer builds against an EAGL context instead (gles-host-eagl.m). The two
+# dependencies are naturally exclusive: only iOS SDKs carry OpenGLES, only macOS
+# SDKs carry OpenGL. A host with neither falls back to gles-host-stub.c and the
+# guest's GLES HLE probe fails cleanly.
+host_opengl = dependency('appleframeworks', modules: 'OpenGL',
+                         required: false)
+angle_prefix = get_option('ltm_angle_prefix')
+if angle_prefix != ''
+  if host_os != 'darwin'
+    error('The experimental ANGLE backend currently requires macOS')
+  endif
+  host_opengl = declare_dependency(compile_args: ['-DGLES_HOST_ANGLE=1', '-I' + angle_prefix / 'include'],
+    link_args: ['-L' + angle_prefix / 'out/ltm-metal', '-Wl,-rpath,' + angle_prefix / 'out/ltm-metal', '-lEGL', '-lGLESv2'])
+endif
+# IOSurface (and the CoreFoundation dictionary that configures one) is not
+# optional garnish here: it is the render target the iOS present path reads,
+# which is what keeps a tile-based GPU from being drained by a glReadPixels
+# every frame. gles-host.c falls back to that readback if any of it is missing
+# at RUNTIME, but the link needs all three.
+host_gles = dependency('appleframeworks',
+                       modules: ['OpenGLES', 'Foundation', 'IOSurface',
+                                 'CoreFoundation'],
+                       required: false)
+
 vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
 if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',
                                               'VMNET_BRIDGED_MODE',
@@ -1285,6 +1319,17 @@ if not get_option('slirp').auto() or have_system
       warning('Cannot use libslirp since Control-Flow Integrity requires libslirp >= 4.7.')
       slirp = not_found
     endif
+  endif
+  # net_slirp_set_restrict() (netdev_set_restrict, qemu_ios_ui_net_restrict) flips a
+  # running stack's restrict flag in place with slirp_set_restricted(), and lan=off /
+  # qemu_ios_ui_net_lan refuse local-network destinations with slirp_set_local_network()
+  # (the guest's DNS through net/slirp-dns.c on macOS, slirp_set_dns_forward()),
+  # both from subprojects/packagefiles/libslirp-set-restricted.patch. A libslirp built with
+  # the patch (the app's static native root) is used as found; one without it (Homebrew's)
+  # gives way to the patched subproject, static so the binaries gain no runtime dylib.
+  if slirp.found() and not cc.has_function('slirp_set_dns_forward', dependencies: slirp,
+                                           prefix: '#include <libslirp.h>')
+    slirp = subproject('slirp', default_options: ['default_library=static']).get_variable('libslirp_libdep')
   endif
 endif
 
@@ -2521,6 +2566,7 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
 if have_tcg
   config_host_data.set('CONFIG_TCG', 1)
   config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
+  config_host_data.set('CONFIG_TCG_THREADED_INTERPRETER', tcg_arch.endswith('tcti'))
 endif
 config_host_data.set('CONFIG_TPM', have_tpm)
 config_host_data.set('CONFIG_TSAN', get_option('tsan'))
@@ -4828,6 +4874,8 @@ summary_info += {'TCG support':       config_all_accel.has_key('CONFIG_TCG')}
 if config_all_accel.has_key('CONFIG_TCG')
   if get_option('tcg_interpreter')
     summary_info += {'TCG backend':   'TCI (TCG with bytecode interpreter, slow)'}
+  elif get_option('tcg_threaded_interpreter')
+    summary_info += {'TCG backend':   'TCTI (TCG with threaded-dispatch interpreter, less slow)'}
   else
     summary_info += {'TCG backend':   'native (@0@)'.format(cpu)}
   endif
