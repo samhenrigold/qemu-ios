@@ -239,6 +239,11 @@
 #
 # @restrict: isolate the guest from the host
 #
+# @lan: whether the guest may reach the host's local networks
+#     (private, link-local and multicast addresses; loopback forwards
+#     stay reachable, and DNS still works: on macOS through the system
+#     resolver, elsewhere through the host's DNS server), default true
+#
 # @ipv4: whether to support IPv4, default true for enabled (since 2.6)
 #
 # @ipv6: whether to support IPv6, default true for enabled (since 2.6)
@@ -296,6 +301,7 @@
   'data': {
     '*hostname':  'str',
     '*restrict':  'bool',
+    '*lan':       'bool',
     '*ipv4':      'bool',
     '*ipv6':      'bool',
     '*ip':        'str',
