@@ -616,6 +616,48 @@ void qemu_ios_ui_reset(void)     { schedule_qmp(qmp_system_reset); }
 void qemu_ios_ui_powerdown(void) { schedule_qmp(qmp_system_powerdown); }
 void qemu_ios_ui_quit(void)      { schedule_qmp(qmp_quit); }
 
+/* --- hardware keyboard ------------------------------------------------------ */
+#include "hw/qdev-core.h"
+#include "hw/qdev-properties.h"
+#include "hw/usb.h"
+
+static BusState *keyboard_bus(void)
+{
+    return BUS(object_resolve_path_type("usb-bus.0", TYPE_USB_BUS, NULL));
+}
+
+static void hardware_keyboard_bh(void *opaque)
+{
+    bool attach = (uintptr_t)opaque;
+    Object *kbd = object_resolve_path_type("", "usb-kbd", NULL);
+    Error *err = NULL;
+
+    if (!attach && kbd) {
+        qdev_unplug(DEVICE(kbd), &err);
+    } else if (attach && !kbd) {
+        BusState *bus = keyboard_bus();
+        DeviceState *dev = bus ? qdev_new("usb-kbd") : NULL;
+        if (dev) {
+            /* As the app's -device line: 4.x's dock port grants a 50 mA budget, so 100 mA is refused. */
+            qdev_prop_set_uint32(dev, "max-power", 20);
+            qdev_realize_and_unref(dev, bus, &err);
+        }
+    }
+    if (err) {
+        fprintf(stderr, "[keyboard] %s\n", error_get_pretty(err));
+        error_free(err);
+    }
+}
+
+bool qemu_ios_ui_hardware_keyboard(bool attached)
+{
+    if (!qemu_ios_ui_ready() || !keyboard_bus()) {
+        return false;
+    }
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), hardware_keyboard_bh, (void *)(uintptr_t)attached);
+    return true;
+}
+
 /* --- network restrict flip ----------------------------------------------- */
 #ifdef CONFIG_SLIRP
 #include "net/slirp.h"
@@ -709,6 +751,20 @@ void qemu_ios_agent_cancel(const char *id)
         }
         ipod_agent_free(a);
     }
+}
+
+/* A clean shutdown: the agent's halt (reboot2(RB_HALT), where SpringBoard's power-off slider ends), else
+ * (1.x has no agent) the board's power-off gesture. */
+int qemu_ios_ui_shutdown(void)
+{
+    if (!qemu_ios_ui_ready() || qemu_ios_ui_storage_failed()) {
+        return 0;
+    }
+    if (qemu_ios_agent_status() == 1 && qemu_ios_agent_request("qemu-ios-shutdown halt\n")) {
+        return 1;
+    }
+    qemu_ios_ui_powerdown();
+    return 2;
 }
 
 /* Atomic renderer count; safe while the main thread presents the device. */

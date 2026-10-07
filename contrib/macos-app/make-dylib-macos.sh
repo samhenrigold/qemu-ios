@@ -124,6 +124,8 @@ _qemu_ios_ui_resume
 _qemu_ios_ui_reset
 _qemu_ios_ui_powerdown
 _qemu_ios_ui_quit
+_qemu_ios_ui_shutdown
+_qemu_ios_ui_hardware_keyboard
 _qemu_ios_ui_net_restrict
 _qemu_ios_ui_ready
 _qemu_ios_ui_storage_failed
