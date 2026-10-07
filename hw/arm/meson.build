@@ -93,6 +93,12 @@ arm_common_ss.add(when: 'CONFIG_XEN', if_true: files(
   'xen-pvh.c',
 ))
 
+arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c'))
+arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('s5l8920.c', 's5l8920_pmgr.c', 's5l8920_dart.c'))
+# Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
+arm_ss.add(when: 'CONFIG_IPOD_TOUCH_1G', if_true: files('ipod_touch_1g.c', 's5l8900_fmc.c', 's5l8900_nand_ecc.c', 's5l8900_adm.c', 's5l8900_lcd_panel.c', 's5l8900_multitouch_z1.c', 'ipod_touch_wm8758.c', 'ipod_touch_piezo.c'))
+arm_ss.add(when: 'CONFIG_IPOD_TOUCH_USB', if_true: files('ipod_touch_usb_otg.c', 'ipod_touch_tcp_usb.c', 'ipod_touch_usb_phys.c'))
+arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('ipod_touch_2g.c', 'it_iboot.c', 'ipod_touch_clock.c', 'ipod_touch_chipid.c', 'ipod_touch_gpio.c', 'guest-services.c', 'guest-pasteboard.c', 'guest-package.c', 'ipod-agent.c', 'guest-gles.c', 'ipod_touch_sysic.c', 'ipod_touch_timer.c', 'ipod_touch_spi.c', 'ipod_touch_nor_spi.c', 'ipod_touch_sha1.c', 'ipod_touch_aes.c', 'ipod_touch_pke.c', 'ipod_touch_pcf50633_pmu.c', 'ipod_touch_unknown1.c', 'ipod_touch_wdt.c', 'ipod_touch_mpvd.c', 'ipod_touch_h264.c', 'ipod_touch_scaler.c', 'ipod_touch_swi.c', 'ipod_video.c', 'ipod_touch_lcd.c', 'ipod_touch_mipi_dsi.c', 'ipod_touch_fmss.c', 'ipod_touch_mbx.c', 'mbx_fill.c', 'ipod_touch_cd3272_mikey.c', 'ipod_touch_cs42l58.c', 'ipod_touch_amc.c', 'ipod_touch_i2s.c', 'ipod_touch_lm48821.c', 'ipod_touch_lis302dl.c', 'ipod_touch_tethered.c', 'ipod_touch_multitouch.c', 'ipod_touch_sdio.c', 'mrvl8686.c', 'ipod_touch_tvout.c', 'ipod_touch_isl29003dl.c', 'ipod_touch_bt.c'))
 arm_common_ss.add(when: 'CONFIG_ARM_SMMUV3', if_true: files('smmu-common.c'))
 arm_common_ss.add(when: 'CONFIG_COLLIE', if_true: files('collie.c'))
 arm_common_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4_boards.c'))
@@ -106,6 +112,47 @@ arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
 arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
 
 arm_common_ss.add(files('boot.c'))
+
+# gles-host.c is one renderer with two context backends: a legacy CGL context
+# on macOS (created in gles-host.c itself) and an EAGLContext on iOS
+# (gles-host-eagl.m). It picks between them on TARGET_OS_IPHONE, so the choice
+# here is only which framework and which extra file to add. A host with neither
+# framework gets a stub and the guest's GLES HLE probe fails cleanly.
+if host_opengl.found() or host_gles.found()
+  # Do not put the QEMU source root on the C++ angle-bracket include path:
+  # its VERSION file shadows libc++'s <version> on case-insensitive macOS.
+  pvrtc_lib = static_library('ltm-pvrtc', 'powervr/pvrtc.cpp',
+                            implicit_include_directories: false,
+                            include_directories: include_directories('powervr'))
+  pvrtc_dep = declare_dependency(link_with: pvrtc_lib)
+endif
+if host_opengl.found()
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host.c'), host_opengl, pvrtc_dep])
+elif host_gles.found()
+  # gles-host-eagl.c is C, not Objective-C, and explains at length why: an
+  # Objective-C source anywhere in qemu-system-arm makes meson link the target
+  # with objc_LINKER, and configure emits no objc_link_args, so the iOS
+  # sysroot's --extra-ldflags vanish from the link.
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G',
+             if_true: [files('gles-host.c', 'gles-host-eagl.c'), host_gles, pvrtc_dep])
+else
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
+endif
+
+
+if host_os == 'darwin'
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: dependency('appleframeworks',
+    modules: ['CoreFoundation', 'CoreMedia', 'CoreVideo', 'VideoToolbox']))
+endif
+
+# Raw AAC DMA may hold several frames without packet boundaries. AudioToolbox
+# requires those boundaries; libavcodec can consume the actual guest stream.
+ipod_avcodec = dependency('libavcodec', required: false)
+ipod_avutil = dependency('libavutil', required: false)
+if ipod_avcodec.found() and ipod_avutil.found()
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: declare_dependency(
+    dependencies: [ipod_avcodec, ipod_avutil], compile_args: ['-DIT_HAVE_AVCODEC']))
+endif
 
 hw_arch += {'arm': arm_ss}
 hw_common_arch += {'arm': arm_common_ss}

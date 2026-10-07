@@ -410,6 +410,28 @@ void HELPER(wfi)(CPUARMState *env, uint32_t insn_len)
 #endif
 }
 
+/* ArchCPU::idle_loop_pc: halt as WFI does, unless an interrupt is pending or one was taken since
+ * the last pass (its handler may have made a task runnable: one more turn lets yield() see it). */
+void HELPER(idle_loop)(CPUARMState *env)
+{
+#ifndef CONFIG_USER_ONLY
+    CPUState *cs = env_cpu(env);
+    ARMCPU *cpu = env_archcpu(env);
+
+    if (cpu->irqs_taken != cpu->idle_irqs_seen) {
+        cpu->idle_irqs_seen = cpu->irqs_taken;
+        return;
+    }
+    if (cpu_has_work(cs)) {
+        return;
+    }
+    env->halt_reason = HALT_WFI;
+    cs->exception_index = EXCP_HLT;
+    cs->halted = 1;
+    cpu_loop_exit(cs);
+#endif
+}
+
 void HELPER(wfit)(CPUARMState *env, uint64_t timeout)
 {
 #ifdef CONFIG_USER_ONLY

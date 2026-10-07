@@ -940,6 +940,15 @@ struct ArchCPU {
 
     CPUARMState env;
 
+    /*
+     * A32 idle-loop hint (hw/arm/s5l8930_iop_core.c): the back branch of a firmware's
+     * `for (;;) yield();` idle task. Reaching it with no interrupt pending, and none
+     * taken since the last pass, halts the CPU until one is, as WFI would: the loop
+     * has nothing to do until an interrupt makes a task runnable. 0 = none.
+     */
+    uint32_t idle_loop_pc;
+    uint32_t irqs_taken, idle_irqs_seen;
+
     /* Coprocessor information */
     GHashTable *cp_regs;
     /* For marshalling (mostly coprocessor) register state between the

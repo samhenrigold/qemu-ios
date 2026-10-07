@@ -1,0 +1,153 @@
+#ifndef IPOD_TOUCH_LCD_H
+#define IPOD_TOUCH_LCD_H
+
+#include <math.h>
+#include "qemu/osdep.h"
+#include "qemu/module.h"
+#include "qemu/timer.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/arm/ipod_touch_multitouch.h"
+#include "hw/arm/frame-timeline.h"
+
+#define TYPE_IPOD_TOUCH_LCD                "ipodtouch.lcd"
+OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchLCDState, IPOD_TOUCH_LCD)
+
+#define LCD_REFRESH_RATE_FREQUENCY 10
+
+/*
+ * Panel frame interrupt period. 60 Hz is what the guest's display driver is
+ * programmed for; the constant used to be spelled inline as
+ * NANOSECONDS_PER_SECOND / 60 next to a dead reference to
+ * LCD_REFRESH_RATE_FREQUENCY (10 Hz), which is not the rate anything runs at.
+ */
+#define LCD_VSYNC_PERIOD_NS (NANOSECONDS_PER_SECOND / 60)
+
+typedef struct IPodTouchLCDState
+{
+    SysBusDevice parent_obj;
+    MemoryRegion *sysmem;
+    MemoryRegion iomem;
+    QemuConsole *con;
+    IPodTouchMultitouchState *mt;
+    int invalidate;
+    uint8_t brightness;
+    MemoryRegionSection fbsection;
+    /*
+     * What the surface currently on screen was drawn from. The blit only
+     * redraws the lines the guest wrote since the last frame, so anything that
+     * changes the meaning of "unchanged" without dirtying guest memory has to
+     * be noticed here and turned into a full repaint: a flip to a different
+     * scanout buffer, a new host surface, or a new backlight level (which
+     * rescales every pixel with no guest write behind it).
+     */
+    uint32_t fbsection_base;
+    void *last_surface;
+    int last_bright;
+    uint64_t gles_gen;      /* gles_host_ram_gen of the scanout at the last conversion */
+    /*
+     * Host time of the last frame pushed by the panel's frame interrupt, in
+     * QEMU_CLOCK_REALTIME ns. QEMU's own display poll asks for a second
+     * conversion of a frame already on screen; that is dropped while this shows
+     * the vsync push is running. See lcd_refresh().
+     */
+    int64_t last_present_ns;
+    qemu_irq irq;
+    uint32_t lcd_con;
+    bool planes_enabled;
+    bool s5l8900;   /* "s5l8900" property: iPod touch 1G register layout */
+    /*
+     * "panel-width"/"panel-height": the panel's pixel geometry, 320x480 as
+     * shipped. Any other size is an opt-in larger panel (issue #21): the
+     * window-1 size registers read back as the panel's, so the kernel adopts
+     * it and UIKit lays out for it (4.2.1's +[UIApplication
+     * _startWindowServerIfNecessary] takes the CADisplay's bounds).
+     */
+    uint32_t pw, ph;
+    bool saved_planes_enabled;
+    uint32_t plane_regs[0x300 / 4];
+    uint32_t plane_scanout[0x300 / 4];
+
+    uint32_t w1_display_resolution_info;
+    uint32_t w1_framebuffer_base;
+    uint32_t fb_base;       /* "fb-base": window 1's base out of reset (0: none) */
+    bool ctrl_readback;     /* "ctrl-readback": +0x00 reads back its enable bit */
+    /* An IOMMU in front of the scanout (ipod_lcd_set_iommu); gather: the
+     * latched frame is not physically contiguous and is read page by page. */
+    hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid);
+    void *xlate_opaque;
+    uint32_t scanout_va;
+    bool gather;
+    /*
+     * The base actually being scanned out. The panel latches the register at
+     * vblank, so a blit driven from anywhere other than the frame interrupt
+     * (QEMU's 30 ms display poll, a screendump) still sees a coherent frame
+     * rather than whichever buffer the guest had installed at that instant.
+     */
+    uint32_t scanout_base;
+    uint32_t w1_hspan;
+    uint32_t w1_display_depth_info;
+
+    uint32_t render; /* Legacy snapshot field: last write to IRQ status. */
+    uint32_t irq_enable;
+    uint32_t irq_status;
+
+    /*
+     * Display rotation currently applied to the host window, in degrees
+     * clockwise (0 / 90 / 180 / 270). The guest always renders into a portrait
+     * 320x480 framebuffer, so a non-zero value means lcd_refresh transposes it
+     * into a rotated surface -- and the pointer events coming back in console
+     * coordinates have to be un-rotated before they reach the multitouch model.
+     */
+    int rotation;
+    uint8_t *rotbuf;
+
+    /*
+     * Latched multi-touch contact positions, in console coordinates (0..2^15).
+     * QEMU's mtt protocol delivers a slot's X and Y as separate DATA events and
+     * only commits them with a following BEGIN/UPDATE/END, so each slot's last
+     * reported position has to be held here until the commit arrives.
+     * mtt_seen distinguishes "no position yet" from "position (0,0)", which
+     * would otherwise be reported to the guest as a tap in the corner.
+     */
+    int mtt_x[MT_MAX_FINGERS];
+    int mtt_y[MT_MAX_FINGERS];
+    bool mtt_seen[MT_MAX_FINGERS];
+
+    QEMUTimer *refresh_timer;
+
+    /*
+     * Absolute deadline of the next frame interrupt, in QEMU_CLOCK_VIRTUAL ns.
+     * The tick advances this by exactly one period instead of re-arming from
+     * "now", so the callback's own dispatch latency is not folded into the
+     * frame rate. See refresh_timer_tick().
+     */
+    int64_t next_vsync;
+
+    /* Per-vsync latched-frame ring in guest-virtual time; read over the
+     * "frame-timeline" QOM property by the jank harness. ftl_last_base is the
+     * scanout base shown last vsync, to flag a new frame from a held one. */
+    FrameTimeline ftl;
+    uint32_t ftl_last_base;
+} IPodTouchLCDState;
+
+bool lcd_backlight_is_off(void);
+/* The board's backlight driver registers how to read the level the guest last programmed into it (the raw
+ * code its register takes; 0 with the light off, -1 when not decoded). One per machine; the latest wins. */
+void ios_backlight_register(int (*read)(void *opaque), void *opaque);
+int ios_backlight_level(void);
+void lcd_changebrightness(int brightness);
+
+/*
+ * Follow the accelerometer: turn the host window the same way the user "turned"
+ * the device, so a landscape orientation gives a landscape (480x320) window.
+ * Takes a UIDeviceOrientation value (1 portrait, 2 upside down, 3 landscape
+ * left, 4 landscape right); anything else leaves the window in portrait.
+ */
+void it_display_set_orientation(uint32_t orientation);
+
+/* The S5L8920's CLCD scans out through its DART (dart0): window 1 holds an IOVA. */
+void ipod_lcd_set_iommu(DeviceState *lcd, hwaddr (*xlate)(void *opaque, uint32_t va, unsigned sid),
+                        void *opaque);
+
+#endif

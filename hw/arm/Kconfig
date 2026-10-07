@@ -691,3 +691,28 @@ config ARMSSE
     select UNIMP
     select SSE_COUNTER
     select SSE_TIMER
+
+# Synopsys DWC OTG device core + PHY register file + host TCP bridge,
+# shared by the S5L8720 (iPod touch 2G) and S5L8930 (iPad 1) machines.
+config IPOD_TOUCH_USB
+    bool
+
+config IPAD1
+    bool
+    select PL192
+    select IPOD_TOUCH_USB
+    select EXYNOS4
+    select IOS_BASEBAND
+
+config IPOD_TOUCH_2G
+     bool
+     select PL192
+     select IPOD_TOUCH_USB
+
+# iPod touch 1G (S5L8900): the board plus the S5L8900-only blocks; every
+# other model it instantiates is the 2G's, hence the select.
+config IPOD_TOUCH_1G
+     bool
+     select IPOD_TOUCH_2G
+     # S5L8900 family: the M68 (original iPhone) baseband rides on this set.
+     select IOS_BASEBAND

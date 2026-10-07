@@ -540,6 +540,15 @@ static const ARMCPRegInfo not_v7_cp_reginfo[] = {
      */
     { .name = "DBGDIDR", .cp = 14, .crn = 0, .crm = 0, .opc1 = 0, .opc2 = 0,
       .access = PL0_R, .type = ARM_CP_CONST, .resetvalue = 0 },
+    /*
+     * v6 DSCR (ARM1176 TRM 13.3.3): MOE in [5:2], set on a debug exception
+     * by arm_cpu_do_interrupt_aarch32 as for v7's DBGDSCRint. iPhone OS 2.x
+     * reads it in its prefetch-abort handler to tell a BKPT (SIGTRAP) apart;
+     * an UNDEF there panics the kernel ("undefined kernel instruction").
+     */
+    { .name = "DSCR", .cp = 14, .crn = 0, .crm = 1, .opc1 = 0, .opc2 = 0,
+      .access = PL1_RW, .fieldoffset = offsetof(CPUARMState, cp15.mdscr_el1),
+      .resetvalue = 0 },
     { .name = "PRRR", .cp = 15, .crn = 10, .crm = 2,
       .opc1 = 0, .opc2 = 0, .access = PL1_RW, .type = ARM_CP_NOP },
     { .name = "NMRR", .cp = 15, .crn = 10, .crm = 2,
@@ -9529,6 +9538,9 @@ void arm_cpu_do_interrupt(CPUState *cs)
 
     assert(!arm_feature(env, ARM_FEATURE_M));
 
+    if (cs->exception_index == EXCP_IRQ || cs->exception_index == EXCP_FIQ) {
+        cpu->irqs_taken++;          /* ArchCPU::idle_loop_pc */
+    }
     arm_log_exception(cs);
     qemu_log_mask(CPU_LOG_INT, "...from EL%d to EL%d\n", arm_current_el(env),
                   new_el);

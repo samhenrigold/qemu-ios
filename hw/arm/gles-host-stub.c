@@ -1,0 +1,45 @@
+/*
+ * Stub for hosts with no fixed-function GL at all.
+ *
+ * gles-host.c forwards the guest's GLES 1.1 calls into a real host context:
+ * CGL on macOS, EAGL on iOS. Neither framework exists anywhere else, so on any
+ * other host this takes its place. Returning -1 is the same "host rejected the
+ * call" path gles-host.c itself takes when its context cannot be created, so a
+ * guest probing the HLE simply falls back to its software renderer.
+ */
+
+#include "qemu/osdep.h"
+#include "cpu.h"
+#include "hw/arm/guest-services/gles.h"
+
+void gles_host_set_allowed(bool allowed);
+
+int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                       uint32_t argc, const uint32_t *a)
+{
+    return -1;
+}
+
+void gles_host_stats(uint64_t *draws, uint64_t *presents)
+{
+    *draws = 0;
+    *presents = 0;
+}
+
+/* Nothing to gate when there is no host GL in the first place. */
+void gles_host_set_allowed(bool allowed)
+{
+}
+
+void gles_host_reset(void)
+{
+}
+
+int gles_host_context_count(void) { return 0; }
+
+/* No bridge, so nothing is ever refused by it. */
+bool gles_host_refuse(const char *fmt, ...) { return false; }
+char *gles_host_rejects(void) { return g_strdup(""); }
+void gles_host_set_debug(bool on) { }
+bool gles_host_debug(void) { return false; }
+uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len) { return 0; }

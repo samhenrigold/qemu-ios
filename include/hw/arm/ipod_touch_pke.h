@@ -1,0 +1,31 @@
+#ifndef HW_ARM_IPOD_TOUCH_PKE_H
+#define HW_ARM_IPOD_TOUCH_PKE_H
+
+#include "qemu/osdep.h"
+#include "hw/arm/ipod_touch_sha1.h"
+#include "hw/core/platform-bus.h"
+#include "hw/core/hw-error.h"
+#include "exec/hwaddr.h"
+#include "system/memory.h"
+
+#define TYPE_IPOD_TOUCH_PKE                "ipodtouch.pke"
+OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPKEState, IPOD_TOUCH_PKE)
+
+#define REG_PKE_START     0x8
+#define REG_PKE_SEG_SIZE  0x14
+#define REG_PKE_SWRESET   0x24
+#define REG_PKE_SEG_START 0x800
+
+typedef struct IPodTouchPKEState {
+	SysBusDevice busdev;
+    MemoryRegion iomem;
+    IPodTouchSHA1State *sha1; /* Wired by the owning machine, not snapshot state. */
+    uint8_t segments[2048];
+    uint8_t modulus[256];
+    uint32_t modulus_size, key_len, seg_id, seg_sign;
+    uint32_t seg_size_reg;
+    uint32_t segment_size;
+    bool forge_sigcheck; /* Startup compatibility policy, not guest state. */
+} IPodTouchPKEState;
+
+#endif

@@ -1,0 +1,185 @@
+#include "qemu/osdep.h"
+#include "migration/vmstate.h"
+#include "hw/arm/ipod_touch_cs42l58.h"
+
+/*
+ * Cirrus CS42L58 stereo audio codec, I2C address 0x4A (device tree:
+ * /device-tree/arm-io/i2c0/audio0, compatible "audio-control,cs42l58").
+ *
+ * The device is a plain 7-bit-address register file: the master writes a
+ * memory-address pointer (MAP) byte, optionally with the auto-increment bit
+ * 0x80 set, then either writes data bytes or issues a repeated START and
+ * reads them back. Every control register reads back what was written --
+ * that read/write round-trip is what the driver's gain/volume code relies on.
+ */
+static bool codec_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_CODEC_TRACE") != NULL;
+    }
+    return on;
+}
+
+#define CS42L58_MAP_INCR   0x80
+#define CS42L58_REG_CHIPID 0x01
+/*
+ * CS42L59 (iPod touch 4): 10A403 AppleCS42L59Audio's halt handler sets both
+ * power-down bits in 0x06, then polls 0x38 until bit 3 is set, with no
+ * timeout. The power-down finishes at once here. ponytail: inferred from
+ * that driver loop, not from a datasheet.
+ */
+#define CS42L59_REG_PWRCTL 0x06
+#define CS42L59_REG_STATUS 0x38
+#define CS42L59_PDN_DONE   0x08
+
+static unsigned cs42l58_sample_rate(uint8_t control)
+{
+    /* 7E18 AppleCS42L58Audio::setSampleRate, c05dd698: register 05's
+     * low five bits select LRCLK. The codec is the I2S clock master.
+     * ponytail: model the nine rates the driver supports; other clock modes
+     * need the part's clock specification before they can be enabled. */
+    switch (control & 0x1f) {
+    case 0x09: return 48000;
+    case 0x0b: return 44100;
+    case 0x0d: return 32000;
+    case 0x11: return 24000;
+    case 0x13: return 22050;
+    case 0x15: return 16000;
+    case 0x19: return 12000;
+    case 0x1b: return 11025;
+    case 0x1d: return 8000;
+    default: return 0;
+    }
+}
+
+static int cs42l58_event(I2CSlave *i2c, enum i2c_event event)
+{
+    CS42L58State *s = CS42L58(i2c);
+
+    if (event == I2C_START_SEND) {
+        s->have_cmd = false;   /* next byte written is the MAP */
+    }
+    return 0;
+}
+
+static uint8_t cs42l58_recv(I2CSlave *i2c)
+{
+    CS42L58State *s = CS42L58(i2c);
+    uint8_t reg = s->cmd & 0x7f;
+    uint8_t res = s->regs[reg];
+
+    if (s->pdn_status && reg == CS42L59_REG_STATUS &&
+        (s->regs[CS42L59_REG_PWRCTL] & 3) == 3) {
+        res |= CS42L59_PDN_DONE;
+    }
+
+    if (codec_trace()) {
+        fprintf(stderr, "CODEC R %02x -> %02x\n", reg, res);
+    }
+    if (s->autoinc) {
+        s->cmd = (reg + 1) & 0x7f;
+    }
+    return res;
+}
+
+static int cs42l58_send(I2CSlave *i2c, uint8_t data)
+{
+    CS42L58State *s = CS42L58(i2c);
+
+    if (!s->have_cmd) {
+        s->autoinc = !!(data & CS42L58_MAP_INCR);
+        s->cmd = data & 0x7f;
+        s->have_cmd = true;
+        return 0;
+    }
+
+    if (codec_trace()) {
+        fprintf(stderr, "CODEC W %02x <- %02x\n", (uint8_t)(s->cmd & 0x7f), data);
+    }
+    if ((s->cmd & 0x7f) != CS42L58_REG_CHIPID) {
+        s->regs[s->cmd & 0x7f] = data;
+        if ((s->cmd & 0x7f) == 0x05) {
+            unsigned rate = cs42l58_sample_rate(data);
+            if (rate) {
+                clock_update_hz(s->lrclk, rate);
+            }
+        }
+    }
+    if (s->autoinc) {
+        s->cmd = ((s->cmd & 0x7f) + 1) & 0x7f;
+    }
+    return 0;
+}
+
+static void cs42l58_reset(DeviceState *dev)
+{
+    CS42L58State *s = CS42L58(dev);
+    const char *id = getenv("IT_CODEC_ID");
+
+    memset(s->regs, 0, sizeof(s->regs));
+    s->cmd = 0;
+    s->have_cmd = false;
+    s->autoinc = false;
+    /* Chip ID / revision: read-only on the real part. */
+    s->regs[CS42L58_REG_CHIPID] = id ? (uint8_t)strtoul(id, NULL, 0) : 0xe0;
+}
+
+static void cs42l58_init(Object *obj)
+{
+    CS42L58(obj)->lrclk = qdev_init_clock_out(DEVICE(obj), "lrclk");
+}
+
+static const VMStateDescription vmstate_cs42l58 = {
+    .name = TYPE_CS42L58,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(i2c, CS42L58State),
+        VMSTATE_UINT32(cmd, CS42L58State),
+        VMSTATE_BOOL(have_cmd, CS42L58State),
+        VMSTATE_BOOL(autoinc, CS42L58State),
+        VMSTATE_UINT8_ARRAY(regs, CS42L58State, 128),
+        VMSTATE_CLOCK(lrclk, CS42L58State),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void cs42l58_class_init(ObjectClass *klass, const void *data)
+{
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_cs42l58;
+    k->event = cs42l58_event;
+    k->recv = cs42l58_recv;
+    k->send = cs42l58_send;
+    device_class_set_legacy_reset(dc, cs42l58_reset);
+}
+
+static const TypeInfo cs42l58_info = {
+    .name          = TYPE_CS42L58,
+    .parent        = TYPE_I2C_SLAVE,
+    .instance_init = cs42l58_init,
+    .instance_size = sizeof(CS42L58State),
+    .class_init    = cs42l58_class_init,
+};
+
+static void cs42l59_init(Object *obj)
+{
+    CS42L58(obj)->pdn_status = true;
+}
+
+static const TypeInfo cs42l59_info = {
+    .name          = TYPE_CS42L59,
+    .parent        = TYPE_CS42L58,
+    .instance_init = cs42l59_init,
+};
+
+static void cs42l58_register_types(void)
+{
+    type_register_static(&cs42l58_info);
+    type_register_static(&cs42l59_info);
+}
+
+type_init(cs42l58_register_types)

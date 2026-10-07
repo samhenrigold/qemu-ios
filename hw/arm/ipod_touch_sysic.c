@@ -1,0 +1,382 @@
+#include "hw/arm/ipod_touch_sysic.h"
+#include "migration/vmstate.h"
+#include "hw/core/qdev-properties.h"
+
+/*
+ * Cached: consulted on every GPIO interrupt-status access, and the guest polls
+ * those. getenv() scans environ each call, on the vCPU thread.
+ */
+static bool sysic_gpio_trace(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("IT_GPIO_TRACE") != NULL;
+    }
+    return on;
+}
+
+
+static void sysic_update_gpio_irq(IPodTouchSYSICState *s, unsigned group)
+{
+    if (s->gpio_irqs[group]) {
+        qemu_set_irq(s->gpio_irqs[group],
+                     (s->gpio_int_status[group] & s->gpio_int_enabled[group]) != 0);
+    }
+}
+
+void ipod_touch_sysic_request_edge(IPodTouchSYSICState *s,
+                                  unsigned group, unsigned bit)
+{
+    if (group >= GPIO_NUMINTGROUPS || bit >= 32) {
+        return;
+    }
+    s->gpio_int_status[group] |= 1u << bit;
+    sysic_update_gpio_irq(s, group);
+}
+
+/*
+ * The pad-driven sources of `group` that match their programmed polarity. An
+ * edge source fires on a 0 -> 1 transition of this (a polarity flip that makes
+ * it match counts: the hardware compares pad and polarity); a level source stays
+ * pending while it holds.
+ */
+static uint32_t sysic_pad_match(IPodTouchSYSICState *s, unsigned group)
+{
+    return ~(s->gpio_pad_level[group] ^ s->gpio_int_level[group]) & s->gpio_pad_driven[group];
+}
+
+static void sysic_pad_eval(IPodTouchSYSICState *s, unsigned group, uint32_t was)
+{
+    uint32_t match = sysic_pad_match(s, group), level = s->gpio_int_type[group];
+    uint32_t driven = s->gpio_pad_driven[group];
+
+    s->gpio_level_pending[group] = (s->gpio_level_pending[group] & ~(driven & level)) | (match & level);
+    s->gpio_int_status[group] |= (match & ~was & ~level) | (match & level & s->gpio_int_enabled[group]);
+    sysic_update_gpio_irq(s, group);
+}
+
+void ipod_touch_sysic_set_pad(IPodTouchSYSICState *s, unsigned irq, bool level)
+{
+    unsigned group = irq / 32;
+    uint32_t bit = 1u << (irq % 32), was;
+
+    if (group >= GPIO_NUMINTGROUPS) {
+        return;
+    }
+    was = sysic_pad_match(s, group);
+    s->gpio_pad_driven[group] |= bit;
+    s->gpio_pad_level[group] = (s->gpio_pad_level[group] & ~bit) | (level ? bit : 0);
+    sysic_pad_eval(s, group, was);
+}
+
+/* Inputs carry logical interrupt requests, rather than raw pad polarity.
+ * Edge-latched button and digitizer requests continue to use gpio_int_status.
+ * A nested controller's level stays pending until that device clears it. */
+static void sysic_gpio_irq_input(void *opaque, int pin, int level)
+{
+    IPodTouchSYSICState *s = opaque;
+    unsigned group = pin / 32;
+    uint32_t bit = 1u << (pin % 32);
+
+    if (level) {
+        s->gpio_level_pending[group] |= bit;
+        s->gpio_int_status[group] |= bit & s->gpio_int_enabled[group];
+    } else {
+        s->gpio_level_pending[group] &= ~bit;
+        s->gpio_int_status[group] &= ~bit;
+    }
+    sysic_update_gpio_irq(s, group);
+}
+
+static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
+{
+    IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
+
+    switch (addr) {
+        case POWER_ID:
+            /*
+             * 0x39700044: low bits are the POWER_ID power-control scratch, but
+             * bits[31:24] are the boot security epoch. iBoot's miu_init reads
+             * this word and panics ("Epoch Mismatch", which trips the watchdog)
+             * unless the top byte equals its own epoch: the chip ID fuse field
+             * floored at the build's epoch (1 for iBoot-385.22, 3 for 596, 4 for
+             * 636 on). A normal boot gets that top byte latched by the boot
+             * chain before iBoot runs; when we substitute it (direct-iboot) the
+             * ROM and LLB never run and iBoot's own power-control writes here
+             * would clobber it, so synthesise the byte on read from the staged
+             * image's own floor (it_iboot_find_epoch, set by the machine after
+             * staging). Configuration-gated: a normal 2.1.1 boot is untouched.
+             */
+            if (s->direct_boot) {
+                return (s->power_id & 0x00FFFFFFu) | (s->epoch << 24);
+            }
+            return s->power_id;
+        case POWER_SETSTATE:
+        case POWER_STATE:
+            return s->power_state;
+        case 0x7a:
+        case 0x7c:
+            return 1;
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTLEVEL) / 4;
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_level[group] : 0;
+        }
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTSTAT) / 4;
+            uint32_t v = group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
+            if (v && sysic_gpio_trace()) {
+                fprintf(stderr, "[gpio] STAT  group %u -> %08x\n", group, v);
+            }
+            return v;
+        }
+        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTEN) / 4;
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_enabled[group] : 0;
+        }
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTTYPE) / 4;
+            return group < GPIO_NUMINTGROUPS ? s->gpio_int_type[group] : 0;
+        }
+      default:
+        break;
+    }
+    return 0;
+}
+
+static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+{
+    IPodTouchSYSICState *s = (IPodTouchSYSICState *) opaque;
+
+    switch (addr) {
+        case POWER_ID:
+            s->power_id = val;
+            break;
+        case POWER_ONCTRL:
+            if (s->s5l8900) {
+                /*
+                 * S5L8900, from iPhone OS 1.x's own use of the block: +0xC
+                 * takes a device mask to power DOWN and +0x10 one to power UP,
+                 * and STATE (+0x14) is the current on-mask. The kernel's CPU
+                 * idle routine (0xc048e6f8 in 3A101a) writes +0xC = 2 and spins
+                 * until bit 1 of STATE clears; iBoot resets a device with a
+                 * +0xC / +0x10 pulse. Latching the last write here (the S5L8720
+                 * path below) never clears a bit, so the idle loop spun forever.
+                 */
+                s->power_state &= ~val;
+                break;
+            }
+            if((val & 0x20) != 0 || (val & 0x4) != 0 || (val & POWER_ID_ADM) != 0) { break; } // make sure that we do not record the 'on' state of some devices so it appears like they are turned on immediately.
+            s->power_state = val;
+            break;
+        case POWER_OFFCTRL:
+            if (s->s5l8900) {
+                s->power_state |= val;
+                break;
+            }
+            s->power_state = val;
+            break;
+        case GPIO_INTLEVEL ... (GPIO_INTLEVEL + GPIO_NUMINTGROUPS * 4):
+        {
+            /* The polarity, read back as written (1.x's drivers flip it after each
+             * button interrupt to catch the other edge). */
+            uint8_t group = (addr - GPIO_INTLEVEL) / 4;
+            if (group < GPIO_NUMINTGROUPS) {
+                uint32_t was = sysic_pad_match(s, group);
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] LEVEL group %u <- %08x\n", group, (uint32_t)val);
+                }
+                s->gpio_int_level[group] = val;
+                sysic_pad_eval(s, group, was);
+            }
+            break;
+        }
+        case GPIO_INTSTAT ... (GPIO_INTSTAT + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTSTAT) / 4;
+
+            /*
+             * The register block has EIGHT slots per range (they are 0x20
+             * apart) but only GPIO_NUMINTGROUPS arrays behind them, and fewer
+             * qemu_irqs than that are actually connected. Indexing group 7 read
+             * past gpio_int_level into gpio_int_status, and lowered an irq off
+             * the end of gpio_irqs[] - calling through whatever followed it,
+             * interpreted as an IRQState*.
+             *
+             * Claim the address (so it does not fall through to default and
+             * silently read as 0) but ignore an out-of-range group.
+             */
+            if (group < GPIO_NUMINTGROUPS) {
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] ACK   group %u <- %08x "
+                            "(stat %08x -> %08x)\n", group, (uint32_t)val,
+                            s->gpio_int_status[group],
+                            s->gpio_int_status[group] & ~(uint32_t)val);
+                }
+                // acknowledge the interrupts and clear the corresponding bits
+                s->gpio_int_status[group] = (s->gpio_int_status[group] & ~val) |
+                                            (s->gpio_level_pending[group] &
+                                             s->gpio_int_enabled[group]);
+                sysic_update_gpio_irq(s, group);
+            }
+            break;
+        }
+        case GPIO_INTEN ... (GPIO_INTEN + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTEN) / 4;
+            if (group < GPIO_NUMINTGROUPS) {
+                /*
+                 * IT_GPIO_TRACE=1: which GPIO interrupt sources the guest arms,
+                 * and when. Answering "does the driver actually enable the
+                 * source it then sleeps on" needs this; a source that is never
+                 * armed and one that is armed but never asserted look identical
+                 * from the driver's side.
+                 */
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] INTEN group %u <- %08x "
+                            "(was %08x, stat %08x)\n", group, (uint32_t)val,
+                            s->gpio_int_enabled[group],
+                            s->gpio_int_status[group]);
+                }
+                s->gpio_int_enabled[group] = val;
+                /* A masked level can be ACKed while its device workloop
+                 * services the request. Re-latch it only when enabled again. */
+                s->gpio_int_status[group] |= s->gpio_level_pending[group] & val;
+                sysic_update_gpio_irq(s, group);
+            }
+            break;
+        }
+        case GPIO_INTTYPE ... (GPIO_INTTYPE + GPIO_NUMINTGROUPS * 4):
+        {
+            uint8_t group = (addr - GPIO_INTTYPE) / 4;
+            if (group < GPIO_NUMINTGROUPS) {
+                uint32_t was = sysic_pad_match(s, group);
+                if (sysic_gpio_trace()) {
+                    fprintf(stderr, "[gpio] TYPE  group %u <- %08x\n", group, (uint32_t)val);
+                }
+                s->gpio_int_type[group] = val;
+                sysic_pad_eval(s, group, was);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static const MemoryRegionOps ipod_touch_sysic_ops = {
+    .read = ipod_touch_sysic_read,
+    .write = ipod_touch_sysic_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static void ipod_touch_sysic_init(Object *obj)
+{
+    IPodTouchSYSICState *s = IPOD_TOUCH_SYSIC(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+
+    memory_region_init_io(&s->iomem, obj, &ipod_touch_sysic_ops, s, TYPE_IPOD_TOUCH_SYSIC, 0x1000);
+    sysbus_init_mmio(sbd, &s->iomem);
+    qdev_init_gpio_in(DEVICE(obj), sysic_gpio_irq_input, GPIO_NUMINTGROUPS * 32);
+    for(int grp = 0; grp < GPIO_NUMINTGROUPS; grp++) {
+        sysbus_init_irq(sbd, &s->gpio_irqs[grp]);
+    }
+}
+
+/*
+ * The GPIO interrupt fabric has to go back to power-on state on a warm reset.
+ *
+ * gpio_int_status is the pending latch and gpio_int_enabled the mask; devices
+ * signal through them (the digitizer raises its attention line by setting
+ * gpio_int_status[3] bit 13 and pulsing gpio_irqs[3]). Carrying either across a
+ * reset means the next boot's driver either sees a stale pending interrupt it
+ * never armed, or arms a line that already reads asserted -- and the edge it is
+ * actually waiting for never arrives.
+ *
+ * The output lines are dropped too, so nothing is left asserted into the VIC
+ * across the reset.
+ */
+static void ipod_touch_sysic_reset(DeviceState *dev)
+{
+    IPodTouchSYSICState *s = IPOD_TOUCH_SYSIC(dev);
+
+    s->power_id = 0;
+    s->power_state = 0;
+
+    for (int grp = 0; grp < GPIO_NUMINTGROUPS; grp++) {
+        s->gpio_int_level[grp] = 0;
+        s->gpio_int_status[grp] = 0;
+        s->gpio_int_enabled[grp] = 0;
+        s->gpio_int_type[grp] = 0;
+        s->gpio_level_pending[grp] = 0;
+        s->gpio_pad_level[grp] = 0;
+        s->gpio_pad_driven[grp] = 0;
+        if (s->gpio_irqs[grp]) {
+            qemu_irq_lower(s->gpio_irqs[grp]);
+        }
+    }
+}
+
+static int sysic_post_load(void *opaque, int version_id)
+{
+    IPodTouchSYSICState *s = opaque;
+    for (unsigned group = 0; group < GPIO_NUMINTGROUPS; group++) {
+        sysic_update_gpio_irq(s, group);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_ipod_touch_sysic = {
+    .name = "ipod_touch_sysic",
+    .version_id = 2,
+    .minimum_version_id = 1,
+    .post_load = sysic_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(power_id, IPodTouchSYSICState),
+        VMSTATE_UINT32(power_state, IPodTouchSYSICState),
+        VMSTATE_UINT32_ARRAY(gpio_int_level, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_status, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_enabled, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY(gpio_int_type, IPodTouchSYSICState, GPIO_NUMINTGROUPS),
+        VMSTATE_UINT32_ARRAY_V(gpio_level_pending, IPodTouchSYSICState,
+                               GPIO_NUMINTGROUPS, 2),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* The fused boot epoch iBoot's miu_init demands in POWER_ID[31:24] when the
+ * board substitutes the boot chain: 4 for the S5L8720, 2 for the S5L8900
+ * (iBoot-204 at 0x18001fb0 compares against 2). */
+static const Property ipod_touch_sysic_properties[] = {
+    DEFINE_PROP_BOOL("direct-boot", IPodTouchSYSICState, direct_boot, false),
+    DEFINE_PROP_UINT32("epoch", IPodTouchSYSICState, epoch, 4),
+    DEFINE_PROP_BOOL("s5l8900", IPodTouchSYSICState, s5l8900, false),
+};
+
+static void ipod_touch_sysic_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_ipod_touch_sysic;
+    device_class_set_props(dc, ipod_touch_sysic_properties);
+
+    device_class_set_legacy_reset(dc, ipod_touch_sysic_reset);
+}
+
+static const TypeInfo ipod_touch_sysic_type_info = {
+    .name = TYPE_IPOD_TOUCH_SYSIC,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(IPodTouchSYSICState),
+    .instance_init = ipod_touch_sysic_init,
+    .class_init = ipod_touch_sysic_class_init,
+};
+
+static void ipod_touch_sysic_register_types(void)
+{
+    type_register_static(&ipod_touch_sysic_type_info);
+}
+
+type_init(ipod_touch_sysic_register_types)

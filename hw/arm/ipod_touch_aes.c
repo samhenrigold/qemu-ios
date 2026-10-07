@@ -1,0 +1,974 @@
+#include "hw/arm/ipod_touch_aes.h"
+#include "exec/cpu-common.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "migration/vmstate.h"
+#include "qemu/error-report.h"
+
+/* Bound host scratch storage, not the hardware transfer length. Stock iBSS
+ * decrypts restore ramdisks larger than 16 MiB in one contiguous request. */
+#define IT_AES_DMA_CHUNK (64 * 1024)
+
+/*
+ * The SoC GID key is fused into the S5L8720 and has never been extracted, so we
+ * cannot actually run the GID operation.  We do not need to: the boot chain's
+ * only use of the GID key is to decrypt an img3's 32-byte KBAG blob, whose
+ * plaintext is the image's IV||key -- and those are published per build.
+ *
+ * The input to the operation is therefore the KBAG ciphertext itself, sitting
+ * in guest memory at aesop->inaddr.  We key the table on those 32 bytes rather
+ * than on the order in which the operations arrive.  That is what real hardware
+ * looks like from the guest's point of view, and it means we no longer care
+ * which boot graphic iBoot decides to draw (logo / recovery / needservice /
+ * battery / glyph all shift the invocation order), nor how many images a given
+ * firmware loads.  An unrecognised KBAG is reported and fatal instead of
+ * silently yielding some other image's key.
+ *
+ * Ciphertexts below were read out of the real img3 containers (the NOR image
+ * and the IPSW kernelcache); plaintexts come from the published key tables for
+ * each build and were checked by decrypting the corresponding payload.
+ */
+#define IT_AES_GID_BLOB_SIZE 32
+
+/* Debug chatter is opt-in via IT_AES_DEBUG=1 in the environment. */
+static bool it_aes_debug(void)
+{
+    static int cached = -1;
+
+    if (cached < 0) {
+        const char *e = getenv("IT_AES_DEBUG");
+        cached = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+typedef struct ITGidBlob {
+    const char *name;
+    uint8_t kbag[IT_AES_GID_BLOB_SIZE];   /* GID-encrypted */
+    uint8_t plain[IT_AES_GID_BLOB_SIZE];  /* IV || key     */
+} ITGidBlob;
+
+static const ITGidBlob it_gid_blobs[] = {
+
+    /* ---- iPhone OS 2.1.1 (5F138) ---- */
+    { "5F138 LLB",
+      { /* KBAG ciphertext */
+        0xce, 0x46, 0x33, 0x70, 0xdb, 0xe5, 0x92, 0x6c,
+        0xa5, 0x3a, 0x32, 0x60, 0x76, 0xd5, 0xcd, 0xd4,
+        0xc4, 0xbd, 0x89, 0x09, 0x0a, 0x20, 0xb1, 0x53,
+        0x7f, 0x22, 0x25, 0x8f, 0x10, 0x5a, 0x21, 0x1b,
+      },
+      { /* IV || key */
+        0xce, 0x97, 0xa7, 0xc8, 0x2e, 0xf8, 0x64, 0x67,
+        0x5e, 0xd3, 0x68, 0x05, 0x97, 0xec, 0x2a, 0xef,
+        0x27, 0x73, 0x2a, 0x6b, 0xbf, 0xb1, 0x4a, 0x07,
+        0x25, 0x0a, 0x2e, 0x46, 0x82, 0xbf, 0x3c, 0xba,
+      } },
+    { "5F138 iBoot",
+      { /* KBAG ciphertext */
+        0x3c, 0xa4, 0xa2, 0x21, 0x41, 0x5a, 0x77, 0xe4,
+        0x24, 0xe3, 0x6c, 0xb3, 0xe2, 0x75, 0x4e, 0x77,
+        0x15, 0xb2, 0x5b, 0xfe, 0x11, 0xb9, 0x29, 0x9d,
+        0x71, 0xb0, 0x8f, 0xbd, 0x48, 0xb6, 0xeb, 0xe7,
+      },
+      { /* IV || key */
+        0xb3, 0x63, 0x3a, 0xfb, 0xe0, 0x2e, 0x0e, 0x9b,
+        0xa4, 0xd7, 0x36, 0x6c, 0x47, 0xab, 0xe5, 0xa8,
+        0x2d, 0x91, 0x6d, 0xab, 0xb6, 0xdf, 0xd4, 0x59,
+        0x4d, 0xbe, 0x36, 0x35, 0xb4, 0xc7, 0x16, 0x62,
+      } },
+    { "5F138 applelogo",
+      { /* KBAG ciphertext */
+        0xf4, 0x94, 0xbb, 0x24, 0x68, 0x0c, 0xde, 0xa1,
+        0x2e, 0xeb, 0x59, 0x5f, 0x3b, 0x2e, 0x50, 0x60,
+        0x55, 0xff, 0xfb, 0x37, 0xfc, 0x2e, 0xdb, 0x8b,
+        0xb7, 0x43, 0x10, 0x6a, 0xdc, 0x7a, 0x03, 0x5a,
+      },
+      { /* IV || key */
+        0x64, 0x23, 0x8f, 0xb0, 0x32, 0x91, 0x42, 0x25,
+        0x22, 0xb5, 0xdd, 0x28, 0x3f, 0xc3, 0x89, 0x5c,
+        0x85, 0x9f, 0xd4, 0xd3, 0x82, 0xb8, 0x38, 0x51,
+        0x56, 0xfc, 0x58, 0x1a, 0x7f, 0x1d, 0x97, 0x22,
+      } },
+    { "5F138 kernelcache",
+      { /* KBAG ciphertext */
+        0xa3, 0x47, 0x83, 0x31, 0xa2, 0x30, 0x9a, 0x66,
+        0x1b, 0x8c, 0xcb, 0x07, 0xf8, 0xe4, 0x50, 0xc8,
+        0x1c, 0xf5, 0xd0, 0xdb, 0x1d, 0x03, 0x11, 0x33,
+        0xb6, 0x8f, 0xad, 0x42, 0xae, 0xfa, 0xb3, 0x77,
+      },
+      { /* IV || key */
+        0xa1, 0x91, 0x29, 0x12, 0x90, 0xd4, 0x87, 0xff,
+        0x07, 0x31, 0x96, 0x9c, 0x5f, 0xc8, 0xd9, 0x18,
+        0x0e, 0x4d, 0x23, 0xfa, 0x67, 0x59, 0x99, 0xd5,
+        0x95, 0x9d, 0xd1, 0x0c, 0x8d, 0xd7, 0x3d, 0x20,
+      } },
+    { "5F138 DeviceTree",
+      { /* KBAG ciphertext */
+        0x0f, 0xe0, 0x82, 0xd8, 0x51, 0x40, 0xb9, 0x4d,
+        0x79, 0xcf, 0xd2, 0x10, 0x5d, 0xd6, 0x09, 0x2d,
+        0xee, 0x76, 0x8c, 0xbd, 0x10, 0xa2, 0x1a, 0x20,
+        0xf2, 0x54, 0x52, 0xbd, 0x1c, 0x3f, 0xd9, 0xd3,
+      },
+      { /* IV || key */
+        0xcc, 0xff, 0x63, 0x4e, 0xe1, 0x27, 0x35, 0xf0,
+        0x19, 0x16, 0xc4, 0xa6, 0xb2, 0x0f, 0xf1, 0x45,
+        0xe1, 0x7b, 0xcd, 0x56, 0x8d, 0xf1, 0xcd, 0xdc,
+        0x8f, 0xec, 0xbf, 0x54, 0x87, 0xd5, 0xc3, 0xce,
+      } },
+    { "5F138 needservice",
+      { /* KBAG ciphertext */
+        0x1a, 0xa1, 0x76, 0xdb, 0x4f, 0x6b, 0x2c, 0xb5,
+        0x65, 0xfa, 0x6c, 0xab, 0xae, 0xbb, 0xeb, 0x67,
+        0x16, 0x55, 0xd3, 0xb6, 0xde, 0x49, 0xe0, 0xda,
+        0x4a, 0xba, 0x37, 0x91, 0x8a, 0x1d, 0x21, 0x7c,
+      },
+      { /* IV || key */
+        0x19, 0xf9, 0xf7, 0xab, 0x10, 0xec, 0x1f, 0xbb,
+        0x27, 0x18, 0x51, 0x7f, 0x45, 0x8b, 0x9a, 0x8d,
+        0x9c, 0xf8, 0x07, 0x9c, 0x22, 0x1c, 0x8a, 0x08,
+        0x00, 0xd2, 0xa0, 0x86, 0x7d, 0xad, 0xa5, 0x1b,
+      } },
+    { "5F138 recoverymode",
+      { /* KBAG ciphertext */
+        0xff, 0x23, 0x0a, 0xeb, 0x78, 0x10, 0x91, 0xcd,
+        0x94, 0x4f, 0x92, 0x2b, 0x81, 0xd6, 0x61, 0xc1,
+        0x24, 0x43, 0x65, 0xa6, 0x06, 0xde, 0xa1, 0xdb,
+        0x5a, 0x71, 0xb4, 0x5c, 0x6b, 0x7c, 0x94, 0x49,
+      },
+      { /* IV || key */
+        0x47, 0x62, 0x1c, 0xf2, 0x2d, 0xc1, 0xb4, 0x5a,
+        0xda, 0x5a, 0xaa, 0x4b, 0x01, 0x24, 0xdd, 0xed,
+        0xc9, 0xde, 0x08, 0x34, 0x42, 0x8c, 0xa2, 0x8e,
+        0xcf, 0x53, 0x92, 0xec, 0x91, 0x95, 0xce, 0x79,
+      } },
+    { "5F138 batterylow0",
+      { /* KBAG ciphertext */
+        0x44, 0xfe, 0xfa, 0xc4, 0x35, 0x39, 0x92, 0x9a,
+        0x49, 0x67, 0xb3, 0xa7, 0x06, 0x40, 0x5d, 0xc5,
+        0x1d, 0x40, 0x1f, 0xce, 0x51, 0xcb, 0x3f, 0xd9,
+        0x19, 0xb1, 0x44, 0x2b, 0x50, 0x1d, 0xcc, 0x1f,
+      },
+      { /* IV || key */
+        0xcd, 0x40, 0xa1, 0x8b, 0x7f, 0x45, 0x49, 0x72,
+        0xa5, 0x7f, 0x7b, 0xff, 0x2d, 0x99, 0x47, 0x42,
+        0x9f, 0xcb, 0xdc, 0xe6, 0x09, 0x2a, 0xd1, 0xdd,
+        0xfe, 0xea, 0x62, 0x24, 0xd4, 0x03, 0xad, 0x55,
+      } },
+    { "5F138 batterylow1",
+      { /* KBAG ciphertext */
+        0x8f, 0xae, 0xf1, 0x9f, 0x5c, 0x21, 0x7b, 0xc3,
+        0x25, 0x2d, 0xfd, 0x64, 0x47, 0xdf, 0x9e, 0x53,
+        0x66, 0x79, 0xb8, 0x78, 0x57, 0x66, 0xaf, 0x3b,
+        0x39, 0x2e, 0x79, 0x1d, 0xce, 0x85, 0xe0, 0x8f,
+      },
+      { /* IV || key */
+        0xec, 0x0f, 0xb1, 0x00, 0x72, 0xfd, 0xa6, 0x82,
+        0xed, 0x5f, 0xff, 0xf8, 0x04, 0x00, 0xf8, 0x03,
+        0x31, 0x5a, 0xa2, 0x95, 0x7e, 0x58, 0x1c, 0xaf,
+        0xb0, 0xae, 0x3f, 0xc7, 0xf5, 0x5c, 0xb9, 0xac,
+      } },
+    { "5F138 glyphcharging",
+      { /* KBAG ciphertext */
+        0x42, 0x2c, 0x5d, 0xf0, 0xdc, 0xc2, 0x28, 0x0b,
+        0xc6, 0xaa, 0x8a, 0xd5, 0x8d, 0xbf, 0x00, 0x20,
+        0x55, 0x59, 0x3c, 0x91, 0x6f, 0xc4, 0x9d, 0x96,
+        0xf1, 0x92, 0x1e, 0xac, 0x30, 0x7e, 0x76, 0x60,
+      },
+      { /* IV || key */
+        0x4d, 0x13, 0x15, 0x95, 0xde, 0x30, 0xc6, 0x7f,
+        0xd2, 0x77, 0x27, 0x9c, 0x33, 0xee, 0x1b, 0xca,
+        0x72, 0x67, 0x78, 0x5f, 0x56, 0xba, 0x9a, 0x4a,
+        0x05, 0xe1, 0x16, 0x58, 0xa5, 0xa3, 0xec, 0x3d,
+      } },
+    { "5F138 glyphplugin",
+      { /* KBAG ciphertext */
+        0xf2, 0xb5, 0xc7, 0x68, 0x2f, 0xfc, 0x4e, 0x27,
+        0x96, 0xad, 0xd2, 0xa7, 0x0d, 0xc0, 0xe7, 0x3d,
+        0xd9, 0x6e, 0x6a, 0x3f, 0x43, 0x1b, 0x42, 0x66,
+        0x33, 0x17, 0x9f, 0x4f, 0xff, 0xdd, 0x10, 0xd2,
+      },
+      { /* IV || key */
+        0xc4, 0x2a, 0x87, 0xb7, 0xa9, 0x2b, 0x24, 0xbc,
+        0xde, 0xa5, 0x6e, 0xdf, 0x1b, 0x74, 0x41, 0x7a,
+        0xa7, 0x67, 0x6d, 0x77, 0x67, 0xca, 0x1d, 0x12,
+        0xa7, 0xdb, 0xf3, 0x12, 0x70, 0xe2, 0xb6, 0xc9,
+      } },
+
+    /* ---- iPhone OS 3.1.3 (7E18) ---- */
+    { "7E18 kernelcache",
+      { /* KBAG ciphertext */
+        0xa3, 0xeb, 0x07, 0x99, 0xdc, 0x40, 0xa5, 0xed,
+        0x60, 0x67, 0x0c, 0x5f, 0xe6, 0x9f, 0xbc, 0xca,
+        0xdc, 0x2f, 0xb0, 0xb1, 0xa7, 0x73, 0xed, 0x55,
+        0x50, 0xa8, 0x39, 0x5d, 0x84, 0x97, 0x9a, 0x7b,
+      },
+      { /* IV || key */
+        0xec, 0x77, 0x2f, 0x88, 0xc3, 0x58, 0x7c, 0x39,
+        0xbb, 0x29, 0x38, 0x58, 0x55, 0x4e, 0x54, 0x5d,
+        0x19, 0xa5, 0xd7, 0xeb, 0xc7, 0x18, 0x32, 0x2c,
+        0x1e, 0x6d, 0x63, 0x24, 0xfb, 0x93, 0xe3, 0x24,
+      } },
+    { "7E18 LLB",
+      { /* KBAG ciphertext */
+        0xdd, 0xde, 0x7d, 0xff, 0x81, 0xd8, 0x7f, 0x2c,
+        0xaf, 0x48, 0x99, 0x30, 0xd0, 0x54, 0x00, 0xb4,
+        0x0d, 0x00, 0x7a, 0x8d, 0xfe, 0x43, 0xf3, 0xcf,
+        0x48, 0x6a, 0x96, 0xc7, 0x3c, 0x8b, 0xf9, 0x1e,
+      },
+      { /* IV || key */
+        0x91, 0xab, 0x08, 0xf4, 0x45, 0x80, 0x28, 0xdd,
+        0x5d, 0x14, 0x43, 0x14, 0x4c, 0xcd, 0xd1, 0xe3,
+        0x7d, 0x2c, 0x25, 0x2e, 0x59, 0x3e, 0xee, 0x29,
+        0x0f, 0xd9, 0x5f, 0xd6, 0x06, 0x33, 0x42, 0x17,
+      } },
+    { "7E18 iBoot",
+      { /* KBAG ciphertext */
+        0x29, 0x89, 0x42, 0x88, 0x75, 0x31, 0x9b, 0xe5,
+        0xd6, 0x15, 0xed, 0x38, 0x68, 0xa5, 0x7d, 0x69,
+        0x8b, 0x51, 0xb7, 0xd1, 0x2d, 0xd2, 0x5e, 0x03,
+        0x7f, 0xd8, 0x2c, 0x72, 0x37, 0xfb, 0x20, 0xee,
+      },
+      { /* IV || key */
+        0x7c, 0x09, 0x0a, 0xb8, 0xc8, 0xa0, 0xcb, 0xc9,
+        0x5d, 0xb1, 0x00, 0x7b, 0x32, 0x2f, 0xe9, 0x60,
+        0xca, 0x38, 0x93, 0xd4, 0x3d, 0x94, 0x46, 0xcd,
+        0x2f, 0x9f, 0x3f, 0xd5, 0x37, 0x1d, 0x02, 0xe9,
+      } },
+    { "7E18 DeviceTree",
+      { /* KBAG ciphertext */
+        0x92, 0x22, 0x03, 0x0e, 0x74, 0x47, 0x01, 0xb0,
+        0x4f, 0xb3, 0x7e, 0x87, 0x19, 0x3e, 0x10, 0x03,
+        0x81, 0x35, 0xee, 0x69, 0xf4, 0x7c, 0xee, 0x74,
+        0x71, 0x9c, 0xfd, 0xaa, 0x3f, 0x32, 0xea, 0x4c,
+      },
+      { /* IV || key */
+        0x6e, 0xfb, 0x1e, 0xbf, 0xa5, 0xb7, 0x3a, 0xb2,
+        0x9e, 0xc5, 0xe0, 0x70, 0xc7, 0x8f, 0x1a, 0xad,
+        0xf6, 0xbc, 0x71, 0x7e, 0x5d, 0x59, 0x63, 0xfe,
+        0x15, 0xa7, 0x07, 0x2e, 0xf9, 0xf9, 0x14, 0xa5,
+      } },
+    { "7E18 applelogo",
+      { /* KBAG ciphertext */
+        0x76, 0xfb, 0x74, 0x19, 0x7b, 0x69, 0x32, 0x51,
+        0x14, 0x75, 0xba, 0x78, 0xa4, 0xad, 0x03, 0x67,
+        0x35, 0x31, 0x63, 0x20, 0xe0, 0x58, 0x68, 0x5a,
+        0x28, 0x0a, 0xd9, 0x8e, 0xf7, 0xec, 0x0c, 0x6c,
+      },
+      { /* IV || key */
+        0xf2, 0x46, 0xcf, 0xef, 0xd3, 0x63, 0xc2, 0xec,
+        0x38, 0x92, 0x74, 0x73, 0xbe, 0x6f, 0x6d, 0x45,
+        0xaf, 0xa3, 0x73, 0x77, 0xde, 0x73, 0xfd, 0xf1,
+        0xe2, 0xad, 0x6b, 0x01, 0x17, 0xcd, 0x28, 0x47,
+      } },
+    { "7E18 recoverymode",
+      { /* KBAG ciphertext */
+        0xb1, 0x05, 0x5f, 0xd5, 0x55, 0x29, 0x6c, 0xe1,
+        0x62, 0xb8, 0x1e, 0x48, 0xeb, 0x13, 0x02, 0xe4,
+        0x16, 0x77, 0x4a, 0xf8, 0xea, 0x7d, 0xaf, 0x4b,
+        0x2a, 0x54, 0xbe, 0x57, 0xd4, 0xd4, 0x89, 0xea,
+      },
+      { /* IV || key */
+        0x69, 0x9f, 0x77, 0xd3, 0x02, 0x5f, 0xf2, 0xbb,
+        0xec, 0x9b, 0xd4, 0xef, 0x0a, 0x0d, 0x8c, 0xbe,
+        0x6f, 0x74, 0x55, 0xd8, 0xc3, 0x43, 0x07, 0xe9,
+        0xed, 0xeb, 0x40, 0xfd, 0xe7, 0x34, 0x31, 0x00,
+      } },
+    { "7E18 needservice",
+      { /* KBAG ciphertext */
+        0x02, 0x09, 0xfe, 0x6c, 0x13, 0x1f, 0x1b, 0x92,
+        0xce, 0x97, 0x13, 0xd6, 0x7f, 0xf1, 0xd7, 0xc9,
+        0xdd, 0x7d, 0x23, 0x1a, 0x74, 0x57, 0x22, 0xe3,
+        0xc4, 0x44, 0x1e, 0x54, 0xf2, 0xfc, 0x00, 0xc7,
+      },
+      { /* IV || key */
+        0x97, 0xda, 0xf9, 0x65, 0xaf, 0x6f, 0x6d, 0xed,
+        0x84, 0x07, 0x40, 0xb9, 0x4e, 0x0a, 0xfb, 0x2f,
+        0x42, 0x76, 0x3b, 0xad, 0xc9, 0x69, 0xc0, 0x84,
+        0xb9, 0x8e, 0xda, 0xb3, 0xce, 0xcf, 0xc5, 0x35,
+      } },
+    { "7E18 batterycharging0",
+      { /* KBAG ciphertext */
+        0x5b, 0x87, 0x1b, 0x0f, 0xc4, 0x61, 0x04, 0x1f,
+        0xe0, 0xca, 0x67, 0x11, 0x92, 0xa1, 0x9c, 0xa9,
+        0x8e, 0x77, 0x69, 0xd6, 0x87, 0x03, 0x3f, 0x72,
+        0xcb, 0xdf, 0x19, 0xde, 0xeb, 0x23, 0x2c, 0x79,
+      },
+      { /* IV || key */
+        0xf6, 0x17, 0x03, 0x35, 0x46, 0xf7, 0x42, 0x17,
+        0x00, 0x11, 0x66, 0x96, 0x56, 0xb5, 0x74, 0x94,
+        0xa8, 0xab, 0x6a, 0x75, 0x7b, 0x1f, 0x2c, 0xfd,
+        0xb6, 0x9f, 0x8a, 0x24, 0x55, 0xe0, 0xaa, 0x95,
+      } },
+    { "7E18 batterycharging1",
+      { /* KBAG ciphertext */
+        0x96, 0x1d, 0xa0, 0xc2, 0x10, 0x22, 0xfe, 0xb1,
+        0xc9, 0x93, 0xab, 0xce, 0x0c, 0xf5, 0x48, 0x15,
+        0x84, 0x03, 0xf9, 0x08, 0x1d, 0xee, 0xaa, 0xb9,
+        0x01, 0x2f, 0x14, 0x00, 0x4f, 0xaa, 0x49, 0xe5,
+      },
+      { /* IV || key */
+        0xb8, 0xfe, 0xf8, 0x82, 0x7e, 0xa3, 0x40, 0xc1,
+        0x29, 0x43, 0xf3, 0xdc, 0xca, 0x85, 0xba, 0x82,
+        0x33, 0xbe, 0x76, 0xbb, 0x80, 0x25, 0x4e, 0xb1,
+        0x69, 0x59, 0x37, 0xb5, 0xe1, 0xbb, 0x35, 0xbc,
+      } },
+    { "7E18 batteryfull",
+      { /* KBAG ciphertext */
+        0xdc, 0xf9, 0x0f, 0x1e, 0x88, 0xe1, 0x47, 0xaa,
+        0xb2, 0x0c, 0xe0, 0x84, 0xfb, 0xf4, 0xf6, 0x97,
+        0xbd, 0x28, 0xbd, 0xd7, 0xfd, 0xff, 0x7a, 0xcc,
+        0xd4, 0x5c, 0x0b, 0x6b, 0x87, 0xd8, 0x21, 0xc3,
+      },
+      { /* IV || key */
+        0xe1, 0x13, 0x4a, 0x58, 0x05, 0xa7, 0xb3, 0x22,
+        0x65, 0x35, 0xe0, 0x21, 0x27, 0xf5, 0x5e, 0xdf,
+        0x3a, 0x4b, 0xfc, 0x0b, 0x1d, 0xbc, 0x6e, 0xe5,
+        0x48, 0xd0, 0xf9, 0x67, 0x25, 0x7d, 0xe9, 0xe4,
+      } },
+    { "7E18 batterylow0",
+      { /* KBAG ciphertext */
+        0x50, 0x9d, 0xe1, 0x84, 0xa6, 0xed, 0x7b, 0x50,
+        0x62, 0xaf, 0xf8, 0xf1, 0xd5, 0xdf, 0x84, 0xfc,
+        0x3e, 0x19, 0xc4, 0x69, 0xd0, 0x81, 0xb6, 0xb3,
+        0xda, 0xbe, 0xaa, 0xf4, 0x8a, 0xe9, 0xc1, 0xe3,
+      },
+      { /* IV || key */
+        0x19, 0x19, 0xe9, 0x80, 0xba, 0x5e, 0xb6, 0x75,
+        0xa4, 0x0f, 0xc8, 0xe3, 0x2c, 0xbe, 0xf5, 0xcf,
+        0xbc, 0x47, 0x6d, 0xc3, 0x59, 0xc2, 0x61, 0xb9,
+        0xd9, 0xdf, 0x94, 0x61, 0x6e, 0xcc, 0xc5, 0x6a,
+      } },
+    { "7E18 batterylow1",
+      { /* KBAG ciphertext */
+        0x91, 0x88, 0x7f, 0x49, 0xba, 0x6e, 0xa4, 0xf2,
+        0xf1, 0xa5, 0xa0, 0x0c, 0xc2, 0xb9, 0xbe, 0x20,
+        0xc7, 0xd6, 0xe8, 0x02, 0x9d, 0x08, 0x95, 0xfb,
+        0x04, 0x8f, 0xfa, 0xd7, 0x7c, 0x0f, 0xea, 0x1d,
+      },
+      { /* IV || key */
+        0xe3, 0x02, 0xf4, 0x53, 0xf0, 0xc7, 0x09, 0x74,
+        0x54, 0xef, 0x24, 0xdb, 0x37, 0x2b, 0xaa, 0x37,
+        0xa3, 0xda, 0x43, 0x56, 0x7a, 0x56, 0xfb, 0xf6,
+        0xff, 0x0a, 0x10, 0x66, 0xba, 0xde, 0x42, 0x8b,
+      } },
+    { "7E18 glyphcharging",
+      { /* KBAG ciphertext */
+        0xef, 0x32, 0x6d, 0x64, 0x42, 0xf3, 0x57, 0xbb,
+        0xde, 0x74, 0x6e, 0x43, 0x43, 0x74, 0x1d, 0x72,
+        0xfb, 0xf9, 0xc8, 0x61, 0xfe, 0x29, 0xda, 0x0b,
+        0x68, 0x68, 0x85, 0x13, 0x89, 0x62, 0xd0, 0x09,
+      },
+      { /* IV || key */
+        0x82, 0x81, 0xfd, 0x3f, 0x40, 0x89, 0xc0, 0x69,
+        0xde, 0x20, 0xe8, 0x83, 0x73, 0xd2, 0x27, 0x3d,
+        0xda, 0xbf, 0xdd, 0xef, 0xe4, 0x62, 0x82, 0xbd,
+        0x7e, 0xdf, 0x5d, 0xf6, 0xf9, 0x30, 0xcf, 0x93,
+      } },
+    { "7E18 glyphplugin",
+      { /* KBAG ciphertext */
+        0x01, 0x5a, 0xe2, 0xce, 0x23, 0x22, 0x21, 0x8f,
+        0x99, 0x37, 0xc1, 0xc2, 0x65, 0x27, 0x4f, 0xa5,
+        0xef, 0x92, 0x42, 0x59, 0xff, 0x42, 0x5b, 0x3e,
+        0xee, 0xf3, 0x2e, 0xe1, 0xbc, 0xe0, 0xcb, 0xfb,
+      },
+      { /* IV || key */
+        0xb4, 0xa5, 0x64, 0xff, 0x95, 0xdd, 0x75, 0x8c,
+        0x0f, 0xa6, 0x3f, 0x64, 0xc4, 0x65, 0x2f, 0xca,
+        0x0d, 0x3c, 0x5a, 0x24, 0x60, 0x47, 0xf1, 0x3b,
+        0xf9, 0x6a, 0xa7, 0xee, 0x1a, 0xb2, 0xc7, 0xe8,
+      } },
+};
+
+/*
+ * More blobs from the gid-blobs=FILE machine option: 64-byte records, KBAG
+ * ciphertext then IV || key, written by imgtools/ipod2g_device.py from the
+ * IPSW's own img3 KBAGs and the build's key page. That is how a firmware with
+ * no entry above boots without a table edit; an unknown KBAG stays fatal.
+ */
+static ITGidBlob *it_gid_extra;
+static size_t it_gid_extra_count;
+
+/* aes-uid machine option; see AES_GO. Off (legacy) keeps existing images'
+ * keychains, whose keys were derived by the legacy path, readable. */
+static bool it_aes_uid_engine;
+
+void ipod_touch_aes_set_uid_engine(bool on)
+{
+    it_aes_uid_engine = on;
+}
+
+bool ipod_touch_aes_set_gid_blobs(const uint8_t *data, size_t size)
+{
+    if (!size || size % (2 * IT_AES_GID_BLOB_SIZE)) {
+        return false;
+    }
+    g_free(it_gid_extra);
+    it_gid_extra_count = size / (2 * IT_AES_GID_BLOB_SIZE);
+    it_gid_extra = g_malloc(it_gid_extra_count * sizeof(ITGidBlob));
+    for (size_t i = 0; i < it_gid_extra_count; i++) {
+        it_gid_extra[i].name = "gid-blobs";
+        memcpy(it_gid_extra[i].kbag, data + i * 2 * IT_AES_GID_BLOB_SIZE, IT_AES_GID_BLOB_SIZE);
+        memcpy(it_gid_extra[i].plain, data + (i * 2 + 1) * IT_AES_GID_BLOB_SIZE, IT_AES_GID_BLOB_SIZE);
+    }
+    return true;
+}
+
+static const ITGidBlob *it_gid_lookup(const uint8_t *kbag)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(it_gid_blobs); i++) {
+        if (memcmp(it_gid_blobs[i].kbag, kbag, IT_AES_GID_BLOB_SIZE) == 0) {
+            return &it_gid_blobs[i];
+        }
+    }
+    for (size_t i = 0; i < it_gid_extra_count; i++) {
+        if (memcmp(it_gid_extra[i].kbag, kbag, IT_AES_GID_BLOB_SIZE) == 0) {
+            return &it_gid_extra[i];
+        }
+    }
+    return NULL;
+}
+
+static uint64_t ipod_touch_aes_read(void *opaque, hwaddr offset, unsigned size)
+{
+    struct IPodTouchAESState *aesop = (struct IPodTouchAESState *)opaque;
+
+    switch(offset) {
+        case AES_STATUS:
+            return aesop->status;
+        case AES_OUTADDR:
+            return aesop->outaddr + aesop->addr_offset;
+        case AES_AUXSIZE:
+            return aesop->auxsize;
+      default:
+            //fprintf(stderr, "%s: UNMAPPED AES_ADDR @ offset 0x%08x\n", __FUNCTION__, offset);
+            break;
+    }
+
+    return 0;
+}
+
+static void aes_update_irq(IPodTouchAESState *s)
+{
+    qemu_set_irq(s->irq, (s->status & s->unkreg1 & 7) != 0);
+}
+
+/* Custom-key key schedule and chaining IV from the registers. The kernel
+ * places a 128/192/256-bit key at the END of the 8-word key bank. */
+static void aes_custom_load(IPodTouchAESState *s)
+{
+    static const unsigned bits[4] = { 128, 192, 256, 128 };
+    unsigned kb = bits[(s->operation >> 4) & 3];
+    const uint8_t *key = (const uint8_t *)s->custkey + 32 - kb / 8;
+
+    if (s->operation & 1) {
+        AES_set_encrypt_key(key, kb, &s->decryptKey);
+    } else {
+        AES_set_decrypt_key(key, kb, &s->decryptKey);
+    }
+}
+
+/*
+ * Custom-key operation, as 3.1.3's AppleS5L8900XAES drives it: a stream of
+ * 0x18 bytes read from input segments (0x28/0x2c) and written to output
+ * segments (0x20/0x24). A buffer spanning pages comes as several segments,
+ * each asked for with a status bit + IRQ 0x27 and resumed with GO=3, and a
+ * block may straddle two of them (as on the A4, 4852551a77). Single-segment
+ * requests (the kernel's polled path, iBoot) finish inside this write.
+ * Before this, the model decrypted 0x20 into 0x28 whatever KEYLEN said:
+ * CommonCrypto's hardware path (> 64 blocks, aligned) returned wrong bytes,
+ * overwrote the caller's input, and a buffer over one page hung its caller
+ * waiting for an interrupt that never came.
+ */
+static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
+{
+    /* The retained 5F138 trace identifies exactly these three custom-key,
+     * in-place 128-byte operations. Another operation with the same
+     * shape at 0x0ff290ac must decrypt, so shape alone is insufficient.
+     * ponytail: address-specific boot compatibility remains unresolved;
+     * replace it only after identifying the payloads, not other DMA. */
+    bool preserve = s->insize == 128 && s->inaddr == s->outaddr &&
+        (s->outaddr == 0x220100ac || s->outaddr == 0x0bf08468 ||
+         s->outaddr == 0x0fb9bcdc);
+    bool enc = s->operation & 1;
+    /* Without the segment interrupt enabled nobody can supply another
+     * segment (iBoot; the kernel's polled path, which only takes requests
+     * contiguous end to end), so the first segment holds everything. */
+    bool segmented = s->unkreg1 & (AES_ST_NEED_IN | AES_ST_NEED_OUT);
+    uint32_t in_addr = s->outaddr, in_len = segmented ? s->auxsize : s->insize;
+    uint32_t out_addr = s->inaddr, out_len = segmented ? s->outsize : s->insize;
+
+    if (go == 1 || !s->streaming) {
+        aes_custom_load(s);
+        memcpy(s->chain_iv, s->ivec, 16);
+        s->remaining = s->insize;
+        s->in_fill = s->out_left = 0;
+        s->streaming = true;
+    }
+    s->status = 0;
+    for (;;) {
+        if (s->out_left) {                          /* flush a straddling block */
+            uint32_t n = MIN(s->out_left, out_len);
+            if (!n) {
+                s->status = AES_ST_NEED_OUT;
+                break;
+            }
+            if (!preserve) {
+                cpu_physical_memory_write(out_addr, s->out_blk + 16 - s->out_left, n);
+            }
+            out_addr += n; out_len -= n; s->out_left -= n;
+            continue;
+        }
+        if (s->remaining < 16) {
+            /* Real hardware leaves a trailing partial block alone. */
+            if (s->remaining && s->in_fill == 0 && in_len && out_len && !preserve) {
+                uint32_t n = MIN(s->remaining, MIN(in_len, out_len));
+                uint8_t tail[16];
+                cpu_physical_memory_read(in_addr, tail, n);
+                if (in_addr != out_addr) {
+                    cpu_physical_memory_write(out_addr, tail, n);
+                }
+            }
+            s->status = 0xf;                        /* done; the legacy value */
+            break;
+        }
+        if (s->in_fill == 0 && in_len >= 16 && out_len >= 16) {  /* bulk */
+            uint32_t n = MIN(IT_AES_DMA_CHUNK,
+                             MIN(s->remaining, MIN(in_len, out_len))) & ~15u;
+            uint8_t *buf = g_malloc(n);
+            cpu_physical_memory_read(in_addr, buf, n);
+            AES_cbc_encrypt(buf, buf, n, &s->decryptKey, s->chain_iv,
+                            enc ? AES_ENCRYPT : AES_DECRYPT);
+            if (!preserve) {
+                cpu_physical_memory_write(out_addr, buf, n);
+            }
+            g_free(buf);
+            in_addr += n; in_len -= n; out_addr += n; out_len -= n;
+            s->remaining -= n;
+            continue;
+        }
+        if (s->in_fill < 16) {                      /* gather a straddling block */
+            uint32_t n = MIN(16 - s->in_fill, in_len);
+            if (!n) {
+                s->status = AES_ST_NEED_IN | (out_len ? 0 : AES_ST_NEED_OUT);
+                break;
+            }
+            cpu_physical_memory_read(in_addr, s->in_blk + s->in_fill, n);
+            in_addr += n; in_len -= n; s->in_fill += n;
+            continue;
+        }
+        AES_cbc_encrypt(s->in_blk, s->out_blk, 16, &s->decryptKey, s->chain_iv,
+                        enc ? AES_ENCRYPT : AES_DECRYPT);
+        s->in_fill = 0;
+        s->out_left = 16;
+        s->remaining -= 16;
+    }
+    /* Leave the registers where the engine stopped; the ISR replaces
+     * whichever segment ran out. */
+    s->outaddr = in_addr; s->auxsize = in_len;
+    s->inaddr = out_addr; s->outsize = out_len;
+    if (s->status == 0xf) {
+        s->streaming = false;
+        s->outsize = s->insize;
+        memset(s->custkey, 0, sizeof(s->custkey));
+        memset(s->ivec, 0, sizeof(s->ivec));
+    }
+    if (it_aes_debug()) {
+        fprintf(stderr, "ipodtouch.aes: custom %s go=%u status=0x%x left=%u\n",
+                enc ? "enc" : "dec", go, s->status, s->remaining);
+    }
+    aes_update_irq(s);
+}
+
+/* CBC keeps its IV between chunks; a partial final block passes through. */
+static void aes_legacy_dma(IPodTouchAESState *s, int direction)
+{
+    uint8_t *buf = g_malloc(IT_AES_DMA_CHUNK);
+    uint32_t left = s->insize;
+    hwaddr in = s->inaddr, out = s->outaddr;
+
+    while (left) {
+        uint32_t n = MIN(left, IT_AES_DMA_CHUNK);
+        cpu_physical_memory_read(in, buf, n);
+        AES_cbc_encrypt(buf, buf, n & ~15u, &s->decryptKey,
+                        (uint8_t *)s->ivec, direction);
+        cpu_physical_memory_write(out, buf, n);
+        in += n;
+        out += n;
+        left -= n;
+    }
+    g_free(buf);
+}
+
+/*
+ * s5l8900-compat: the operation exactly as devos50's iPod touch 1G model ran
+ * it (ipod_touch_aes.c on his ipod_touch_1g branch), because his public NOR
+ * carries IMG2 signatures computed for that model, not for the hardware:
+ * GID does nothing (not even status), UID uses key_uid, a custom key is the
+ * whole 32-byte key register block, every key is expanded as a DECRYPT
+ * schedule, and the direction is the second KEYLEN write since GO (iBoot-204
+ * writes 6, 7, 7, 0xF, so it always "encrypts"). Debt: the M1 NOR generator
+ * signs with the real convention and this mode goes away.
+ */
+static void aes_s5l8900_compat_go(IPodTouchAESState *aesop)
+{
+    aesop->compat_keylen_writes = 0;
+    if (aesop->keytype == AESGID || !aesop->insize) {
+        return;
+    }
+    if (aesop->keytype == AESUID) {
+        AES_set_decrypt_key(key_uid, 128, &aesop->decryptKey);
+    } else {
+        AES_set_decrypt_key((uint8_t *)aesop->custkey, 256, &aesop->decryptKey);
+    }
+    aes_legacy_dma(aesop, aesop->compat_op ? AES_ENCRYPT : AES_DECRYPT);
+    memset(aesop->custkey, 0, sizeof(aesop->custkey));
+    memset(aesop->ivec, 0, sizeof(aesop->ivec));
+    aesop->outsize = aesop->insize;
+    aesop->status = 0xf;
+    aes_update_irq(aesop);
+}
+
+static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    struct IPodTouchAESState *aesop = (struct IPodTouchAESState *)opaque;
+
+    uint8_t *inbuf;
+    uint8_t *buf;
+
+    // fprintf(stderr, "%s: offset 0x%08x value 0x%08x\n", __FUNCTION__, offset, value);
+
+    switch(offset) {
+        case AES_GO:
+            if (aesop->s5l8900_compat) {
+                aes_s5l8900_compat_go(aesop);
+                break;
+            }
+            /*
+             * aes-uid=engine: UID operations, and GID operations shorter than
+             * a KBAG (the 4.x kernel derives key 0x837 from a 16-byte seed),
+             * run through the engine like a custom key -- input at 0x28, output
+             * at 0x20, KEYLEN's direction -- with a fixed stand-in for the fused
+             * key. The 4.x keybag needs that: the legacy path below leaves the
+             * kernel's output buffer untouched, so 0x835/0x89B derive as zeros
+             * and AppleKeyStore cannot open the system keybag
+             * (kb_deserialize=e00002c9). KBAG-sized GID operations stay table
+             * lookups either way.
+             */
+            if (it_aes_uid_engine && (aesop->keytype == AESUID ||
+                (aesop->keytype == AESGID && aesop->insize < IT_AES_GID_BLOB_SIZE))) {
+                memcpy((uint8_t *)aesop->custkey + 16,
+                       aesop->keytype == AESUID ? key_uid : key_gid_standin, 16);
+                aes_custom_go(aesop, value);
+                break;
+            }
+            if (aesop->keytype == AESCustom) {
+                aes_custom_go(aesop, value);
+                break;
+            }
+            /*
+             * UID and GID with aes-uid=legacy (the default): the original
+             * single-shot model, unchanged on purpose. It reads 0x20 and writes 0x28 (the kernel's output
+             * and input segments) and always decrypts, so the kernel's UID
+             * encrypts (the 0x835/0x89B derivations at boot) come out as
+             * whatever the output buffer held. Keys derived that way
+             * protect keychain items already on existing images; making
+             * them "correct" would lock those items out.
+             */
+            inbuf = g_malloc(IT_AES_GID_BLOB_SIZE);
+            cpu_physical_memory_read(aesop->inaddr, inbuf,
+                                     MIN(aesop->insize, IT_AES_GID_BLOB_SIZE));
+
+            switch(aesop->keytype) {
+                    case AESGID:
+                        break;         
+                    case AESUID:
+                        AES_set_decrypt_key(key_uid, sizeof(key_uid) * 8, &aesop->decryptKey);
+                        break;
+                    case AESCustom:
+                        AES_set_decrypt_key((uint8_t *)(&aesop->custkey[4]), 0x10 * 8, &aesop->decryptKey);
+                        break;
+            }
+
+            buf = g_malloc(IT_AES_DMA_CHUNK);
+            if (it_aes_debug()) {
+                fprintf(stderr, "ipodtouch.aes: type=%d in=0x%08x/%u out=0x%08x\n",
+                        aesop->keytype, aesop->inaddr, aesop->insize, aesop->outaddr);
+            }
+
+            if(aesop->keytype == AESGID) {
+                /*
+                 * The GID key lives in fuses we cannot read.  The only thing the
+                 * boot chain ever asks it to do is decrypt an img3 KBAG blob, so
+                 * look the ciphertext up in it_gid_blobs[] and hand back the
+                 * matching plaintext.  See the comment on the table above.
+                 */
+                const ITGidBlob *blob = NULL;
+
+                if (aesop->insize >= IT_AES_GID_BLOB_SIZE) {
+                    blob = it_gid_lookup(inbuf);
+                }
+                if (blob == NULL) {
+                    char hex[IT_AES_GID_BLOB_SIZE * 2 + 1];
+                    uint32_t n = MIN(aesop->insize, (uint32_t)IT_AES_GID_BLOB_SIZE);
+                    for (uint32_t i = 0; i < n; i++) {
+                        snprintf(hex + i * 2, 3, "%02x", inbuf[i]);
+                    }
+                    hex[n * 2] = '\0';
+                    error_report("ipodtouch.aes: GID operation on an unknown KBAG "
+                                 "(%u bytes at 0x%08x): %s", aesop->insize,
+                                 aesop->inaddr, hex);
+                    error_report("This firmware image is not in the built-in GID "
+                                 "blob table or the gid-blobs file; a device made "
+                                 "by imgtools/device.py ships gid-blobs.bin.");
+                    exit(1);
+                }
+
+                if (it_aes_debug()) {
+                    fprintf(stderr, "ipodtouch.aes: GID KBAG matched \"%s\"\n", blob->name);
+                }
+
+                memset(buf, 0, IT_AES_DMA_CHUNK);
+                memcpy(buf, blob->plain, MIN(aesop->insize, (uint32_t)IT_AES_GID_BLOB_SIZE));
+            }
+            else {
+                aes_legacy_dma(aesop, AES_DECRYPT);
+            }
+
+            /* The retained 5F138 trace identifies exactly these three custom-key,
+             * in-place 128-byte operations. Another operation with the same
+             * shape at 0x0ff290ac must decrypt, so shape alone is insufficient.
+             * ponytail: address-specific boot compatibility remains unresolved;
+             * replace it only after identifying the payloads, not other DMA. */
+            bool preserve = aesop->keytype == AESCustom && aesop->insize == 128 &&
+                aesop->inaddr == aesop->outaddr &&
+                (aesop->outaddr == 0x220100ac || aesop->outaddr == 0x0bf08468 ||
+                 aesop->outaddr == 0x0fb9bcdc);
+            if (!preserve && aesop->keytype == AESGID) {
+                uint32_t left = aesop->insize;
+                hwaddr out = aesop->outaddr;
+                while (left) {
+                    uint32_t n = MIN(left, IT_AES_DMA_CHUNK);
+                    cpu_physical_memory_write(out, buf, n);
+                    /* Only the first chunk carries the KBAG plaintext. */
+                    memset(buf, 0, IT_AES_GID_BLOB_SIZE);
+                    out += n;
+                    left -= n;
+                }
+            }
+
+            memset(aesop->custkey, 0, 0x20);
+            memset(aesop->ivec, 0, 0x10);
+            g_free(inbuf);
+            g_free(buf);
+            aesop->outsize = aesop->insize;
+            aesop->status = 0xf;
+            break;
+        case AES_KEYLEN:
+            aesop->operation = value;
+            aesop->keylen = value;
+            if (aesop->compat_keylen_writes++ == 1) {
+                aesop->compat_op = value;   /* the second write since GO, as devos50 read it */
+            }
+            break;
+        case AES_INADDR:
+            aesop->inaddr = value - aesop->addr_offset;
+            break;
+        case AES_INSIZE:
+            aesop->insize = value;
+            break;
+        case AES_OUTSIZE:
+            aesop->outsize = value;
+            break;
+        case AES_OUTADDR:
+            aesop->outaddr = value - aesop->addr_offset;
+            break;
+        case AES_AUXSIZE:
+            aesop->auxsize = value;
+            break;
+        case AES_UNKREG0:
+            /* The driver pulses this (1 then 0) before every request: a
+             * reset. Status must not survive it, or enabling the IRQ for a
+             * segmented request fires the previous polled request's done
+             * bit into an ISR that has no request yet (kernel abort,
+             * NULL+0x20). */
+            aesop->unkreg0 = value;
+            if (value & 1) {
+                aesop->status = 0;
+                aesop->streaming = false;
+                aes_update_irq(aesop);
+            }
+            break;
+        case AES_IRQEN:
+            aesop->unkreg1 = value;
+            aes_update_irq(aesop);
+            break;
+        case AES_STATUS:
+            if (aesop->streaming || aesop->unkreg1) {
+                aesop->status &= ~value;      /* the ISR acks what it handled */
+                aes_update_irq(aesop);
+            }
+            break;
+        case AES_TYPE:
+            aesop->keytype = value;
+            break;
+        case AES_KEY_REG ... ((AES_KEY_REG + AES_KEYSIZE) - 1):
+            {
+                uint8_t idx = (offset - AES_KEY_REG) / 4;
+                aesop->custkey[idx] |= value;
+                break;
+            }
+        case AES_IV_REG ... ((AES_IV_REG + AES_IVSIZE) -1 ):
+            {
+                uint8_t idx = (offset - AES_IV_REG) / 4;
+                aesop->ivec[idx] |= value;
+                break;
+            }
+        default:
+            //fprintf(stderr, "%s: UNMAPPED AES_ADDR @ offset 0x%08x - 0x%08x\n", __FUNCTION__, offset, value);
+            break;
+    }
+}
+
+static const MemoryRegionOps aes_ops = {
+    .read = ipod_touch_aes_read,
+    .write = ipod_touch_aes_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static void ipod_touch_aes_init(Object *obj)
+{
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    DeviceState *dev = DEVICE(sbd);
+    IPodTouchAESState *s = IPOD_TOUCH_AES(dev);
+
+    memory_region_init_io(&s->iomem, obj, &aes_ops, s, "aes", 0x100);
+    sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->irq);
+
+    memset(&s->custkey, 0, 8 * sizeof(uint32_t));
+    memset(&s->ivec, 0, 4 * sizeof(uint32_t));
+
+}
+
+/* Key material, IV and the DMA descriptor are all loaded per operation. The
+ * expanded decryptKey is derived state and is rebuilt on the next key load. */
+static void ipod_touch_aes_reset(DeviceState *dev)
+{
+    IPodTouchAESState *s = IPOD_TOUCH_AES(dev);
+
+    memset(&s->decryptKey, 0, sizeof(s->decryptKey));
+    memset(s->ivec, 0, sizeof(s->ivec));
+    memset(s->custkey, 0, sizeof(s->custkey));
+    s->insize = 0;
+    s->inaddr = 0;
+    s->outsize = 0;
+    s->outaddr = 0;
+    s->auxaddr = 0;
+    s->keytype = 0;
+    s->status = 0;
+    s->ctrl = 0;
+    s->unkreg0 = 0;
+    s->unkreg1 = 0;
+    s->operation = 0;
+    s->keylen = 0;
+    s->auxsize = 0;
+    s->streaming = false;
+    s->remaining = s->in_fill = s->out_left = 0;
+}
+
+static int aes_post_load(void *opaque, int version_id)
+{
+    IPodTouchAESState *s = opaque;
+    if (s->streaming) {
+        aes_custom_load(s);             /* the schedule is derived state */
+    }
+    return 0;
+}
+
+static bool aes_stream_needed(void *opaque)
+{
+    IPodTouchAESState *s = opaque;
+    return s->streaming || s->auxsize;
+}
+
+/* A segmented request waiting in the ISR's window between two segments. */
+static const VMStateDescription vmstate_aes_stream = {
+    .name = "ipod_touch_aes/stream",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = aes_stream_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(auxsize, IPodTouchAESState),
+        VMSTATE_UINT32(remaining, IPodTouchAESState),
+        VMSTATE_UINT8_ARRAY(chain_iv, IPodTouchAESState, 16),
+        VMSTATE_UINT8_ARRAY(in_blk, IPodTouchAESState, 16),
+        VMSTATE_UINT8_ARRAY(out_blk, IPodTouchAESState, 16),
+        VMSTATE_UINT32(in_fill, IPodTouchAESState),
+        VMSTATE_UINT32(out_left, IPodTouchAESState),
+        VMSTATE_BOOL(streaming, IPodTouchAESState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* decryptKey is an expanded key schedule derived from custkey/keytype and is
+ * rebuilt on the next key load, so only the guest-visible registers travel. */
+static const VMStateDescription vmstate_ipod_touch_aes = {
+    .name = "ipod_touch_aes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = aes_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(ivec, IPodTouchAESState, 4),
+        VMSTATE_UINT32(insize, IPodTouchAESState),
+        VMSTATE_UINT32(inaddr, IPodTouchAESState),
+        VMSTATE_UINT32(outsize, IPodTouchAESState),
+        VMSTATE_UINT32(outaddr, IPodTouchAESState),
+        VMSTATE_UINT32(auxaddr, IPodTouchAESState),
+        VMSTATE_UINT32(keytype, IPodTouchAESState),
+        VMSTATE_UINT32(status, IPodTouchAESState),
+        VMSTATE_UINT32(ctrl, IPodTouchAESState),
+        VMSTATE_UINT32(unkreg0, IPodTouchAESState),
+        VMSTATE_UINT32(unkreg1, IPodTouchAESState),
+        VMSTATE_UINT32(operation, IPodTouchAESState),
+        VMSTATE_UINT32(keylen, IPodTouchAESState),
+        VMSTATE_UINT32_ARRAY(custkey, IPodTouchAESState, 8),
+        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_aes_stream,
+        NULL
+    },
+};
+
+static const Property ipod_touch_aes_properties[] = {
+    /* Bus address the engine sees minus the CPU's: 0x80000000 on the S5L8900. */
+    DEFINE_PROP_UINT32("addr-offset", IPodTouchAESState, addr_offset, 0),
+    DEFINE_PROP_BOOL("s5l8900-compat", IPodTouchAESState, s5l8900_compat, false),
+};
+
+static void ipod_touch_aes_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    device_class_set_props(dc, ipod_touch_aes_properties);
+
+    device_class_set_legacy_reset(dc, ipod_touch_aes_reset);
+    dc->vmsd = &vmstate_ipod_touch_aes;
+}
+
+static const TypeInfo ipod_touch_aes_info = {
+    .name          = TYPE_IPOD_TOUCH_AES,
+    .parent        = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(IPodTouchAESState),
+    .instance_init = ipod_touch_aes_init,
+    .class_init    = ipod_touch_aes_class_init,
+};
+
+static void ipod_touch_machine_types(void)
+{
+    type_register_static(&ipod_touch_aes_info);
+}
+
+type_init(ipod_touch_machine_types)

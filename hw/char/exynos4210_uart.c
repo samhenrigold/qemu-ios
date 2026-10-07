@@ -127,6 +127,22 @@ static const Exynos4210UartReg exynos4210_uart_regs[] = {
 #define UTRSTAT_Tx_BUFFER_EMPTY         0x2
 #define UTRSTAT_Rx_BUFFER_DATA_READY    0x1
 
+/*
+ * S5L8720 acknowledges interrupts through UTRSTAT (write-one-to-clear),
+ * with enables in UCON[14:11]. The 7E18 ISR at 0xc059aecc handles timeout
+ * (0x08), receive threshold (0x10), transmit (0x20), and error (0x40).
+ * Bit 0x100 is AUTOBAUD, not receive: its handler divides the clock by
+ * UABRCNT at offset 0x2c. Mapping RX there hid the receive-timeout callback
+ * and made the Bluetooth client block SpringBoard's launch animation.
+ */
+#define UTRSTAT_S5L_Tx_INT              0x20
+#define UTRSTAT_S5L_Rx_INT              0x10
+#define UTRSTAT_S5L_Err_INT             0x40
+#define UCON_S5L_TIMEOUT_INT_ENABLE     (1 << 11)
+#define UCON_S5L_RX_INT_ENABLE          (1 << 12)
+#define UCON_S5L_TX_INT_ENABLE          (1 << 13)
+#define UCON_S5L_ERROR_INT_ENABLE       (1 << 14)
+
 /* UART Error Status */
 #define UERSTAT_OVERRUN  0x1
 #define UERSTAT_PARITY   0x2
@@ -157,8 +173,23 @@ struct Exynos4210UartState {
     CharFrontend       chr;
     qemu_irq          irq;
     qemu_irq          dmairq;
+    /*
+     * Rx DMA REQUEST, as the peripheral actually drives it: high only while
+     * the guest has Rx DMA selected AND there are bytes to fetch. dmairq
+     * cannot be reused for this -- it also reads low when Rx DMA is disabled,
+     * and asserting a request then makes the DMAC read an empty FIFO, which is
+     * the invented-data wedge described at pl080_attach_paced_peripheral() in
+     * hw/arm/ipod_touch_2g.c.
+     */
+    qemu_irq          rxdmareq;
+    /* Retain receive activity across a DMA-mode change until its timeout. */
+    bool              rx_since_timeout;
 
     uint32_t channel;
+    bool s5l8720_irq;
+    uint32_t tx_char_ns;          /* "tx-char-ns": transmit pacing, 0 = instant */
+    bool cts;                     /* "cts": the far end holds CTS asserted (UMSTAT bit 0) */
+    QEMUTimer *tx_done_timer;
 
 };
 
@@ -201,9 +232,15 @@ static int fifo_elements_number(const Exynos4210UartFIFO *q)
     return q->sp - q->rp;
 }
 
+/*
+ * The ring keeps one slot free: sp == rp means empty, so a ring filled to
+ * `size` read back as empty. With 256-byte FIFOs that never happened; the
+ * iPad's 16-byte UART5 filled with every 16-symbol HDQ echo and lost it.
+ * (Keeps sp/rp/data as they were, so saved states still load.)
+ */
 static int fifo_empty_elements_number(const Exynos4210UartFIFO *q)
 {
-    return q->size - fifo_elements_number(q);
+    return q->size - 1 - fifo_elements_number(q);
 }
 
 static void fifo_reset(Exynos4210UartFIFO *q)
@@ -228,15 +265,16 @@ static uint32_t exynos4210_uart_FIFO_trigger_level(uint32_t channel,
         break;
     case 1:
     case 4:
+    default:
+        /* S5L8930 UART5 (the iPad's HDQ gas-gauge line) lands here. A level
+         * of 0 made "count >= level" true with an empty FIFO, so the Rx
+         * interrupt could never be acknowledged: an IRQ storm that starved
+         * userland (7B500 booted to launchd and SpringBoard never ran). */
         level = reg * 8;
         break;
     case 2:
     case 3:
         level = reg * 2;
-        break;
-    default:
-        level = 0;
-        trace_exynos_uart_channel_error(channel);
         break;
     }
     return level;
@@ -261,7 +299,9 @@ exynos4210_uart_Rx_FIFO_trigger_level(const Exynos4210UartState *s)
     reg = ((s->reg[I_(UFCON)] & UFCON_Rx_FIFO_TRIGGER_LEVEL) >>
             UFCON_Rx_FIFO_TRIGGER_LEVEL_SHIFT) + 1;
 
-    return exynos4210_uart_FIFO_trigger_level(s->channel, reg);
+    /* Never past what the FIFO holds, or the Rx interrupt can only come from
+     * the timeout path (UART5's 16-byte FIFO with UFCON trigger field 6). */
+    return MIN(exynos4210_uart_FIFO_trigger_level(s->channel, reg), s->rx.size - 1);
 }
 
 /*
@@ -270,7 +310,17 @@ exynos4210_uart_Rx_FIFO_trigger_level(const Exynos4210UartState *s)
  */
 static void exynos4210_uart_update_dmabusy(Exynos4210UartState *s)
 {
-    bool rx_dma_enabled = (s->reg[I_(UCON)] & 0x03) == 0x02;
+    /*
+     * UCON[1:0] selects the receive mode. The exynos TRM defines 10b as DMA
+     * and leaves 11b reserved, but the S5L8720 in the iPod touch uses 11b --
+     * its Bluetooth driver writes UCON=0x10040f, arms a peripheral->memory
+     * channel on URXH, and then never reads the register itself. Reading 11b
+     * as "not DMA" left the HCI reply sitting in the Rx FIFO: the driver saw
+     * UFSTAT report the bytes, saw no DMA progress, reset the FIFO and started
+     * over, so BTServer retried HCI_Reset forever. Accepting both encodings is
+     * safe for a real exynos guest, which never programs the reserved one.
+     */
+    bool rx_dma_enabled = (s->reg[I_(UCON)] & 0x03) >= 0x02;
     uint32_t count = fifo_elements_number(&s->rx);
 
     if (rx_dma_enabled && !count) {
@@ -280,6 +330,8 @@ static void exynos4210_uart_update_dmabusy(Exynos4210UartState *s)
         qemu_irq_lower(s->dmairq);
         trace_exynos_uart_dmaready(s->channel);
     }
+
+    qemu_set_irq(s->rxdmareq, rx_dma_enabled && count > 0);
 }
 
 static void exynos4210_uart_update_irq(Exynos4210UartState *s)
@@ -292,7 +344,9 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
         uint32_t count = (s->reg[I_(UFSTAT)] & UFSTAT_Tx_FIFO_COUNT) >>
                 UFSTAT_Tx_FIFO_COUNT_SHIFT;
 
-        if (count <= exynos4210_uart_Tx_FIFO_trigger_level(s)) {
+        if (count <= exynos4210_uart_Tx_FIFO_trigger_level(s) &&
+            !s->s5l8720_irq) {
+            /* S5L latches transmit completion on UTXH writes below. */
             s->reg[I_(UINTSP)] |= UINTSP_TXD;
         }
 
@@ -314,7 +368,43 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
 
     s->reg[I_(UINTP)] = s->reg[I_(UINTSP)] & ~s->reg[I_(UINTM)];
 
-    if (s->reg[I_(UINTP)]) {
+    /* S5L pending bits remain readable while their UCON enable is clear. */
+    if (s->s5l8720_irq) {
+        if (s->reg[I_(UINTP)] & UINTSP_TXD) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Tx_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Tx_INT;
+        }
+        if (s->reg[I_(UINTP)] & UINTSP_RXD) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Rx_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Rx_INT;
+        }
+        if (s->reg[I_(UINTP)] & UINTSP_ERROR) {
+            s->reg[I_(UTRSTAT)] |= UTRSTAT_S5L_Err_INT;
+        } else {
+            s->reg[I_(UTRSTAT)] &= ~UTRSTAT_S5L_Err_INT;
+        }
+    }
+
+    uint32_t pending = s->reg[I_(UINTP)];
+    if (s->s5l8720_irq) {
+        uint32_t enabled = s->reg[I_(UCON)];
+        if (!(enabled & UCON_S5L_TX_INT_ENABLE)) {
+            pending &= ~UINTSP_TXD;
+        }
+        if (!(enabled & UCON_S5L_RX_INT_ENABLE)) {
+            pending &= ~UINTSP_RXD;
+        }
+        if (!(enabled & UCON_S5L_ERROR_INT_ENABLE)) {
+            pending &= ~UINTSP_ERROR;
+        }
+        if ((enabled & UCON_S5L_TIMEOUT_INT_ENABLE) &&
+            (s->reg[I_(UTRSTAT)] & UTRSTAT_Rx_TIMEOUT)) {
+            pending |= UINTSP_RXD;
+        }
+    }
+    if (pending) {
         qemu_irq_raise(s->irq);
         trace_exynos_uart_irq_raised(s->channel, s->reg[I_(UINTP)]);
     } else {
@@ -336,6 +426,13 @@ static void exynos4210_uart_timeout_int(void *opaque)
         s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_TIMEOUT;
         exynos4210_uart_update_dmabusy(s);
         exynos4210_uart_update_irq(s);
+        /*
+         * The UART timeout wakes the driver's partial-buffer path. Do not
+         * synthesize a DMAC terminal count: UART1 uses controller flow with
+         * a 2048-byte LLI, and advancing it after a short HCI reply makes the
+         * guest consume the unfilled tail as Bluetooth packet data.
+         */
+        s->rx_since_timeout = false;
     }
 }
 
@@ -387,7 +484,7 @@ static void exynos4210_uart_update_parameters(Exynos4210UartState *s)
 
 static void exynos4210_uart_rx_timeout_set(Exynos4210UartState *s)
 {
-    if (s->reg[I_(UCON)] & 0x80) {
+    if ((s->reg[I_(UCON)] & 3) && (s->reg[I_(UCON)] & 0x80)) {
         uint32_t timeout = ((s->reg[I_(UCON)] >> 12) & 0x0f) * s->wordtime;
 
         timer_mod(s->fifo_timeout_timer,
@@ -417,6 +514,10 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         s->reg[I_(UFCON)] = val;
         if (val & UFCON_Rx_FIFO_RESET) {
             fifo_reset(&s->rx);
+            timer_del(s->fifo_timeout_timer);
+            s->rx_since_timeout = false;
+            s->reg[I_(UTRSTAT)] &= ~(UTRSTAT_Rx_BUFFER_DATA_READY |
+                                     UTRSTAT_Rx_TIMEOUT);
             s->reg[I_(UFCON)] &= ~UFCON_Rx_FIFO_RESET;
             trace_exynos_uart_rx_fifo_reset(s->channel);
         }
@@ -425,6 +526,7 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
             s->reg[I_(UFCON)] &= ~UFCON_Tx_FIFO_RESET;
             trace_exynos_uart_tx_fifo_reset(s->channel);
         }
+        exynos4210_uart_update_dmabusy(s);
         break;
 
     case UTXH:
@@ -436,6 +538,19 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
              * qemu_chr_fe_write and background I/O callbacks */
             qemu_chr_fe_write_all(&s->chr, &ch, 1);
             trace_exynos_uart_tx(s->channel, ch);
+            if (s->tx_char_ns) {
+                /*
+                 * tx-char-ns: the shifter takes one character time to empty,
+                 * as on the wire (86.8 us at 115200 8N1). A guest that logs
+                 * synchronously through a polled UART (iPhone OS 1.x kprintf)
+                 * is paced by it exactly as on hardware; instant completion
+                 * made every logging thread run ahead of the silent ones and
+                 * reordered IOKit driver start-up.
+                 */
+                timer_mod(s->tx_done_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_char_ns);
+                break;
+            }
             s->reg[I_(UTRSTAT)] |= UTRSTAT_TRANSMITTER_EMPTY |
                     UTRSTAT_Tx_BUFFER_EMPTY;
             s->reg[I_(UINTSP)]  |= UINTSP_TXD;
@@ -453,6 +568,24 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         if (val & UTRSTAT_Rx_TIMEOUT) {
             s->reg[I_(UTRSTAT)] &= ~UTRSTAT_Rx_TIMEOUT;
         }
+        /* S5L8720: writing UTRSTAT acknowledges the Tx/Rx interrupt. Clear the
+         * corresponding pending source so the (exynos) UINTP line de-asserts,
+         * ending the storm; the Tx source re-arms on the next UTXH write. */
+        if (s->s5l8720_irq) {
+            if (val & UTRSTAT_S5L_Tx_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_TXD;
+                s->reg[I_(UINTP)]  &= ~UINTSP_TXD;
+            }
+            if (val & UTRSTAT_S5L_Rx_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_RXD;
+                s->reg[I_(UINTP)]  &= ~UINTSP_RXD;
+            }
+            if (val & UTRSTAT_S5L_Err_INT) {
+                s->reg[I_(UINTSP)] &= ~UINTSP_ERROR;
+                s->reg[I_(UINTP)]  &= ~UINTSP_ERROR;
+            }
+            exynos4210_uart_update_irq(s);
+        }
         break;
     case UERSTAT:
     case UFSTAT:
@@ -469,6 +602,17 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         exynos4210_uart_update_irq(s);
         break;
     case UCON:
+        s->reg[I_(offset)] = val;
+        /* A mode transition can expose buffered data to DMA, or stop its
+         * request. Do not leave the old level latched until the next byte. */
+        exynos4210_uart_update_dmabusy(s);
+        if (!(val & 3)) {
+            timer_del(s->fifo_timeout_timer);
+        } else if (s->rx_since_timeout) {
+            exynos4210_uart_rx_timeout_set(s);
+        }
+        exynos4210_uart_update_irq(s);
+        break;
     case UMCON:
     default:
         s->reg[I_(offset)] = val;
@@ -491,7 +635,7 @@ static uint64_t exynos4210_uart_read(void *opaque, hwaddr offset,
         return res;
     case UFSTAT: /* Read Only */
         s->reg[I_(UFSTAT)] = fifo_elements_number(&s->rx) & 0xff;
-        if (fifo_empty_elements_number(&s->rx) == 0) {
+        if (fifo_elements_number(&s->rx) >= 256) {   /* never: holds size - 1 */
             s->reg[I_(UFSTAT)] |= UFSTAT_Rx_FIFO_FULL;
             s->reg[I_(UFSTAT)] &= ~0xff;
         }
@@ -579,6 +723,7 @@ static void exynos4210_uart_receive(void *opaque, const uint8_t *buf, int size)
         s->reg[I_(URXH)] = buf[0];
     }
     s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_BUFFER_DATA_READY;
+    s->rx_since_timeout = true;
 
     exynos4210_uart_update_irq(s);
 }
@@ -610,6 +755,13 @@ static void exynos4210_uart_reset(DeviceState *dev)
 
     fifo_reset(&s->rx);
     fifo_reset(&s->tx);
+    s->rx_since_timeout = false;
+    /* A chardev has no modem lines: a port whose driver flow-controls on CTS
+     * (the S5L8900 baseband UART: iBoot-159 spins on it before every byte)
+     * says the far end is ready to receive. */
+    if (s->cts) {
+        s->reg[I_(UMSTAT)] |= 1;
+    }
 
     trace_exynos_uart_rxsize(s->channel, s->rx.size);
 }
@@ -654,13 +806,14 @@ DeviceState *exynos4210_uart_create(hwaddr addr,
                                     int fifo_size,
                                     int channel,
                                     Chardev *chr,
-                                    qemu_irq irq)
+                                    qemu_irq irq, bool s5l8720_irq)
 {
     DeviceState  *dev;
     SysBusDevice *bus;
 
     dev = qdev_new(TYPE_EXYNOS4210_UART);
 
+    qdev_prop_set_bit(dev, "s5l8720-irq", s5l8720_irq);
     qdev_prop_set_chr(dev, "chardev", chr);
     qdev_prop_set_uint32(dev, "channel", channel);
     qdev_prop_set_uint32(dev, "rx-size", fifo_size);
@@ -690,6 +843,16 @@ static void exynos4210_uart_init(Object *obj)
 
     sysbus_init_irq(dev, &s->irq);
     sysbus_init_irq(dev, &s->dmairq);
+    sysbus_init_irq(dev, &s->rxdmareq);
+}
+
+static void exynos4210_uart_tx_done(void *opaque)
+{
+    Exynos4210UartState *s = opaque;
+
+    s->reg[I_(UTRSTAT)] |= UTRSTAT_TRANSMITTER_EMPTY | UTRSTAT_Tx_BUFFER_EMPTY;
+    s->reg[I_(UINTSP)]  |= UINTSP_TXD;
+    exynos4210_uart_update_irq(s);
 }
 
 static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
@@ -698,6 +861,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 
     s->fifo_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          exynos4210_uart_timeout_int, s);
+    s->tx_done_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, exynos4210_uart_tx_done, s);
 
     qemu_chr_fe_set_handlers(&s->chr, exynos4210_uart_can_receive,
                              exynos4210_uart_receive, exynos4210_uart_event,
@@ -705,6 +869,9 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property exynos4210_uart_properties[] = {
+    DEFINE_PROP_BOOL("s5l8720-irq", Exynos4210UartState, s5l8720_irq, false),
+    DEFINE_PROP_UINT32("tx-char-ns", Exynos4210UartState, tx_char_ns, 0),
+    DEFINE_PROP_BOOL("cts", Exynos4210UartState, cts, false),
     DEFINE_PROP_CHR("chardev", Exynos4210UartState, chr),
     DEFINE_PROP_UINT32("channel", Exynos4210UartState, channel, 0),
     DEFINE_PROP_UINT32("rx-size", Exynos4210UartState, rx.size, 16),
