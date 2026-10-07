@@ -129,7 +129,8 @@ bool qemu_ios_ui_hardware_keyboard(bool attached);
  * link event, so the guest keeps its Wi-Fi association and DHCP lease. */
 void qemu_ios_ui_net_restrict(const char *id, bool restrict_);
 /* Allow or refuse the guest's traffic to the Mac's local networks (private, link-local,
- * multicast) on a running user netdev; boot with -netdev user,...,lan=off to start refused. */
+ * multicast) on a running user netdev, or on every one for a NULL or empty id; boot with
+ * -netdev user,...,lan=off to start refused. */
 void qemu_ios_ui_net_lan(const char *id, bool allowed);
 
 #ifdef __cplusplus
