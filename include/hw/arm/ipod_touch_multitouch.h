@@ -21,7 +21,7 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 #include "hw/ssi/ssi.h"
 #include "hw/arm/ipod_touch_sysic.h"
 #include "hw/arm/ipod_touch_gpio.h"

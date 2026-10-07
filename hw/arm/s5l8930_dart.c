@@ -66,7 +66,7 @@ hwaddr s5l8930_dart_xlate(S5L8930Dart *d, unsigned sid, uint32_t va)
     if (!ste) {
         return va;
     }
-    pte = ldl_le_phys(&address_space_memory, ste + ((va >> 12) & 0x3ff) * 4);
+    pte = address_space_ldl_le(&address_space_memory, ste + ((va >> 12) & 0x3ff) * 4, MEMTXATTRS_UNSPECIFIED, NULL);
     if (!(pte & 1)) {
         qemu_log_mask(LOG_GUEST_ERROR, "dart: invalid PTE 0x%08x for sid %u iova 0x%08x\n", pte, sid, va);
     }
@@ -109,7 +109,7 @@ static const VMStateDescription vmstate_s5l8930_dart = {
     }
 };
 
-static void s5l8930_dart_class_init(ObjectClass *klass, void *data)
+static void s5l8930_dart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -15,7 +15,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/guest-random.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/imx_rngc.h"
 #include "migration/vmstate.h"
 
@@ -254,7 +254,7 @@ static const VMStateDescription vmstate_imx_rngc = {
     }
 };
 
-static void imx_rngc_class_init(ObjectClass *klass, void *data)
+static void imx_rngc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

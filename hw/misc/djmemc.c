@@ -11,7 +11,7 @@
 #include "qemu/log.h"
 #include "migration/vmstate.h"
 #include "hw/misc/djmemc.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 
 
@@ -113,7 +113,7 @@ static const VMStateDescription vmstate_djmemc = {
     }
 };
 
-static void djmemc_class_init(ObjectClass *oc, void *data)
+static void djmemc_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);

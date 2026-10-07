@@ -31,12 +31,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci.h"
 #include "hw/ppc/openpic.h"
 #include "hw/ppc/ppc_e500.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/pci/msi.h"
 #include "qapi/error.h"
@@ -1611,7 +1611,7 @@ static const Property openpic_properties[] = {
     DEFINE_PROP_UINT32("nb_cpus", OpenPICState, nb_cpus, 1),
 };
 
-static void openpic_class_init(ObjectClass *oc, void *data)
+static void openpic_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

@@ -5,9 +5,6 @@ config ARM_VIRT
     depends on TCG || KVM || HVF
     imply PCI_DEVICES
     imply TEST_DEVICES
-    imply VFIO_AMD_XGBE
-    imply VFIO_PLATFORM
-    imply VFIO_XGMAC
     imply TPM_TIS_SYSBUS
     imply TPM_TIS_I2C
     imply NVDIMM
@@ -34,6 +31,8 @@ config ARM_VIRT
     select ACPI_HW_REDUCED
     select ACPI_APEI
     select ACPI_VIOT
+    select ACPI_PCIHP
+    select ACPI_PCI_BRIDGE
     select VIRTIO_MEM_SUPPORTED
     select ACPI_CXL
     select ACPI_HMAT
@@ -65,22 +64,6 @@ config EXYNOS4
     select USB_EHCI_SYSBUS
     select OR_IRQ
 
-config HIGHBANK
-    bool
-    default y
-    depends on TCG && ARM
-    select A9MPCORE
-    select A15MPCORE
-    select AHCI_SYSBUS
-    select ARM_TIMER # sp804
-    select ARM_V7M
-    select PL011 # UART
-    select PL022 # SPI
-    select PL031 # RTC
-    select PL061 # GPIO
-    select PL310 # cache controller
-    select XGMAC # ethernet
-
 config INTEGRATOR
     bool
     default y
@@ -94,6 +77,12 @@ config INTEGRATOR
     select PL110 # pl111 LCD controller
     select PL181 # display
     select SMC91C111
+
+config MAX78000FTHR
+    bool
+    default y
+    depends on TCG && ARM
+    select MAX78000_SOC
 
 config MPS3R
     bool
@@ -147,7 +136,6 @@ config OMAP
     bool
     select FRAMEBUFFER
     select I2C
-    select NAND
     select PFLASH_CFI01
     select SD
     select SERIAL_MM
@@ -358,6 +346,15 @@ config ALLWINNER_R40
     select USB_EHCI_SYSBUS
     select SD
 
+config MAX78000_SOC
+    bool
+    select ARM_V7M
+    select MAX78000_ICC
+    select MAX78000_UART
+    select MAX78000_GCR
+    select MAX78000_TRNG
+    select MAX78000_AES
+
 config RASPI
     bool
     default y
@@ -390,8 +387,13 @@ config STM32F405_SOC
     select ARM_V7M
     select OR_IRQ
     select STM32_RCC
+    select STM32F2XX_ADC
+    select STM32F2XX_SPI
+    select STM32F2XX_TIMER
+    select STM32F2XX_USART
     select STM32F4XX_SYSCFG
     select STM32F4XX_EXTI
+    select UNIMP
 
 config B_L475E_IOT01A
     bool
@@ -480,7 +482,7 @@ config NPCM8XX
     select SMBUS
     select PL310  # cache controller
     select NPCM7XX
-    select SERIAL
+    select SERIAL_MM
     select SSI
     select UNIMP
 
@@ -528,11 +530,16 @@ config ASPEED_SOC
     bool
     default y
     depends on TCG && ARM
+    imply PCI_DEVICES
     select DS1338
     select FTGMAC100
     select I2C
+    select I3C
+    select DW_I3C
+    select I3C_DEVICES
     select DPS310
     select PCA9552
+    select PCA9554
     select SERIAL_MM
     select SMBUS_EEPROM
     select PCA954X
@@ -547,6 +554,8 @@ config ASPEED_SOC
     select MAX31785
     select FSI_APB2OPB_ASPEED
     select AT24C
+    select PCI_EXPRESS
+    select PCI_EXPRESS_ASPEED
 
 config MPS2
     bool
@@ -605,11 +614,17 @@ config FSL_IMX8MP
 config FSL_IMX8MP_EVK
     bool
     default y
-    depends on TCG && AARCH64
+    depends on AARCH64
+    depends on TCG
     select FSL_IMX8MP
+
+config ARM_SMMUV3_ACCEL
+    bool
+    depends on ARM_SMMUV3
 
 config ARM_SMMUV3
     bool
+    select ARM_SMMUV3_ACCEL if IOMMUFD
 
 config FSL_IMX6UL
     bool
@@ -620,6 +635,7 @@ config FSL_IMX6UL
     select IMX
     select IMX_FEC
     select IMX_I2C
+    select IMX_USBPHY
     select WDT_IMX2
     select SDHCI
     select USB_CHIPIDEA

@@ -13,8 +13,8 @@
 #include "hw/misc/aspeed_lpc.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 #define TO_REG(offset) ((offset) >> 2)
@@ -458,7 +458,7 @@ static const Property aspeed_lpc_properties[] = {
     DEFINE_PROP_UINT32("hicr7", AspeedLPCState, hicr7, 0),
 };
 
-static void aspeed_lpc_class_init(ObjectClass *klass, void *data)
+static void aspeed_lpc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

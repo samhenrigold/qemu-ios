@@ -38,7 +38,7 @@
 #include "qapi/error.h"
 #include "hw/acpi/acpi_aml_interface.h"
 #include "hw/acpi/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /* PCI bridge subsystem vendor ID helper functions */
 #define PCI_SSVID_SIZEOF        8
@@ -482,7 +482,7 @@ static const Property pci_bridge_properties[] = {
                      pcie_writeable_slt_bug, false),
 };
 
-static void pci_bridge_class_init(ObjectClass *klass, void *data)
+static void pci_bridge_class_init(ObjectClass *klass, const void *data)
 {
     AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
     DeviceClass *k = DEVICE_CLASS(klass);
@@ -497,7 +497,7 @@ static const TypeInfo pci_bridge_type_info = {
     .instance_size = sizeof(PCIBridge),
     .class_init = pci_bridge_class_init,
     .abstract = true,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_ACPI_DEV_AML_IF },
         { },
     },

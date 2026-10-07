@@ -10,14 +10,16 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/sockets.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
-#include "hw/loader.h"
-#include "cpu.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/loader.h"
+#include "exec/target_page.h"
 #include "hw/hyperv/hyperv.h"
 #include "hw/hyperv/vmbus-bridge.h"
 #include "hw/hyperv/hyperv-proto.h"
+#include "exec/cpu-common.h"
 #include "net/net.h"
 #include "net/eth.h"
 #include "net/checksum.h"
@@ -183,13 +185,16 @@ static bool create_udp_pkt(HvSynDbg *syndbg, void *pkt, uint32_t pkt_len,
     return true;
 }
 
+#define MSG_BUFSZ (4 * KiB)
+
 static uint16_t handle_recv_msg(HvSynDbg *syndbg, uint64_t outgpa,
                                 uint32_t count, bool is_raw, uint32_t options,
                                 uint64_t timeout, uint32_t *retrieved_count)
 {
     uint16_t ret;
-    uint8_t data_buf[TARGET_PAGE_SIZE - UDP_PKT_HEADER_SIZE];
-    hwaddr out_len;
+    g_assert(MSG_BUFSZ >= qemu_target_page_size());
+    QEMU_UNINITIALIZED uint8_t data_buf[MSG_BUFSZ];
+    hwaddr out_len, out_requested_len;
     void *out_data;
     ssize_t recv_byte_count;
 
@@ -201,7 +206,7 @@ static uint16_t handle_recv_msg(HvSynDbg *syndbg, uint64_t outgpa,
         recv_byte_count = 0;
     } else {
         recv_byte_count = recv(syndbg->socket, data_buf,
-                               MIN(sizeof(data_buf), count), MSG_WAITALL);
+                               MIN(MSG_BUFSZ, count), MSG_WAITALL);
         if (recv_byte_count == -1) {
             return HV_STATUS_INVALID_PARAMETER;
         }
@@ -218,29 +223,28 @@ static uint16_t handle_recv_msg(HvSynDbg *syndbg, uint64_t outgpa,
     if (is_raw) {
         out_len += UDP_PKT_HEADER_SIZE;
     }
+    out_requested_len = out_len;
     out_data = cpu_physical_memory_map(outgpa, &out_len, 1);
-    if (!out_data) {
-        return HV_STATUS_INSUFFICIENT_MEMORY;
+    ret = HV_STATUS_INSUFFICIENT_MEMORY;
+    if (!out_data || out_len < out_requested_len) {
+        goto cleanup_out_data;
     }
 
     if (is_raw &&
-        !create_udp_pkt(syndbg, out_data,
-                        recv_byte_count + UDP_PKT_HEADER_SIZE,
+        !create_udp_pkt(syndbg, out_data, out_len,
                         data_buf, recv_byte_count)) {
-        ret = HV_STATUS_INSUFFICIENT_MEMORY;
         goto cleanup_out_data;
     } else if (!is_raw) {
-        memcpy(out_data, data_buf, recv_byte_count);
+        memcpy(out_data, data_buf, out_len);
     }
 
-    *retrieved_count = recv_byte_count;
-    if (is_raw) {
-        *retrieved_count += UDP_PKT_HEADER_SIZE;
-    }
+    *retrieved_count = out_len;
     ret = HV_STATUS_SUCCESS;
 
 cleanup_out_data:
-    cpu_physical_memory_unmap(out_data, out_len, 1, out_len);
+    if (out_data) {
+        cpu_physical_memory_unmap(out_data, out_len, 1, out_len);
+    }
     return ret;
 }
 
@@ -334,7 +338,9 @@ static void hv_syndbg_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    qemu_socket_set_nonblock(syndbg->socket);
+    if (!qemu_set_blocking(syndbg->socket, false, errp)) {
+        return;
+    }
 
     syndbg->servaddr.sin_port = htons(syndbg->host_port);
     syndbg->servaddr.sin_family = AF_INET;
@@ -372,7 +378,7 @@ static const Property hv_syndbg_properties[] = {
     DEFINE_PROP_BOOL("use_hcalls", HvSynDbg, use_hcalls, false),
 };
 
-static void hv_syndbg_class_init(ObjectClass *klass, void *data)
+static void hv_syndbg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -27,7 +27,7 @@ typedef struct {
     unsigned fifo_bytes;
     bool dma_req, pushed_since_tick;
     void *voice;
-    int card;
+    void *audio_be;
 } IPodTouchI2SState;
 typedef struct {
     unsigned cmd;
@@ -65,16 +65,16 @@ static void it_i2s_pace_drain(IPodTouchI2SState *s) {
 }
 static void it_i2s_vlog(IPodTouchI2SState *s,const char *what,int a,int b) {}
 static void it_i2s_out_cb(void *s, int n) {}
-static void *AUD_open_out(int *card, void *old, const char *name, void *opaque,
+static void *audio_be_open_out(void *be, void *old, const char *name, void *opaque,
                          void (*cb)(void *, int), Settings *as) {
     assert(opaque == &output && cb == it_i2s_out_cb);
     opened++; voice_rate = as->freq;
-    return card;
+    return opaque;
 }
-static void AUD_set_volume_out(void *voice, int mute, int l, int r) {
+static void audio_be_set_volume_out_lr(void *be, void *voice, int mute, int l, int r) {
     assert(voice && !mute && l == 255 && r == 255);
 }
-static void AUD_set_active_out(void *voice, int active) { voice_active = active; }
+static void audio_be_set_active_out(void *be, void *voice, int active) { voice_active = active; }
 '''
 for filename, names in (
     ('ipod_touch_cs42l58.c', ('cs42l58_sample_rate', 'cs42l58_send')),

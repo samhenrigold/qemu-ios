@@ -4,9 +4,9 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 
 #define TYPE_LIS302DL                 "lis302dl"
 OBJECT_DECLARE_SIMPLE_TYPE(LIS302DLState, LIS302DL)

@@ -7,9 +7,9 @@
 #ifndef HW_ARM_S5L8930_H
 #define HW_ARM_S5L8930_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/ipod_touch_sdio.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 
 /* Memory */
 #define S5L8930_DRAM_BASE        0x40000000

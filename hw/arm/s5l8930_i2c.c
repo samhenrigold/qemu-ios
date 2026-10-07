@@ -16,9 +16,9 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "migration/vmstate.h"
@@ -206,7 +206,7 @@ static const VMStateDescription vmstate_s5l8930_i2c = {
     }
 };
 
-static void s5l8930_i2c_class_init(ObjectClass *klass, void *data)
+static void s5l8930_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -619,7 +619,7 @@ static const Property d1815_properties[] = {
     DEFINE_PROP_UINT64("rtc-epoch", S5L8930D1815State, rtc_epoch, 0),
 };
 
-static void d1815_class_init(ObjectClass *klass, void *data)
+static void d1815_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
@@ -785,7 +785,7 @@ static const VMStateDescription vmstate_s5l8930_tca6408 = {
     }
 };
 
-static void tca6408_class_init(ObjectClass *klass, void *data)
+static void tca6408_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
@@ -892,7 +892,7 @@ static const VMStateDescription vmstate_s5l8930_tsl2581 = {
     }
 };
 
-static void tsl2581_class_init(ObjectClass *klass, void *data)
+static void tsl2581_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
@@ -1115,7 +1115,7 @@ static void ak8973_set_heading(Object *obj, Visitor *v, const char *name,
     }
 }
 
-static void ak8973_class_init(ObjectClass *klass, void *data)
+static void ak8973_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
@@ -1371,7 +1371,7 @@ static const Property l3g_properties[] = {
     DEFINE_PROP_UINT8("whoami", S5L8930L3GState, whoami, 0xd3),
 };
 
-static void l3g_class_init(ObjectClass *klass, void *data)
+static void l3g_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

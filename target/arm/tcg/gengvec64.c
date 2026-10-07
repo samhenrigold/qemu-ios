@@ -18,9 +18,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "cpu.h"
+#include "helper-sve.h"
 #include "translate.h"
 #include "translate-a64.h"
-
 
 static void gen_rax1_i64(TCGv_i64 d, TCGv_i64 n, TCGv_i64 m)
 {
@@ -157,7 +158,7 @@ void gen_gvec_eor3(unsigned vece, uint32_t d, uint32_t n, uint32_t m,
         .fniv = gen_eor3_vec,
         .fno = gen_helper_sve2_eor3,
         .vece = MO_64,
-        .prefer_i64 = TCG_TARGET_REG_BITS == 64,
+        .prefer_i64 = true,
     };
     tcg_gen_gvec_4(d, n, m, a, oprsz, maxsz, &op);
 }
@@ -183,7 +184,7 @@ void gen_gvec_bcax(unsigned vece, uint32_t d, uint32_t n, uint32_t m,
         .fniv = gen_bcax_vec,
         .fno = gen_helper_sve2_bcax,
         .vece = MO_64,
-        .prefer_i64 = TCG_TARGET_REG_BITS == 64,
+        .prefer_i64 = true,
     };
     tcg_gen_gvec_4(d, n, m, a, oprsz, maxsz, &op);
 }
@@ -368,4 +369,15 @@ void gen_gvec_usqadd_qc(unsigned vece, uint32_t rd_ofs,
     tcg_debug_assert(opr_sz <= sizeof_field(CPUARMState, vfp.qc));
     tcg_gen_gvec_4(rd_ofs, offsetof(CPUARMState, vfp.qc),
                    rn_ofs, rm_ofs, opr_sz, max_sz, &ops[vece]);
+}
+
+void gen_gvec_sve2_sqdmulh(unsigned vece, uint32_t rd_ofs,
+                           uint32_t rn_ofs, uint32_t rm_ofs,
+                           uint32_t opr_sz, uint32_t max_sz)
+{
+    static gen_helper_gvec_3 * const fns[4] = {
+        gen_helper_sve2_sqdmulh_b, gen_helper_sve2_sqdmulh_h,
+        gen_helper_sve2_sqdmulh_s, gen_helper_sve2_sqdmulh_d,
+    };
+    tcg_gen_gvec_3_ool(rd_ofs, rn_ofs, rm_ofs, opr_sz, max_sz, 0, fns[vece]);
 }

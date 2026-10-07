@@ -15,8 +15,8 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "trace.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/virtio/virtio-serial.h"
 #include "qapi/error.h"
 #include "qapi/qapi-events-char.h"
@@ -30,7 +30,7 @@ DECLARE_INSTANCE_CHECKER(VirtConsole, VIRTIO_CONSOLE,
 struct VirtConsole {
     VirtIOSerialPort parent_obj;
 
-    CharBackend chr;
+    CharFrontend chr;
     guint watch;
 };
 
@@ -257,11 +257,11 @@ static void virtconsole_unrealize(DeviceState *dev)
     VirtConsole *vcon = VIRTIO_CONSOLE(dev);
 
     if (vcon->watch) {
-        g_source_remove(vcon->watch);
+        g_clear_handle_id(&vcon->watch, g_source_remove);
     }
 }
 
-static void virtconsole_class_init(ObjectClass *klass, void *data)
+static void virtconsole_class_init(ObjectClass *klass, const void *data)
 {
     VirtIOSerialPortClass *k = VIRTIO_SERIAL_PORT_CLASS(klass);
 
@@ -278,7 +278,7 @@ static const Property virtserialport_properties[] = {
     DEFINE_PROP_CHR("chardev", VirtConsole, chr),
 };
 
-static void virtserialport_class_init(ObjectClass *klass, void *data)
+static void virtserialport_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtIOSerialPortClass *k = VIRTIO_SERIAL_PORT_CLASS(klass);

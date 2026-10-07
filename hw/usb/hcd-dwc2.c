@@ -41,7 +41,7 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 #define USB_HZ_FS       12000000
 #define USB_HZ_HS       96000000
@@ -1452,7 +1452,7 @@ static const Property dwc2_usb_properties[] = {
     DEFINE_PROP_UINT32("usb_version", DWC2State, usb_version, 2),
 };
 
-static void dwc2_class_init(ObjectClass *klass, void *data)
+static void dwc2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     DWC2Class *c = DWC2_USB_CLASS(klass);

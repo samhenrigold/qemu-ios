@@ -44,7 +44,7 @@
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qapi-commands-misc.h"
 #include "system/blockdev.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "qemu-version.h"
 #include "qemu/cutils.h"
 #include "qemu/main-loop.h"
@@ -794,7 +794,10 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     [[self window] setContentAspectRatio:NSMakeSize(screen.width, screen.height)];
 
     if (!([[self window] styleMask] & NSWindowStyleMaskResizable)) {
-        [[self window] setContentSize:NSMakeSize(screen.width, screen.height)];
+        CGFloat width = screen.width / [[self window] backingScaleFactor];
+        CGFloat height = screen.height / [[self window] backingScaleFactor];
+
+        [[self window] setContentSize:NSMakeSize(width, height)];
         [[self window] center];
     } else if ([[self window] styleMask] & NSWindowStyleMaskFullScreen) {
         [[self window] setContentSize:[self fixAspectRatio:[self screenSafeAreaSize]]];
@@ -852,8 +855,8 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 
     info.xoff = 0;
     info.yoff = 0;
-    info.width = frameSize.width;
-    info.height = frameSize.height;
+    info.width = frameSize.width * [[self window] backingScaleFactor];
+    info.height = frameSize.height * [[self window] backingScaleFactor];
 
     dpy_set_ui_info(dcl.con, &info, TRUE);
 }
@@ -2667,7 +2670,7 @@ static void addRemovableDevicesMenuItems(void)
     BlockInfoList *currentDevice, *pointerToFree;
     NSString *deviceName;
 
-    currentDevice = qmp_query_block(NULL);
+    currentDevice = qmp_query_block(false, false, NULL);
     pointerToFree = currentDevice;
 
     menu = [[[NSApp mainMenu] itemWithTitle:@"Machine"] submenu];

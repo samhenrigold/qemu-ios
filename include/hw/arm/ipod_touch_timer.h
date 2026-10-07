@@ -4,9 +4,9 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "hw/clock.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/clock.h"
 
 #define TYPE_IPOD_TOUCH_TIMER                "ipodtouch.timer"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchTimerState, IPOD_TOUCH_TIMER)

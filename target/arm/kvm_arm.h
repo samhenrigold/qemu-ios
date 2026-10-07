@@ -11,7 +11,9 @@
 #ifndef QEMU_KVM_ARM_H
 #define QEMU_KVM_ARM_H
 
+#include "qapi/qapi-types-misc-arm.h"
 #include "system/kvm.h"
+#include "target/arm/cpu-qom.h"
 
 #define KVM_ARM_VGIC_V2   (1 << 0)
 #define KVM_ARM_VGIC_V3   (1 << 1)
@@ -83,8 +85,10 @@ void kvm_arm_cpu_pre_save(ARMCPU *cpu);
  * @cpu: ARMCPU
  *
  * Called from cpu_post_load() to update KVM CPU state from the cpreg list.
+ *
+ * Returns: true on success, or false if write_list_to_kvmstate failed.
  */
-void kvm_arm_cpu_post_load(ARMCPU *cpu);
+bool kvm_arm_cpu_post_load(ARMCPU *cpu);
 
 /**
  * kvm_arm_reset_vcpu:
@@ -94,13 +98,9 @@ void kvm_arm_cpu_post_load(ARMCPU *cpu);
  */
 void kvm_arm_reset_vcpu(ARMCPU *cpu);
 
-#ifdef CONFIG_KVM
+struct kvm_vcpu_init;
 /**
  * kvm_arm_create_scratch_host_vcpu:
- * @cpus_to_try: array of QEMU_KVM_ARM_TARGET_* values (terminated with
- * QEMU_KVM_ARM_TARGET_NONE) to try as fallback if the kernel does not
- * know the PREFERRED_TARGET ioctl. Passing NULL is the same as passing
- * an empty array.
  * @fdarray: filled in with kvmfd, vmfd, cpufd file descriptors in that order
  * @init: filled in with the necessary values for creating a host
  * vcpu. If NULL is provided, will not init the vCPU (though the cpufd
@@ -113,8 +113,7 @@ void kvm_arm_reset_vcpu(ARMCPU *cpu);
  * Returns: true on success (and fdarray and init are filled in),
  * false on failure (and fdarray and init are not valid).
  */
-bool kvm_arm_create_scratch_host_vcpu(const uint32_t *cpus_to_try,
-                                      int *fdarray,
+bool kvm_arm_create_scratch_host_vcpu(int *fdarray,
                                       struct kvm_vcpu_init *init);
 
 /**
@@ -124,16 +123,6 @@ bool kvm_arm_create_scratch_host_vcpu(const uint32_t *cpus_to_try,
  * Tear down the scratch vcpu created by kvm_arm_create_scratch_host_vcpu.
  */
 void kvm_arm_destroy_scratch_host_vcpu(int *fdarray);
-
-/**
- * kvm_arm_sve_get_vls:
- * @cpu: ARMCPU
- *
- * Get all the SVE vector lengths supported by the KVM host, setting
- * the bits corresponding to their length in quadwords minus one
- * (vq - 1) up to ARM_MAX_VQ.  Return the resulting map.
- */
-uint32_t kvm_arm_sve_get_vls(ARMCPU *cpu);
 
 /**
  * kvm_arm_set_cpu_features_from_host:
@@ -163,6 +152,14 @@ void kvm_arm_add_vcpu_properties(ARMCPU *cpu);
  */
 void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp);
 
+/*
+ * These "is some KVM subfeature enabled?" functions may be called
+ * when KVM support is not present, including in the user-mode
+ * emulators. The kvm-stub.c file is only built into the system
+ * emulators, so for user-mode emulation we provide "always false"
+ * stubs here.
+ */
+#ifndef CONFIG_USER_ONLY
 /**
  * kvm_arm_aarch32_supported:
  *
@@ -172,26 +169,35 @@ void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp);
 bool kvm_arm_aarch32_supported(void);
 
 /**
- * kvm_arm_pmu_supported:
- *
- * Returns: true if KVM can enable the PMU
- * and false otherwise.
- */
-bool kvm_arm_pmu_supported(void);
-
-/**
- * kvm_arm_sve_supported:
- *
- * Returns true if KVM can enable SVE and false otherwise.
- */
-bool kvm_arm_sve_supported(void);
-
-/**
  * kvm_arm_mte_supported:
  *
  * Returns: true if KVM can enable MTE, and false otherwise.
  */
 bool kvm_arm_mte_supported(void);
+
+/**
+ * kvm_arm_el2_supported:
+ *
+ * Returns true if KVM can enable EL2 and false otherwise.
+ */
+bool kvm_arm_el2_supported(void);
+#else
+
+static inline bool kvm_arm_aarch32_supported(void)
+{
+    return false;
+}
+
+static inline bool kvm_arm_mte_supported(void)
+{
+    return false;
+}
+
+static inline bool kvm_arm_el2_supported(void)
+{
+    return false;
+}
+#endif
 
 /**
  * kvm_arm_get_max_vm_ipa_size:
@@ -221,85 +227,17 @@ int kvm_arm_set_irq(int cpu, int irqtype, int irq, int level);
 
 void kvm_arm_enable_mte(Object *cpuobj, Error **errp);
 
-#else
+void arm_cpu_kvm_set_irq(void *arm_cpu, int irq, int level);
+
+void arm_gic_cap_kvm_probe(GICCapability *v2, GICCapability *v3);
 
 /*
- * It's safe to call these functions without KVM support.
- * They should either do nothing or return "not supported".
+ * kvm_print_register_name:
+ * @regidx: register KVM index
+ *
+ * Returns a human-readable string representing this register
+ * The caller must free the string with g_free().
  */
-static inline bool kvm_arm_aarch32_supported(void)
-{
-    return false;
-}
-
-static inline bool kvm_arm_pmu_supported(void)
-{
-    return false;
-}
-
-static inline bool kvm_arm_sve_supported(void)
-{
-    return false;
-}
-
-static inline bool kvm_arm_mte_supported(void)
-{
-    return false;
-}
-
-/*
- * These functions should never actually be called without KVM support.
- */
-static inline void kvm_arm_set_cpu_features_from_host(ARMCPU *cpu)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_add_vcpu_properties(ARMCPU *cpu)
-{
-    g_assert_not_reached();
-}
-
-static inline int kvm_arm_get_max_vm_ipa_size(MachineState *ms, bool *fixed_ipa)
-{
-    g_assert_not_reached();
-}
-
-static inline int kvm_arm_vgic_probe(void)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_pmu_set_irq(ARMCPU *cpu, int irq)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_pmu_init(ARMCPU *cpu)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_pvtime_init(ARMCPU *cpu, uint64_t ipa)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp)
-{
-    g_assert_not_reached();
-}
-
-static inline uint32_t kvm_arm_sve_get_vls(ARMCPU *cpu)
-{
-    g_assert_not_reached();
-}
-
-static inline void kvm_arm_enable_mte(Object *cpuobj, Error **errp)
-{
-    g_assert_not_reached();
-}
-
-#endif
+char *kvm_print_register_name(uint64_t regidx);
 
 #endif

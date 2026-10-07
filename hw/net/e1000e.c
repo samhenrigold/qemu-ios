@@ -41,11 +41,11 @@
 #include "qemu/module.h"
 #include "qemu/range.h"
 #include "system/system.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 #include "hw/net/mii.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 #include "e1000_common.h"
@@ -673,7 +673,7 @@ static const Property e1000e_properties[] = {
     DEFINE_PROP_BOOL("migrate-timadj", E1000EState, timadj, true),
 };
 
-static void e1000e_class_init(ObjectClass *class, void *data)
+static void e1000e_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(class);
     ResettableClass *rc = RESETTABLE_CLASS(class);
@@ -721,7 +721,7 @@ static const TypeInfo e1000e_info = {
     .instance_size = sizeof(E1000EState),
     .class_init = e1000e_class_init,
     .instance_init = e1000e_instance_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_PCIE_DEVICE },
         { }
     },

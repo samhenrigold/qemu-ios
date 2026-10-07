@@ -34,7 +34,7 @@
 #include "system/hw_accel.h"
 
 #include "target/s390x/kvm/pv.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "system/system.h"
 #include "system/tcg.h"
 #include "hw/core/sysemu-cpu-ops.h"
@@ -49,7 +49,7 @@ bool s390_cpu_has_work(CPUState *cs)
         return false;
     }
 
-    if (!(cs->interrupt_request & CPU_INTERRUPT_HARD)) {
+    if (!cpu_test_interrupt(cs, CPU_INTERRUPT_HARD)) {
         return false;
     }
 
@@ -63,7 +63,7 @@ static void s390_cpu_load_normal(CPUState *s)
     uint64_t spsw;
 
     if (!s390_is_pv()) {
-        spsw = ldq_phys(s->as, 0);
+        spsw = ldq_be_phys(s->as, 0);
         cpu->env.psw.mask = spsw & PSW_MASK_SHORT_CTRL;
         /*
          * Invert short psw indication, so SIE will report a specification
@@ -196,7 +196,7 @@ static bool disabled_wait(CPUState *cpu)
                             (PSW_MASK_IO | PSW_MASK_EXT | PSW_MASK_MCHECK));
 }
 
-static unsigned s390_count_running_cpus(void)
+unsigned s390_count_running_cpus(void)
 {
     CPUState *cpu;
     int nr_running = 0;
@@ -214,7 +214,7 @@ static unsigned s390_count_running_cpus(void)
     return nr_running;
 }
 
-unsigned int s390_cpu_halt(S390CPU *cpu)
+void s390_cpu_halt(S390CPU *cpu)
 {
     CPUState *cs = CPU(cpu);
     trace_cpu_halt(cs->cpu_index);
@@ -223,8 +223,6 @@ unsigned int s390_cpu_halt(S390CPU *cpu)
         cs->halted = 1;
         cs->exception_index = EXCP_HLT;
     }
-
-    return s390_count_running_cpus();
 }
 
 void s390_cpu_unhalt(S390CPU *cpu)

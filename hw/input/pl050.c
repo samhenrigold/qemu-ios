@@ -16,11 +16,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/input/ps2.h"
 #include "hw/input/pl050.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -203,7 +203,7 @@ static void pl050_mouse_init(Object *obj)
     object_initialize_child(obj, "mouse", &s->mouse, TYPE_PS2_MOUSE_DEVICE);
 }
 
-static void pl050_kbd_class_init(ObjectClass *oc, void *data)
+static void pl050_kbd_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PL050DeviceClass *pdc = PL050_CLASS(oc);
@@ -220,7 +220,7 @@ static const TypeInfo pl050_kbd_info = {
     .class_init    = pl050_kbd_class_init,
 };
 
-static void pl050_mouse_class_init(ObjectClass *oc, void *data)
+static void pl050_mouse_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PL050DeviceClass *pdc = PL050_CLASS(oc);
@@ -249,7 +249,7 @@ static void pl050_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), pl050_set_irq, "ps2-input-irq", 1);
 }
 
-static void pl050_class_init(ObjectClass *oc, void *data)
+static void pl050_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

@@ -162,6 +162,12 @@ specified with ``-mem-path`` can actually provide the guest RAM configured with
 The ``name`` parameter of the ``-net`` option was a synonym
 for the ``id`` parameter, which should now be used instead.
 
+RISC-V firmware not booted by default (removed in 5.1)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+QEMU 5.1 changes the default behaviour from ``-bios none`` to ``-bios default``
+for the RISC-V ``virt`` machine and ``sifive_u`` machine.
+
 ``-numa node,mem=...`` (removed in 5.1)
 '''''''''''''''''''''''''''''''''''''''
 
@@ -323,12 +329,6 @@ devices.  Drives the board doesn't pick up can no longer be used with
 
 This option was undocumented and not used in the field.
 Use ``-device usb-ccid`` instead.
-
-RISC-V firmware not booted by default (removed in 5.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-QEMU 5.1 changes the default behaviour from ``-bios none`` to ``-bios default``
-for the RISC-V ``virt`` machine and ``sifive_u`` machine.
 
 ``-no-quit`` (removed in 7.0)
 '''''''''''''''''''''''''''''
@@ -560,6 +560,24 @@ the options along with the machine models they were intended for.
 
 Use ``-run-with user=..`` instead.
 
+``-old-param`` option for booting Arm kernels via param_struct (removed in 10.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``-old-param`` command line option was specific to Arm targets:
+it was used when directly booting a guest kernel to pass it the
+command line and other information via the old ``param_struct`` ABI,
+rather than the newer ATAGS or DTB mechanisms. This option was only
+ever needed to support ancient kernels on some old board types
+like the ``akita`` or ``terrier``; it has been deprecated in the
+kernel since 2001. None of the board types QEMU supports need
+``param_struct`` support, so this option has been removed.
+
+32-bit host operating systems (removed in 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+Keeping 32-bit host support alive was a substantial burden for the
+QEMU project.  Thus QEMU dropped all support for all 32-bit host systems.
+
 
 User-mode emulator command line arguments
 -----------------------------------------
@@ -570,6 +588,14 @@ User-mode emulator command line arguments
 The ``-singlestep`` option has been given a name that better reflects
 what it actually does. For both linux-user and bsd-user, use the
 ``-one-insn-per-tb`` option instead.
+
+``-p`` (removed in 10.2)
+''''''''''''''''''''''''
+
+The ``-p`` option pretends to control the host page size.  However,
+it is not possible to change the host page size; we stopped trying
+to do anything with the option except print a warning from 9.0,
+and now the option is removed entirely.
 
 
 QEMU Machine Protocol (QMP) commands
@@ -690,12 +716,28 @@ Use blockdev-mirror with NBD instead. See "QMP invocation for live
 storage migration with ``blockdev-mirror`` + NBD" in
 docs/interop/live-block-operations.rst for a detailed explanation.
 
+``migrate`` command with file-based ``fd:`` URI (removed in 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+In order to reduce ambiguity, the ``fd:`` URI usage of providing a
+file descriptor to a plain file has been removed in favor of
+explicitly using the ``file:`` URI with the file descriptor being
+passed as an ``fdset``. Refer to the ``add-fd`` command documentation
+for details on the ``fdset`` usage.
+
 ``migrate-set-capabilities`` ``block`` option (removed in 9.1)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 Block migration has been removed. For a replacement, see "QMP
 invocation for live storage migration with ``blockdev-mirror`` + NBD"
 in docs/interop/live-block-operations.rst.
+
+``migrate-set-capabilities`` ``zero-blocks`` option (removed in 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``zero-blocks`` capability was accidentally left behind when
+block migration capability got removed in 9.1.  Removed with no
+replacement.
 
 ``migrate-set-parameter`` ``compress-level`` option (removed in 9.1)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -721,6 +763,29 @@ Use ``multifd-channels`` instead.
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 Use ``multifd-compression`` instead.
+
+Incorrectly typed ``device_add`` arguments (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Due to shortcomings in the internal implementation of ``device_add``,
+QEMU used to incorrectly accept certain invalid arguments. Any object
+or list arguments were silently ignored. Other argument types were not
+checked, but an implicit conversion happened, so that e.g. string
+values could be assigned to integer device properties or vice versa.
+
+``query-migrationthreads`` (removed in 11.0)
+''''''''''''''''''''''''''''''''''''''''''''
+
+Removed with no replacement, as it reported only a limited set of
+threads (for example, it only reported source side of multifd threads,
+without reporting any destination threads, or non-multifd source
+threads).  For debugging purpose, please use ``-name
+$VM,debug-threads=on`` instead.
+
+``migrate`` argument ``detach`` (removed in 11.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''
+
+This argument has always been ignored.
 
 QEMU Machine Protocol (QMP) events
 ----------------------------------
@@ -867,6 +932,17 @@ work around the atomicity issues in system mode by running all vCPUs
 in a single thread context; in user mode atomicity was simply broken.
 From 10.0, QEMU has disabled configuration of 64-bit guests on 32-bit hosts.
 
+32-bit MIPS (removed in 10.2)
+'''''''''''''''''''''''''''''
+
+Debian 12 "Bookworm" removed support for 32-bit MIPS, making it hard to
+maintain our cross-compilation CI tests of the architecture.
+
+32-bit PPC (removed in 10.2)
+''''''''''''''''''''''''''''
+
+The QEMU project no longer supports 32-bit host builds.
+
 Guest Emulator ISAs
 -------------------
 
@@ -901,14 +977,6 @@ RISC-V no MMU CPUs (removed in 5.1)
 The RISC-V no MMU cpus have been removed. The two CPUs: ``rv32imacu-nommu`` and
 ``rv64imacu-nommu`` can no longer be used. Instead the MMU status can be specified
 via the CPU ``mmu`` option when using the ``rv32`` or ``rv64`` CPUs.
-
-RISC-V 'any' CPU type ``-cpu any`` (removed in 9.2)
-'''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The 'any' CPU type was introduced back in 2018 and was around since the
-initial RISC-V QEMU port. Its usage was always been unclear: users don't know
-what to expect from a CPU called 'any', and in fact the CPU does not do anything
-special that isn't already done by the default CPUs rv32/rv64.
 
 ``compat`` property of server class POWER CPUs (removed in 6.0)
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -956,6 +1024,14 @@ The CRIS architecture was pulled from Linux in 4.17 and the compiler
 was no longer packaged in any distro making it harder to run the
 ``check-tcg`` tests.
 
+RISC-V 'any' CPU type ``-cpu any`` (removed in 9.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The 'any' CPU type was introduced back in 2018 and was around since the
+initial RISC-V QEMU port. Its usage was always been unclear: users don't know
+what to expect from a CPU called 'any', and in fact the CPU does not do anything
+special that isn't already done by the default CPUs rv32/rv64.
+
 System accelerators
 -------------------
 
@@ -966,25 +1042,27 @@ Userspace local APIC with KVM (x86, removed in 8.0)
 a local APIC.  The ``split`` setting is supported, as is using ``-M
 kernel-irqchip=off`` when the CPU does not have a local APIC.
 
-HAXM (``-accel hax``) (removed in 8.2)
-''''''''''''''''''''''''''''''''''''''
-
-The HAXM project has been retired (see https://github.com/intel/haxm#status).
-Use "whpx" (on Windows) or "hvf" (on macOS) instead.
-
 MIPS "Trap-and-Emulate" KVM support (removed in 8.0)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The MIPS "Trap-and-Emulate" KVM host and guest support was removed
 from Linux in 2021, and is not supported anymore by QEMU either.
 
+HAXM (``-accel hax``) (removed in 8.2)
+''''''''''''''''''''''''''''''''''''''
+
+The HAXM project has been retired (see https://github.com/intel/haxm#status).
+Use "whpx" (on Windows) or "hvf" (on macOS) instead.
+
 System emulator machines
 ------------------------
 
-Note: Versioned machine types that have been introduced in a QEMU version
-that has initially been released more than 6 years before are considered
-obsolete and will be removed without further notice in this document.
-Please use newer machine types instead.
+Versioned machine types (aarch64, arm, i386, m68k, ppc64, s390x, x86_64)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+In accordance with our versioned machine type deprecation policy, all machine
+types with version |VER_MACHINE_DELETION_VERSION|, or older, have been
+removed.
 
 ``s390-virtio`` (removed in 2.6)
 ''''''''''''''''''''''''''''''''
@@ -1033,16 +1111,6 @@ Aspeed ``swift-bmc`` machine (removed in 7.0)
 This machine was removed because it was unused. Alternative AST2500 based
 OpenPOWER machines are ``witherspoon-bmc`` and ``romulus-bmc``.
 
-Aspeed ``tacoma-bmc`` machine (removed in 10.0)
-'''''''''''''''''''''''''''''''''''''''''''''''
-
-The ``tacoma-bmc`` machine was removed because it didn't bring much
-compared to the ``rainier-bmc`` machine. Also, the ``tacoma-bmc`` was
-a board used for bring up of the AST2600 SoC that never left the
-labs. It can be easily replaced by the ``rainier-bmc`` machine, which
-was the actual final product, or by the ``ast2600-evb`` with some
-tweaks.
-
 ppc ``taihu`` machine (removed in 7.2)
 '''''''''''''''''''''''''''''''''''''''''''''
 
@@ -1073,12 +1141,51 @@ for all machine types using the PXA2xx and OMAP2 SoCs. We are also
 dropping the ``cheetah`` OMAP1 board, because we don't have any
 test images for it and don't know of anybody who does.
 
+Aspeed ``tacoma-bmc`` machine (removed in 10.0)
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``tacoma-bmc`` machine was removed because it didn't bring much
+compared to the ``rainier-bmc`` machine. Also, the ``tacoma-bmc`` was
+a board used for bring up of the AST2600 SoC that never left the
+labs. It can be easily replaced by the ``rainier-bmc`` machine, which
+was the actual final product, or by the ``ast2600-evb`` with some
+tweaks.
+
 ppc ``ref405ep`` machine (removed in 10.0)
 ''''''''''''''''''''''''''''''''''''''''''
 
 This machine was removed because PPC 405 CPU have no known users,
 firmware images are not available, OpenWRT dropped support in 2019,
 U-Boot in 2017, and Linux in 2024.
+
+Big-Endian variants of ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines (removed in 10.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Both the MicroBlaze ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines
+were added for little endian CPUs. Big endian support was never tested
+and likely never worked. Starting with QEMU v10.1, the machines are now
+only available as little-endian machines.
+
+Mips ``mipssim`` machine (removed in 10.2)
+''''''''''''''''''''''''''''''''''''''''''
+
+Linux dropped support for this virtual machine type in kernel v3.7, and
+there was also no binary available online to use with that board.
+
+Arm ``ast2700a0-evb`` machine (removed in 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``ast2700a0-evb`` machine represents the first revision of the AST2700
+and serves as the initial engineering sample rather than a production version.
+A newer revision, A1, is now supported, and the ``ast2700a1-evb`` should
+replace the older A0 version.
+
+Arm ``highbank`` and ``midway`` machines (removed in 11.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+There were no known users left for these machines. If you just want to
+boot a Cortex-A15 or Cortex-A9 Linux, use the ``virt`` machine instead.
+
 
 linux-user mode CPUs
 --------------------
@@ -1105,6 +1212,20 @@ reason the maintainers strongly suspected no one actually used it.
 QEMU Nios II architecture was orphan; Intel has EOL'ed the Nios II
 processor IP (see `Intel discontinuance notification`_).
 
+iwMMXt emulation and the ``pxa`` CPUs (removed in 10.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``pxa`` CPU family (``pxa250``, ``pxa255``, ``pxa260``,
+``pxa261``, ``pxa262``, ``pxa270-a0``, ``pxa270-a1``, ``pxa270``,
+``pxa270-b0``, ``pxa270-b1``, ``pxa270-c0``, ``pxa270-c5``) were
+not available in system emulation, because all the machine types which
+used these CPUs were removed in the QEMU 9.2 release. We don't
+believe that anybody was using the iwMMXt emulation (which you
+would have to explicitly enable on the command line), and we did
+not have any tests to validate it or any real hardware or similar
+known-good implementation to test against. These CPUs have
+therefore been removed in linux-user mode as well.
+
 TCG introspection features
 --------------------------
 
@@ -1116,6 +1237,17 @@ feature can be replicated with TCG plugins it was removed. If
 any user is currently using this feature and needs help with
 converting to using TCG plugins they should contact the qemu-devel
 mailing list.
+
+
+Firmware, ACPI, Device Tree
+---------------------------
+
+RISC-V "virt" board "riscv,delegate" DT property (removed in 11.0)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The "riscv,delegate" DT property was added in QEMU 7.0 as part of
+the AIA APLIC support.  The property changed name during the review
+process in Linux and the correct name ended up being "riscv,delegation".
 
 
 System emulator devices
@@ -1157,6 +1289,25 @@ by using ``-machine graphics=off``.
 ''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The 'pvrdma' device and the whole RDMA subsystem have been removed.
+
+``-device sd-card,spec_version=1`` (removed in 10.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+SD physical layer specification v2.00 supersedes the v1.10 one.
+
+
+System emulator binaries
+------------------------
+
+``qemu-system-microblazeel`` (removed in 11.0)
+''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``qemu-system-microblaze`` binary can emulate little-endian machines
+now, too, so the separate binary ``qemu-system-microblazeel`` (with the
+``el`` suffix) for little-endian targets is not required anymore. The
+``petalogix-s3adsp1800`` machine can now be switched to little endian by
+setting its ``endianness`` property to ``little``.
+
 
 Related binaries
 ----------------
@@ -1242,6 +1393,31 @@ The corresponding upstream server project is no longer maintained.
 Users are recommended to switch to an alternative distributed block
 device driver such as RBD.
 
+VFIO devices
+------------
+
+``-device vfio-calxeda-xgmac`` (removed in 10.2)
+''''''''''''''''''''''''''''''''''''''''''''''''
+The vfio-calxeda-xgmac device allows to assign a host Calxeda Highbank
+10Gb XGMAC Ethernet controller device ("calxeda,hb-xgmac" compatibility
+string) to a guest. Calxeda HW has been ewasted now and there is no point
+keeping that device.
+
+``-device vfio-amd-xgbe`` (removed in 10.2)
+'''''''''''''''''''''''''''''''''''''''''''
+The vfio-amd-xgbe device allows to assign a host AMD 10GbE controller
+to a guest ("amd,xgbe-seattle-v1a" compatibility string). AMD "Seattle"
+is not supported anymore and there is no point keeping that device.
+
+``-device vfio-platform`` (removed in 10.2)
+'''''''''''''''''''''''''''''''''''''''''''
+The vfio-platform device allows to assign a host platform device
+to a guest in a generic manner. Integrating a new device into
+the vfio-platform infrastructure requires some adaptation at
+both kernel and qemu level. No such attempt has been done for years
+and the conclusion is that vfio-platform has not got any traction.
+PCIe passthrough shall be the mainline solution.
+
 Tools
 -----
 
@@ -1271,5 +1447,27 @@ both, older and future versions of QEMU.
 The ``blacklist`` config file option has been renamed to ``block-rpcs``
 (to be in sync with the renaming of the corresponding command line
 option).
+
+Device options
+--------------
+
+Character device options
+''''''''''''''''''''''''
+
+``reconnect`` (removed in 10.2)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``reconnect`` has been replaced by ``reconnect-ms``, which provides
+better precision.
+
+Net device options
+''''''''''''''''''
+
+Stream ``reconnect`` (removed in 10.2)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``reconnect`` has been replaced by ``reconnect-ms``, which provides
+better precision.
+
 
 .. _Intel discontinuance notification: https://www.intel.com/content/www/us/en/content-details/781327/intel-is-discontinuing-ip-ordering-codes-listed-in-pdn2312-for-nios-ii-ip.html

@@ -59,10 +59,18 @@ void migration_shutdown(void);
 bool migration_is_running(void);
 bool migration_thread_is_self(void);
 
+/*
+ * Notifiers may receive events in any of the following orders:
+ *
+ *    - MIG_EVENT_SETUP [-> MIG_EVENT_POSTCOPY_START] -> MIG_EVENT_DONE
+ *    - MIG_EVENT_SETUP [-> MIG_EVENT_POSTCOPY_START] -> MIG_EVENT_FAILED
+ *    - MIG_EVENT_FAILED
+ */
 typedef enum MigrationEventType {
-    MIG_EVENT_PRECOPY_SETUP,
-    MIG_EVENT_PRECOPY_DONE,
-    MIG_EVENT_PRECOPY_FAILED,
+    MIG_EVENT_SETUP,
+    MIG_EVENT_POSTCOPY_START,
+    MIG_EVENT_DONE,
+    MIG_EVENT_FAILED,
     MIG_EVENT_MAX
 } MigrationEventType;
 
@@ -72,7 +80,7 @@ typedef struct MigrationEvent {
 
 /*
  * A MigrationNotifyFunc may return an error code and an Error object,
- * but only when @e->type is MIG_EVENT_PRECOPY_SETUP.  The code is an int
+ * but only when @e->type is MIG_EVENT_SETUP.  The code is an int
  * to allow for different failure modes and recovery actions.
  */
 typedef int (*MigrationNotifyFunc)(NotifierWithReturn *notify,
@@ -81,21 +89,29 @@ typedef int (*MigrationNotifyFunc)(NotifierWithReturn *notify,
 /*
  * Register the notifier @notify to be called when a migration event occurs
  * for MIG_MODE_NORMAL, as specified by the MigrationEvent passed to @func.
- * Notifiers may receive events in any of the following orders:
- *    - MIG_EVENT_PRECOPY_SETUP -> MIG_EVENT_PRECOPY_DONE
- *    - MIG_EVENT_PRECOPY_SETUP -> MIG_EVENT_PRECOPY_FAILED
- *    - MIG_EVENT_PRECOPY_FAILED
  */
 void migration_add_notifier(NotifierWithReturn *notify,
                             MigrationNotifyFunc func);
 
 /*
- * Same as migration_add_notifier, but applies to be specified @mode.
+ * Same as migration_add_notifier, but applies to the specified @mode
+ * instead of MIG_MODE_NORMAL.
  */
 void migration_add_notifier_mode(NotifierWithReturn *notify,
                                  MigrationNotifyFunc func, MigMode mode);
 
+/*
+ * Same as migration_add_notifier, but applies to the specified @modes
+ * (a bitset of MigMode).
+ */
+void migration_add_notifier_modes(NotifierWithReturn *notify,
+                                  MigrationNotifyFunc func, unsigned modes);
+
+/*
+ * Remove a notifier from all modes.
+ */
 void migration_remove_notifier(NotifierWithReturn *notify);
+
 void migration_file_set_error(int ret, Error *err);
 
 /* True if incoming migration entered POSTCOPY_INCOMING_DISCARD */
@@ -119,19 +135,19 @@ bool migrate_uri_parse(const char *uri, MigrationChannel **channel,
                        Error **errp);
 
 /* migration/multifd-device-state.c */
-typedef struct SaveLiveCompletePrecopyThreadData {
-    SaveLiveCompletePrecopyThreadHandler hdlr;
+typedef struct SaveCompletePrecopyThreadData {
+    SaveCompletePrecopyThreadHandler hdlr;
     char *idstr;
     uint32_t instance_id;
     void *handler_opaque;
-} SaveLiveCompletePrecopyThreadData;
+} SaveCompletePrecopyThreadData;
 
 bool multifd_queue_device_state(char *idstr, uint32_t instance_id,
                                 char *data, size_t len);
 bool multifd_device_state_supported(void);
 
 void
-multifd_spawn_device_state_save_thread(SaveLiveCompletePrecopyThreadHandler hdlr,
+multifd_spawn_device_state_save_thread(SaveCompletePrecopyThreadHandler hdlr,
                                        char *idstr, uint32_t instance_id,
                                        void *opaque);
 

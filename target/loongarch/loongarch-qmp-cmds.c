@@ -7,8 +7,9 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/target-info.h"
 #include "qapi/error.h"
-#include "qapi/qapi-commands-machine-target.h"
+#include "qapi/qapi-commands-machine.h"
 #include "cpu.h"
 #include "qobject/qdict.h"
 #include "qapi/qobject-input-visitor.h"
@@ -32,7 +33,7 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
     CpuDefinitionInfoList *cpu_list = NULL;
     GSList *list;
 
-    list = object_class_get_list(TYPE_LOONGARCH_CPU, false);
+    list = object_class_get_list(target_cpu_type(), false);
     g_slist_foreach(list, loongarch_cpu_add_definition, &cpu_list);
     g_slist_free(list);
 
@@ -40,7 +41,8 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
 }
 
 static const char *cpu_model_advertised_features[] = {
-    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time", NULL
+    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time", "msgint",
+    "ptw", NULL
 };
 
 CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
@@ -48,7 +50,6 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
                                                      Error **errp)
 {
     Visitor *visitor;
-    bool ok;
     CpuModelExpansionInfo *expansion_info;
     QDict *qdict_out;
     ObjectClass *oc;
@@ -56,34 +57,52 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
     const char *name;
     int i;
 
-    if (type != CPU_MODEL_EXPANSION_TYPE_STATIC) {
+    if ((type != CPU_MODEL_EXPANSION_TYPE_STATIC) &&
+        (type != CPU_MODEL_EXPANSION_TYPE_FULL)) {
         error_setg(errp, "The requested expansion type is not supported");
         return NULL;
     }
 
-    if (model->props) {
-        visitor = qobject_input_visitor_new(model->props);
-        if (!visit_start_struct(visitor, "model.props", NULL, 0, errp)) {
-            visit_free(visitor);
-            return NULL;
-        }
-
-        ok = visit_check_struct(visitor, errp);
-        visit_end_struct(visitor, NULL);
-        visit_free(visitor);
-        if (!ok) {
-            return NULL;
-        }
-    }
-
     oc = cpu_class_by_name(TYPE_LOONGARCH_CPU, model->name);
     if (!oc) {
-        error_setg(errp, "The CPU type '%s' is not a recognized LoongArch CPU type",
-                   model->name);
+        error_setg(errp, "The CPU type '%s' is not a recognized LoongArch "
+                         "CPU type", model->name);
         return NULL;
     }
 
     obj = object_new(object_class_get_name(oc));
+    if (model->props) {
+        Error *err = NULL;
+        const QDict *qdict_in;
+
+        visitor = qobject_input_visitor_new(model->props);
+        if (!visit_start_struct(visitor, "model.props", NULL, 0, errp)) {
+            visit_free(visitor);
+            object_unref(obj);
+            return NULL;
+        }
+
+        qdict_in = qobject_to(QDict, model->props);
+        i = 0;
+        while ((name = cpu_model_advertised_features[i++]) != NULL) {
+            if (qdict_get(qdict_in, name)) {
+                if (!object_property_set(obj, name, visitor, &err)) {
+                    break;
+                }
+            }
+        }
+
+        if (!err) {
+            visit_check_struct(visitor, &err);
+        }
+        visit_end_struct(visitor, NULL);
+        visit_free(visitor);
+        if (err) {
+            error_propagate(errp, err);
+            object_unref(obj);
+            return NULL;
+        }
+    }
 
     expansion_info = g_new0(CpuModelExpansionInfo, 1);
     expansion_info->model = g_malloc0(sizeof(*expansion_info->model));

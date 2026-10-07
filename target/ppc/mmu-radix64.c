@@ -19,10 +19,11 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "exec/page-protection.h"
+#include "exec/target_page.h"
 #include "qemu/error-report.h"
 #include "system/kvm.h"
+#include "system/memory.h"
 #include "kvm_ppc.h"
 #include "exec/log.h"
 #include "internal.h"
@@ -717,7 +718,7 @@ static bool ppc_radix64_xlate_impl(PowerPCCPU *cpu, vaddr eaddr,
            }
         }
         *protp = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
-        *psizep = TARGET_PAGE_BITS;
+        *psizep = qemu_target_page_bits();
         return true;
     }
 

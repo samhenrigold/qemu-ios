@@ -11,8 +11,11 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "exec/address-spaces.h"
-#include "exec/memory.h"
+#include "system/address-spaces.h"
+#include "system/memory.h"
+#include "exec/target_page.h"
+#include "exec/cpu-common.h"
+#include "linux/kvm.h"
 #include "system/kvm.h"
 #include "qemu/bitops.h"
 #include "qemu/error-report.h"
@@ -23,8 +26,7 @@
 #include "hw/hyperv/hyperv.h"
 #include "qom/object.h"
 #include "target/i386/kvm/hyperv-proto.h"
-#include "target/i386/cpu.h"
-#include "exec/cpu-all.h"
+#include "exec/target_page.h"
 
 struct SynICState {
     DeviceState parent_obj;
@@ -56,6 +58,11 @@ bool hyperv_is_synic_enabled(void)
 static SynICState *get_synic(CPUState *cs)
 {
     return SYNIC(object_resolve_path_component(OBJECT(cs), "synic"));
+}
+
+bool hyperv_is_synic_present(CPUState *cs)
+{
+    return get_synic(cs);
 }
 
 static void synic_update(SynICState *synic, bool sctl_enable,
@@ -133,7 +140,7 @@ static void synic_reset(DeviceState *dev)
     assert(QLIST_EMPTY(&synic->sint_routes));
 }
 
-static void synic_class_init(ObjectClass *klass, void *data)
+static void synic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -437,7 +444,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
         sint_route->staged_msg->cb_data = cb_data;
 
         r = event_notifier_init(ack_notifier, false);
-        if (r) {
+        if (r < 0) {
             goto cleanup_err_sint;
         }
         event_notifier_set_handler(ack_notifier, sint_ack_handler);
@@ -451,7 +458,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
 
     /* We need to setup a GSI for this SintRoute */
     r = event_notifier_init(&sint_route->sint_set_notifier, false);
-    if (r) {
+    if (r < 0) {
         goto cleanup_err_sint;
     }
 

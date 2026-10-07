@@ -26,9 +26,9 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci/pcie_host.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci-host/remote.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 static const char *remote_pcihost_root_bus_path(PCIHostState *host_bridge,
                                                 PCIBus *rootbus)
@@ -46,7 +46,7 @@ static void remote_pcihost_realize(DeviceState *dev, Error **errp)
                                 0, TYPE_PCIE_BUS);
 }
 
-static void remote_pcihost_class_init(ObjectClass *klass, void *data)
+static void remote_pcihost_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(klass);
@@ -55,7 +55,6 @@ static void remote_pcihost_class_init(ObjectClass *klass, void *data)
     dc->realize = remote_pcihost_realize;
 
     dc->user_creatable = false;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "pci";
 }
 

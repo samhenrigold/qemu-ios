@@ -47,7 +47,7 @@ static void ipod_touch_unknown1_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-static void ipod_touch_unknown1_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_unknown1_class_init(ObjectClass *klass, const void *data)
 {
     
 }

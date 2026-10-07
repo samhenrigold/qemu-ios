@@ -26,14 +26,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/register.h"
+#include "hw/core/register.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/intc/xlnx-zynqmp-ipi.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 
 #ifndef XLNX_ZYNQMP_IPI_ERR_DEBUG
 #define XLNX_ZYNQMP_IPI_ERR_DEBUG 0
@@ -355,7 +355,7 @@ static const VMStateDescription vmstate_zynqmp_pmu_ipi = {
     }
 };
 
-static void xlnx_zynqmp_ipi_class_init(ObjectClass *klass, void *data)
+static void xlnx_zynqmp_ipi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

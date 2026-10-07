@@ -23,11 +23,11 @@
 #include "system/runstate.h"
 #include "trace.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 #include "hw/misc/iotkit-sysctl.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/armsse-version.h"
 #include "target/arm/arm-powerctl.h"
 
@@ -844,7 +844,7 @@ static const Property iotkit_sysctl_props[] = {
                        0x10000000),
 };
 
-static void iotkit_sysctl_class_init(ObjectClass *klass, void *data)
+static void iotkit_sysctl_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

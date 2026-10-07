@@ -19,7 +19,7 @@
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/vdpa-dev.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -70,7 +70,8 @@ vhost_vdpa_device_pci_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
     qdev_realize(DEVICE(&dev->vdev), BUS(&vpci_dev->bus), errp);
 }
 
-static void vhost_vdpa_device_pci_class_init(ObjectClass *klass, void *data)
+static void vhost_vdpa_device_pci_class_init(ObjectClass *klass,
+                                             const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioPCIClass *k = VIRTIO_PCI_CLASS(klass);

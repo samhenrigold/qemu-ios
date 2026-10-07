@@ -9,7 +9,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ssi/imx_spi.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -475,7 +475,7 @@ static void imx_spi_realize(DeviceState *dev, Error **errp)
     fifo32_create(&s->rx_fifo, ECSPI_FIFO_SIZE);
 }
 
-static void imx_spi_class_init(ObjectClass *klass, void *data)
+static void imx_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

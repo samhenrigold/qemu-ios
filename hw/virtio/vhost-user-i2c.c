@@ -8,7 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/vhost-user-i2c.h"
 #include "qemu/error-report.h"
@@ -36,7 +36,7 @@ static const VMStateDescription vu_i2c_vmstate = {
     .unmigratable = 1,
 };
 
-static void vu_i2c_class_init(ObjectClass *klass, void *data)
+static void vu_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VHostUserBaseClass *vubc = VHOST_USER_BASE_CLASS(klass);

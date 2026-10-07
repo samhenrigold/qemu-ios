@@ -14,7 +14,7 @@
 #ifndef HW_S390_SCLP_H
 #define HW_S390_SCLP_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "target/s390x/cpu-qom.h"
 #include "qom/object.h"
 
@@ -197,12 +197,9 @@ OBJECT_DECLARE_TYPE(SCLPDevice, SCLPDeviceClass,
 struct SCLPEventFacility;
 
 struct SCLPDevice {
-    /* private */
     DeviceState parent_obj;
-    struct SCLPEventFacility *event_facility;
-    int increment_size;
 
-    /* public */
+    struct SCLPEventFacility *event_facility;
 };
 
 struct SCLPDeviceClass {

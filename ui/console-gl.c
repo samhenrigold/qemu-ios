@@ -25,27 +25,51 @@
  * THE SOFTWARE.
  */
 #include "qemu/osdep.h"
+#include <epoxy/gl.h>
+#include "qemu/error-report.h"
 #include "ui/console.h"
 #include "ui/shader.h"
 
 /* ---------------------------------------------------------------------- */
 
-bool console_gl_check_format(DisplayChangeListener *dcl,
-                             pixman_format_code_t format)
+static bool map_format(pixman_format_code_t format,
+                       GLenum *glformat, GLenum *gltype)
 {
     switch (format) {
     case PIXMAN_BE_b8g8r8x8:
     case PIXMAN_BE_b8g8r8a8:
+        *glformat = GL_BGRA_EXT;
+        *gltype = GL_UNSIGNED_BYTE;
+        return true;
+    case PIXMAN_BE_x8r8g8b8:
+    case PIXMAN_BE_a8r8g8b8:
+        *glformat = GL_RGBA;
+        *gltype = GL_UNSIGNED_BYTE;
+        return true;
     case PIXMAN_r5g6b5:
+        *glformat = GL_RGB;
+        *gltype = GL_UNSIGNED_SHORT_5_6_5;
         return true;
     default:
         return false;
     }
 }
 
+bool console_gl_check_format(DisplayChangeListener *dcl,
+                             pixman_format_code_t format)
+{
+    GLenum glformat;
+    GLenum gltype;
+
+    return map_format(format, &glformat, &gltype);
+}
+
 void surface_gl_create_texture(QemuGLShader *gls,
                                DisplaySurface *surface)
 {
+    GLenum glformat;
+    GLenum gltype;
+
     assert(gls);
     assert(QEMU_IS_ALIGNED(surface_stride(surface), surface_bytes_per_pixel(surface)));
 
@@ -53,25 +77,7 @@ void surface_gl_create_texture(QemuGLShader *gls,
         return;
     }
 
-    switch (surface_format(surface)) {
-    case PIXMAN_BE_b8g8r8x8:
-    case PIXMAN_BE_b8g8r8a8:
-        surface->glformat = GL_BGRA_EXT;
-        surface->gltype = GL_UNSIGNED_BYTE;
-        break;
-    case PIXMAN_BE_x8r8g8b8:
-    case PIXMAN_BE_a8r8g8b8:
-        surface->glformat = GL_RGBA;
-        surface->gltype = GL_UNSIGNED_BYTE;
-        break;
-    case PIXMAN_r5g6b5:
-        surface->glformat = GL_RGB;
-        surface->gltype = GL_UNSIGNED_SHORT_5_6_5;
-        break;
-    default:
-        g_assert_not_reached();
-    }
-
+    assert(map_format(surface_format(surface), &glformat, &gltype));
     glGenTextures(1, &surface->texture);
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, surface->texture);
@@ -79,16 +85,12 @@ void surface_gl_create_texture(QemuGLShader *gls,
                   surface_stride(surface) / surface_bytes_per_pixel(surface));
     if (epoxy_is_desktop_gl()) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                     surface_width(surface),
-                     surface_height(surface),
-                     0, surface->glformat, surface->gltype,
-                     surface_data(surface));
+                     surface_width(surface), surface_height(surface), 0,
+                     glformat, gltype, surface_data(surface));
     } else {
-        glTexImage2D(GL_TEXTURE_2D, 0, surface->glformat,
-                     surface_width(surface),
-                     surface_height(surface),
-                     0, surface->glformat, surface->gltype,
-                     surface_data(surface));
+        glTexImage2D(GL_TEXTURE_2D, 0, glformat,
+                     surface_width(surface), surface_height(surface), 0,
+                     glformat, gltype, surface_data(surface));
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
     }
 
@@ -96,22 +98,70 @@ void surface_gl_create_texture(QemuGLShader *gls,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 }
 
+bool surface_gl_create_texture_from_fd(DisplaySurface *surface,
+                                       int fd, GLuint *texture,
+                                       GLuint *mem_obj)
+{
+    unsigned long size = surface_stride(surface) * surface_height(surface);
+    GLenum err = glGetError();
+    *texture = 0;
+    *mem_obj = 0;
+
+    if (!epoxy_has_gl_extension("GL_EXT_memory_object") ||
+        !epoxy_has_gl_extension("GL_EXT_memory_object_fd")) {
+        error_report("spice: required OpenGL extensions not supported: "
+                     "GL_EXT_memory_object and GL_EXT_memory_object_fd");
+        return false;
+    }
+
+#ifdef GL_EXT_memory_object_fd
+    glCreateMemoryObjectsEXT(1, mem_obj);
+    glImportMemoryFdEXT(*mem_obj, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+
+    err = glGetError();
+    if (err != GL_NO_ERROR) {
+        error_report("spice: cannot import memory object from fd");
+        goto cleanup_mem;
+    }
+
+    glGenTextures(1, texture);
+    glBindTexture(GL_TEXTURE_2D, *texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_LINEAR_TILING_EXT);
+    glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, surface_width(surface),
+                         surface_height(surface), *mem_obj, 0);
+    err = glGetError();
+    if (err != GL_NO_ERROR) {
+        error_report("spice: cannot create texture from memory object");
+        goto cleanup_tex_and_mem;
+    }
+    return true;
+
+cleanup_tex_and_mem:
+    glDeleteTextures(1, texture);
+cleanup_mem:
+    glDeleteMemoryObjectsEXT(1, mem_obj);
+
+#endif
+    return false;
+}
+
 void surface_gl_update_texture(QemuGLShader *gls,
                                DisplaySurface *surface,
                                int x, int y, int w, int h)
 {
     uint8_t *data = (void *)surface_data(surface);
+    GLenum glformat;
+    GLenum gltype;
 
     assert(gls);
+    assert(map_format(surface_format(surface), &glformat, &gltype));
 
     if (surface->texture) {
         glBindTexture(GL_TEXTURE_2D, surface->texture);
         glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,
                       surface_stride(surface)
                       / surface_bytes_per_pixel(surface));
-        glTexSubImage2D(GL_TEXTURE_2D, 0,
-                        x, y, w, h,
-                        surface->glformat, surface->gltype,
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, glformat, gltype,
                         data + surface_stride(surface) * y
                         + surface_bytes_per_pixel(surface) * x);
     }

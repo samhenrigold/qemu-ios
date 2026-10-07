@@ -14,8 +14,9 @@
 #ifndef QEMU_MIGRATION_H
 #define QEMU_MIGRATION_H
 
-#include "exec/cpu-common.h"
-#include "hw/qdev-core.h"
+#include "system/ram_addr.h"
+#include "system/ramblock.h"
+#include "hw/core/qdev.h"
 #include "qapi/qapi-types-migration.h"
 #include "qobject/json-writer.h"
 #include "qemu/thread.h"
@@ -98,9 +99,9 @@ struct MigrationIncomingState {
     void (*transport_cleanup)(void *data);
     /*
      * Used to sync thread creations.  Note that we can't create threads in
-     * parallel with this sem.
+     * parallel with this event.
      */
-    QemuSemaphore  thread_sync_sem;
+    QemuEvent  thread_sync_event;
     /*
      * Free at the start of the main state load, set as the main thread finishes
      * loading state.
@@ -186,7 +187,7 @@ struct MigrationIncomingState {
 
     /* The coroutine we should enter (back) after failover */
     Coroutine *colo_incoming_co;
-    QemuSemaphore colo_incoming_sem;
+    QemuEvent colo_incoming_event;
 
     /* Optional load threads pool and its thread exit request flag */
     ThreadPool *load_threads;
@@ -254,6 +255,7 @@ struct MigrationIncomingState {
 MigrationIncomingState *migration_incoming_get_current(void);
 void migration_incoming_state_destroy(void);
 void migration_incoming_transport_cleanup(MigrationIncomingState *mis);
+void migration_incoming_qemu_exit(void);
 /*
  * Functions to work with blocktime context
  */
@@ -379,10 +381,10 @@ struct MigrationState {
     QemuSemaphore wait_unplug_sem;
 
     /* Migration is paused due to pause-before-switchover */
-    QemuSemaphore pause_sem;
+    QemuEvent pause_event;
 
-    /* The semaphore is used to notify COLO thread that failover is finished */
-    QemuSemaphore colo_exit_sem;
+    /* The event is used to notify COLO thread that failover is finished */
+    QemuEvent colo_exit_event;
 
     /* The event is used to notify COLO thread to do checkpoint */
     QemuEvent colo_checkpoint_event;
@@ -509,25 +511,34 @@ struct MigrationState {
     /* Is this a rdma migration */
     bool rdma_migration;
 
+    bool postcopy_package_loaded;
+    QemuEvent postcopy_package_loaded_event;
+
     GSource *hup_source;
+
+    /*
+     * The block-bitmap-mapping option is allowed to be an empty list,
+     * therefore we need a way to know whether the user has given
+     * anything as input.
+     */
+    bool has_block_bitmap_mapping;
 };
 
 void migrate_set_state(MigrationStatus *state, MigrationStatus old_state,
                        MigrationStatus new_state);
 
-void migration_fd_process_incoming(QEMUFile *f);
-void migration_ioc_process_incoming(QIOChannel *ioc, Error **errp);
 void migration_incoming_process(void);
+bool migration_incoming_setup(QIOChannel *ioc, uint8_t channel, Error **errp);
+void migration_outgoing_setup(QIOChannel *ioc);
 
-bool  migration_has_all_channels(void);
-
-void migrate_set_error(MigrationState *s, const Error *error);
+void migration_connect_error_propagate(MigrationState *s, Error *error);
+void migrate_error_propagate(MigrationState *s, Error *error);
 bool migrate_has_error(MigrationState *s);
 
-void migration_connect(MigrationState *s, Error *error_in);
+void migration_start_outgoing(MigrationState *s);
+void migration_start_incoming(void);
 
-int migration_call_notifiers(MigrationState *s, MigrationEventType type,
-                             Error **errp);
+int migration_call_notifiers(MigrationEventType type, Error **errp);
 
 int migrate_init(MigrationState *s, Error **errp);
 bool migration_is_blocked(Error **errp);
@@ -536,7 +547,7 @@ bool migration_in_postcopy(void);
 bool migration_postcopy_is_alive(MigrationStatus state);
 MigrationState *migrate_get_current(void);
 bool migration_has_failed(MigrationState *);
-bool migrate_mode_is_cpr(MigrationState *);
+bool migrate_mode_is_cpr(void);
 
 uint64_t ram_get_total_transferred_pages(void);
 
@@ -546,7 +557,7 @@ void migrate_send_rp_shut(MigrationIncomingState *mis,
 void migrate_send_rp_pong(MigrationIncomingState *mis,
                           uint32_t value);
 int migrate_send_rp_req_pages(MigrationIncomingState *mis, RAMBlock *rb,
-                              ram_addr_t start, uint64_t haddr);
+                              ram_addr_t start, uint64_t haddr, uint32_t tid);
 int migrate_send_rp_message_req_pages(MigrationIncomingState *mis,
                                       RAMBlock *rb, ram_addr_t start);
 void migrate_send_rp_recv_bitmap(MigrationIncomingState *mis,

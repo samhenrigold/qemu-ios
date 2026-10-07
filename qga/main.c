@@ -32,7 +32,10 @@
 #include "qemu/systemd.h"
 #include "qemu-version.h"
 #ifdef _WIN32
+#include <windows.h>
+#include <objbase.h>
 #include <dbt.h>
+#include <pdh.h>
 #include "qga/service-win32.h"
 #include "qga/vss-win32.h"
 #endif
@@ -105,6 +108,9 @@ struct GAState {
     GAService service;
     HANDLE wakeup_event;
     HANDLE event_log;
+    HANDLE load_avg_wait_handle;
+    HANDLE load_avg_event;
+    HQUERY load_avg_pdh_query;
 #endif
     bool delimit_response;
     bool frozen;
@@ -582,6 +588,25 @@ const char *ga_fsfreeze_hook(GAState *s)
 }
 #endif
 
+#ifdef _WIN32
+void ga_set_load_avg_wait_handle(GAState *s, HANDLE wait_handle)
+{
+    s->load_avg_wait_handle = wait_handle;
+}
+void ga_set_load_avg_event(GAState *s, HANDLE event)
+{
+    s->load_avg_event = event;
+}
+void ga_set_load_avg_pdh_query(GAState *s, HQUERY query)
+{
+    s->load_avg_pdh_query = query;
+}
+HQUERY ga_get_load_avg_pdh_query(GAState *s)
+{
+    return s->load_avg_pdh_query;
+}
+#endif
+
 static void become_daemon(const char *pidfile)
 {
 #ifndef _WIN32
@@ -807,6 +832,29 @@ DWORD WINAPI service_ctrl_handler(DWORD ctrl, DWORD type, LPVOID data,
     return ret;
 }
 
+/* Initialize COM for VSS operations */
+static HRESULT init_com(void)
+{
+    HRESULT hr;
+
+    hr = CoInitialize(NULL);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CoInitializeSecurity(
+        NULL, -1, NULL, NULL,
+        RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
+        RPC_C_IMP_LEVEL_IDENTIFY,
+        NULL, EOAC_NONE, NULL);
+    if (FAILED(hr)) {
+        CoUninitialize();
+        return hr;
+    }
+
+    return S_OK;
+}
+
 VOID WINAPI service_main(DWORD argc, TCHAR *argv[])
 {
     GAService *service = &ga_state->service;
@@ -816,6 +864,13 @@ VOID WINAPI service_main(DWORD argc, TCHAR *argv[])
 
     if (service->status_handle == 0) {
         g_critical("Failed to register extended requests function!\n");
+        return;
+    }
+
+    /* Initialize COM for VSS operations in the service thread */
+    HRESULT hr_com = init_com();
+    if (FAILED(hr_com)) {
+        g_critical("Failed to initialize COM in service thread: 0x%lx", hr_com);
         return;
     }
 
@@ -842,6 +897,8 @@ VOID WINAPI service_main(DWORD argc, TCHAR *argv[])
     SetServiceStatus(service->status_handle, &service->status);
 
     run_agent(ga_state);
+
+    CoUninitialize();
 
     UnregisterDeviceNotification(service->device_notification_handle);
     service->status.dwCurrentState = SERVICE_STOPPED;
@@ -1402,6 +1459,10 @@ static GAState *initialize_agent(GAConfig *config, int socket_activation)
     g_debug("Guest agent version %s started", QEMU_FULL_VERSION);
 
 #ifdef _WIN32
+    s->load_avg_wait_handle = INVALID_HANDLE_VALUE;
+    s->load_avg_event = INVALID_HANDLE_VALUE;
+    s->load_avg_pdh_query = NULL;
+
     s->event_log = RegisterEventSource(NULL, "qemu-ga");
     if (!s->event_log) {
         g_autofree gchar *errmsg = g_win32_error_message(GetLastError());
@@ -1485,8 +1546,12 @@ static GAState *initialize_agent(GAConfig *config, int socket_activation)
 
     if (!channel_init(s, s->config->method, s->config->channel_path,
                       s->socket_activation ? FIRST_SOCKET_ACTIVATION_FD : -1)) {
-        g_critical("failed to initialize guest agent channel");
-        return NULL;
+        if (s->config->retry_path) {
+            g_info("failed to initialize guest agent channel, will retry");
+        } else {
+            g_critical("failed to initialize guest agent channel");
+            return NULL;
+        }
     }
 
     if (config->daemonize) {
@@ -1506,6 +1571,18 @@ static void cleanup_agent(GAState *s)
 #ifdef _WIN32
     CloseHandle(s->wakeup_event);
     CloseHandle(s->event_log);
+
+    if (s->load_avg_wait_handle != INVALID_HANDLE_VALUE) {
+        UnregisterWait(s->load_avg_wait_handle);
+    }
+
+    if (s->load_avg_event != INVALID_HANDLE_VALUE) {
+        CloseHandle(s->load_avg_event);
+    }
+
+    if (s->load_avg_pdh_query) {
+        PdhCloseQuery(s->load_avg_pdh_query);
+    }
 #endif
     if (s->command_state) {
         ga_command_state_cleanup_all(s->command_state);
@@ -1524,7 +1601,7 @@ static void cleanup_agent(GAState *s)
 static int run_agent_once(GAState *s)
 {
     if (!s->channel &&
-        channel_init(s, s->config->method, s->config->channel_path,
+        !channel_init(s, s->config->method, s->config->channel_path,
                      s->socket_activation ? FIRST_SOCKET_ACTIVATION_FD : -1)) {
         g_critical("failed to initialize guest agent channel");
         return EXIT_FAILURE;
@@ -1676,7 +1753,15 @@ int main(int argc, char **argv)
         StartServiceCtrlDispatcher(service_table);
         ret = EXIT_SUCCESS;
     } else {
+        HRESULT hr_com = init_com();
+        if (FAILED(hr_com)) {
+            g_critical("Failed to initialize COM: 0x%lx", hr_com);
+            ret = EXIT_FAILURE;
+            goto end;
+        }
+
         ret = run_agent(s);
+        CoUninitialize();
     }
 #else
     ret = run_agent(s);

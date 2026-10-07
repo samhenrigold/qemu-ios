@@ -41,8 +41,12 @@ def main() -> int:
     parser.parse_args()
 
     packages = {
-        "meson==1.5.0":
-        "52b34f4903b882df52ad0d533146d4b992c018ea77399f825579737672ae7b20",
+        "meson==1.10.0":
+        "4b27aafce281e652dcb437b28007457411245d975c48b5db3a797d3e93ae1585",
+        "qemu.qmp==0.0.5":
+        "e05782d6df5844b34e0d2f7c68693525da074deef7b641c1401dda6e4e3d6303",
+        "pycotap==1.3.1":
+        "1c3a25b3ff89e48f4e00f1f71dbbc1642b4f65c65d416524d07e73492fff25ea",
     }
 
     vendor_dir = Path(__file__, "..", "..", "wheels").resolve()

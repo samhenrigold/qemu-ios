@@ -20,13 +20,13 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/sensor/tmp105.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/module.h"
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 #include "trace.h"
 
 FIELD(CONFIG, SHUTDOWN_MODE,        0, 1)
@@ -313,7 +313,7 @@ static void tmp105_initfn(Object *obj)
                         tmp105_set_temperature, NULL, NULL);
 }
 
-static void tmp105_class_init(ObjectClass *klass, void *data)
+static void tmp105_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

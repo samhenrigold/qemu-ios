@@ -5,7 +5,7 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/ssi/ssi.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 
 #define TYPE_IPOD_TOUCH_NOR_SPI                "ipodtouch.norspi"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchNORSPIState, IPOD_TOUCH_NOR_SPI)

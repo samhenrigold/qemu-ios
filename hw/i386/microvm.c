@@ -30,8 +30,8 @@
 #include "acpi-microvm.h"
 #include "microvm-dt.h"
 
-#include "hw/loader.h"
-#include "hw/irq.h"
+#include "hw/core/loader.h"
+#include "hw/core/irq.h"
 #include "hw/i386/kvm/clock.h"
 #include "hw/i386/microvm.h"
 #include "hw/i386/x86.h"
@@ -49,6 +49,7 @@
 #include "hw/acpi/generic_event_device.h"
 #include "hw/pci-host/gpex.h"
 #include "hw/usb/xhci.h"
+#include "hw/vfio/types.h"
 
 #include "elf.h"
 #include "kvm/kvm_i386.h"
@@ -329,7 +330,7 @@ static void microvm_memory_init(MicrovmMachineState *mms)
     rom_set_fw(fw_cfg);
 
     if (machine->kernel_filename != NULL) {
-        mmc->x86_load_linux(x86ms, fw_cfg, 0, true);
+        mmc->x86_load_linux(x86ms, fw_cfg, 0);
     }
 
     if (mms->option_roms) {
@@ -633,11 +634,12 @@ GlobalProperty microvm_properties[] = {
      * so reserving io space is not going to work.  Turn it off.
      */
     { "pcie-root-port", "io-reserve", "0" },
+    { TYPE_RAMFB_DEVICE, "use-legacy-x86-rom", "true" },
+    { TYPE_VFIO_PCI_NOHOTPLUG, "use-legacy-x86-rom", "true" },
 };
 
-static void microvm_class_init(ObjectClass *oc, void *data)
+static void microvm_class_init(ObjectClass *oc, const void *data)
 {
-    X86MachineClass *x86mc = X86_MACHINE_CLASS(oc);
     MicrovmMachineClass *mmc = MICROVM_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
@@ -670,8 +672,6 @@ static void microvm_class_init(ObjectClass *oc, void *data)
     hc->plug = microvm_device_plug_cb;
     hc->unplug_request = microvm_device_unplug_request_cb;
     hc->unplug = microvm_device_unplug_cb;
-
-    x86mc->fwcfg_dma_enabled = true;
 
     object_class_property_add(oc, MICROVM_MACHINE_RTC, "OnOffAuto",
                               microvm_machine_get_rtc,
@@ -726,7 +726,7 @@ static const TypeInfo microvm_machine_info = {
     .instance_init = microvm_machine_initfn,
     .class_size    = sizeof(MicrovmMachineClass),
     .class_init    = microvm_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
          { TYPE_HOTPLUG_HANDLER },
          { }
     },

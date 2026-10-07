@@ -40,9 +40,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 
@@ -1022,7 +1022,7 @@ static const Property s5l8930_h2fmi_props[] = {
     DEFINE_PROP_BOOL("cfg-v0", S5L8930H2FMIState, cfg_v0, false),
 };
 
-static void s5l8930_h2fmi_class_init(ObjectClass *klass, void *data)
+static void s5l8930_h2fmi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -49,13 +49,11 @@
 #ifndef BSD_USER_BSD_MEM_H
 #define BSD_USER_BSD_MEM_H
 
-#include <sys/types.h>
 #include <sys/ipc.h>
-#include <sys/mman.h>
 #include <sys/shm.h>
-#include <fcntl.h>
 
 #include "qemu-bsd.h"
+#include "exec/mmap-lock.h"
 #include "exec/page-protection.h"
 #include "user/page-protection.h"
 
@@ -389,8 +387,9 @@ static inline abi_long do_bsd_shmat(int shmid, abi_ulong shmaddr, int shmflg)
         raddr = h2g(host_raddr);
 
         page_set_flags(raddr, raddr + shm_info.shm_segsz - 1,
-                       PAGE_VALID | PAGE_RESET | PAGE_READ |
-                       (shmflg & SHM_RDONLY ? 0 : PAGE_WRITE));
+                       PAGE_VALID | PAGE_READ |
+                       (shmflg & SHM_RDONLY ? 0 : PAGE_WRITE),
+                       PAGE_VALID);
 
         for (int i = 0; i < N_BSD_SHM_REGIONS; i++) {
             if (bsd_shm_regions[i].start == 0) {
@@ -427,7 +426,7 @@ static inline abi_long do_bsd_shmdt(abi_ulong shmaddr)
             abi_ulong size = bsd_shm_regions[i].size;
 
             bsd_shm_regions[i].start = 0;
-            page_set_flags(shmaddr, shmaddr + size - 1, 0);
+            page_set_flags(shmaddr, shmaddr + size - 1, 0, PAGE_VALID);
             mmap_reserve(shmaddr, size);
         }
     }

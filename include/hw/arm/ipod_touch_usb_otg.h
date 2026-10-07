@@ -3,8 +3,8 @@
 
 #include "hw/arm/ipod_touch_tcp_usb.h"
 
-#include "hw/irq.h"
-#include "hw/usb.h"
+#include "hw/core/irq.h"
+#include "hw/usb/usb.h"
 
 #define DEVICE_NAME		"usb_synopsys"
 

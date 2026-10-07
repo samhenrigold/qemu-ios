@@ -10,8 +10,8 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
-#include "hw/nmi.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/nmi.h"
 #include "hw/intc/intc.h"
 #include "hw/intc/m68k_irqc.h"
 
@@ -90,7 +90,7 @@ static const Property m68k_irqc_properties[] = {
                      TYPE_M68K_CPU, ArchCPU *),
 };
 
-static void m68k_irqc_class_init(ObjectClass *oc, void *data)
+static void m68k_irqc_class_init(ObjectClass *oc, const void *data)
  {
     DeviceClass *dc = DEVICE_CLASS(oc);
     NMIClass *nc = NMI_CLASS(oc);
@@ -110,7 +110,7 @@ static const TypeInfo m68k_irqc_type_info = {
     .instance_size = sizeof(M68KIRQCState),
     .instance_init = m68k_irqc_instance_init,
     .class_init = m68k_irqc_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
          { TYPE_NMI },
          { TYPE_INTERRUPT_STATS_PROVIDER },
          { }

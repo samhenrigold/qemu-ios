@@ -9,10 +9,11 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
+#include "exec/cpu-interrupt.h"
 #include "qapi/error.h"
 #include "hw/pci/pci_host.h"
 #include "cpu.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "alpha_sys.h"
 
 
@@ -621,8 +622,8 @@ static bool make_iommu_tlbe(hwaddr taddr, hwaddr mask, IOMMUTLBEntry *ret)
    translation, given the address of the PTE.  */
 static bool pte_translate(hwaddr pte_addr, IOMMUTLBEntry *ret)
 {
-    uint64_t pte = address_space_ldq(&address_space_memory, pte_addr,
-                                     MEMTXATTRS_UNSPECIFIED, NULL);
+    uint64_t pte = address_space_ldq_le(&address_space_memory, pte_addr,
+                                        MEMTXATTRS_UNSPECIFIED, NULL);
 
     /* Check valid bit.  */
     if ((pte & 1) == 0) {
@@ -934,7 +935,7 @@ static const TypeInfo typhoon_pcihost_info = {
 };
 
 static void typhoon_iommu_memory_region_class_init(ObjectClass *klass,
-                                                   void *data)
+                                                   const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

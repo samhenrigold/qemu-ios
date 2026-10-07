@@ -1,18 +1,19 @@
 #include "qemu/osdep.h"
+#include "hw/arm/machines-qom.h"
 #include "hw/arm/it_iboot.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qapi/qapi-visit-common.h"
 #include "hw/arm/boot.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "hw/misc/unimp.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "system/system.h"
 #include "system/runstate.h"
 #include "system/reset.h"
-#include "hw/platform-bus.h"
+#include "hw/core/platform-bus.h"
 #include "hw/block/flash.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/guest-services/gles.h"
@@ -3641,7 +3642,7 @@ static void ipod_touch_machine_init(MachineState *machine)
     qemu_register_powerdown_notifier(&ipod_touch_powerdown_notifier);
 }
 
-static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_machine_class_init(ObjectClass *klass, const void *data)
 {
     object_class_property_add(klass, "bt", "bool", ipod_touch_get_bt,
                               ipod_touch_set_bt, NULL, NULL);
@@ -3709,6 +3710,7 @@ static void ipod_touch_machine_class_init(ObjectClass *klass, void *data)
 static const TypeInfo ipod_touch_machine_info = {
     .name          = TYPE_IPOD_TOUCH_MACHINE,
     .parent        = TYPE_MACHINE,
+    .interfaces    = arm_machine_interfaces,
     .instance_size = sizeof(IPodTouchMachineState),
     .class_size    = sizeof(IPodTouchMachineClass),
     .class_init    = ipod_touch_machine_class_init,

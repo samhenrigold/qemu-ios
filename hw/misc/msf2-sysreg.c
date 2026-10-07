@@ -17,7 +17,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/misc/msf2-sysreg.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 #include "trace.h"
@@ -136,7 +136,7 @@ static void msf2_sysreg_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void msf2_sysreg_class_init(ObjectClass *klass, void *data)
+static void msf2_sysreg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

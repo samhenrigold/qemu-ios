@@ -28,8 +28,8 @@
 #include "qemu/module.h"
 #include "chardev/char-parallel.h"
 #include "hw/acpi/acpi_aml_interface.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "hw/char/parallel-isa.h"
 #include "hw/char/parallel.h"
@@ -610,7 +610,7 @@ static const Property parallel_isa_properties[] = {
     DEFINE_PROP_CHR("chardev",  ISAParallelState, state.chr),
 };
 
-static void parallel_isa_class_initfn(ObjectClass *klass, void *data)
+static void parallel_isa_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
@@ -627,7 +627,7 @@ static const TypeInfo parallel_isa_info = {
     .parent        = TYPE_ISA_DEVICE,
     .instance_size = sizeof(ISAParallelState),
     .class_init    = parallel_isa_class_initfn,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_ACPI_DEV_AML_IF },
         { },
     },

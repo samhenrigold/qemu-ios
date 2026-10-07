@@ -12,8 +12,8 @@
 #ifndef CONFIG_USER_ONLY
 
 #include "qemu/queue.h"
-#include "hw/boards.h"
-#include "qapi/qapi-types-machine-target.h"
+#include "hw/core/boards.h"
+#include "qapi/qapi-types-machine-s390x.h"
 
 #define S390_TOPOLOGY_CPU_IFL   0x03
 

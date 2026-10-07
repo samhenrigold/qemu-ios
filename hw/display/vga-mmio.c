@@ -24,9 +24,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/display/vga.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "ui/console.h"
 #include "vga_int.h"
 
@@ -116,7 +116,7 @@ static const Property vga_mmio_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", VGAMmioState, vga.vram_size_mb, 8),
 };
 
-static void vga_mmio_class_initfn(ObjectClass *klass, void *data)
+static void vga_mmio_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

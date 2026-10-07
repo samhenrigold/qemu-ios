@@ -24,9 +24,10 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "exec/cpu-common.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
 #include "hw/dma/sifive_pdma.h"
@@ -152,7 +153,7 @@ done:
 error:
     s->chan[ch].state = DMA_CHAN_STATE_ERROR;
     s->chan[ch].control |= CONTROL_ERR;
-    return;
+    s->chan[ch].control |= CONTROL_DONE;
 }
 
 static inline void sifive_pdma_update_irq(SiFivePDMAState *s, int ch)
@@ -465,7 +466,7 @@ static void sifive_pdma_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void sifive_pdma_class_init(ObjectClass *klass, void *data)
+static void sifive_pdma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -11,15 +11,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "hw/timer/aspeed_timer.h"
 #include "migration/vmstate.h"
 #include "qemu/bitops.h"
 #include "qemu/timer.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 
 #define TIMER_NR_REGS 4
@@ -895,7 +895,7 @@ static const Property aspeed_timer_properties[] = {
                      AspeedSCUState *),
 };
 
-static void timer_class_init(ObjectClass *klass, void *data)
+static void timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -915,7 +915,7 @@ static const TypeInfo aspeed_timer_info = {
     .abstract   = true,
 };
 
-static void aspeed_2400_timer_class_init(ObjectClass *klass, void *data)
+static void aspeed_2400_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedTimerClass *awc = ASPEED_TIMER_CLASS(klass);
@@ -931,7 +931,7 @@ static const TypeInfo aspeed_2400_timer_info = {
     .class_init = aspeed_2400_timer_class_init,
 };
 
-static void aspeed_2500_timer_class_init(ObjectClass *klass, void *data)
+static void aspeed_2500_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedTimerClass *awc = ASPEED_TIMER_CLASS(klass);
@@ -947,7 +947,7 @@ static const TypeInfo aspeed_2500_timer_info = {
     .class_init = aspeed_2500_timer_class_init,
 };
 
-static void aspeed_2600_timer_class_init(ObjectClass *klass, void *data)
+static void aspeed_2600_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedTimerClass *awc = ASPEED_TIMER_CLASS(klass);
@@ -963,7 +963,7 @@ static const TypeInfo aspeed_2600_timer_info = {
     .class_init = aspeed_2600_timer_class_init,
 };
 
-static void aspeed_1030_timer_class_init(ObjectClass *klass, void *data)
+static void aspeed_1030_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedTimerClass *awc = ASPEED_TIMER_CLASS(klass);
@@ -979,7 +979,7 @@ static const TypeInfo aspeed_1030_timer_info = {
     .class_init = aspeed_1030_timer_class_init,
 };
 
-static void aspeed_2700_timer_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedTimerClass *awc = ASPEED_TIMER_CLASS(klass);

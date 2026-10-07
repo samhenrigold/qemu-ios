@@ -23,7 +23,7 @@
 #include "qemu/module.h"
 #include "qemu/error-report.h"
 #include "hw/intc/arm_gicv3_its_common.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/runstate.h"
 #include "system/kvm.h"
 #include "kvm_arm.h"
@@ -58,7 +58,7 @@ static int kvm_its_send_msi(GICv3ITSState *s, uint32_t value, uint16_t devid)
 
     msi.address_lo = extract64(s->gits_translater_gpa, 0, 32);
     msi.address_hi = extract64(s->gits_translater_gpa, 32, 32);
-    msi.data = le32_to_cpu(value);
+    msi.data = value;
     msi.flags = KVM_MSI_VALID_DEVID;
     msi.devid = devid;
     memset(msi.pad, 0, sizeof(msi.pad));
@@ -239,7 +239,7 @@ static const Property kvm_arm_its_props[] = {
                      GICv3State *),
 };
 
-static void kvm_arm_its_class_init(ObjectClass *klass, void *data)
+static void kvm_arm_its_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

@@ -145,7 +145,7 @@ static const VMStateDescription vmstate_cs42l58 = {
     },
 };
 
-static void cs42l58_class_init(ObjectClass *klass, void *data)
+static void cs42l58_class_init(ObjectClass *klass, const void *data)
 {
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

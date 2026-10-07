@@ -25,7 +25,7 @@
 #include "system/device_tree.h"
 #include "system/rng.h"
 #include "hw/ppc/spapr.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "kvm_ppc.h"
 #include "qom/object.h"
 
@@ -136,7 +136,7 @@ static const Property spapr_rng_properties[] = {
                      RngBackend *),
 };
 
-static void spapr_rng_class_init(ObjectClass *oc, void *data)
+static void spapr_rng_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

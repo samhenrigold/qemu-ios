@@ -4,7 +4,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "hw/arm/ipod-attitude.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /*
  * The host-facing vector (attitude, QOM x/y/z, shake) is in 1/64 g. That is
@@ -413,7 +413,7 @@ static const Property lis302dl_properties[] = {
     DEFINE_PROP_STRING("mount", LIS302DLState, mount),
 };
 
-static void lis302dl_class_init(ObjectClass *klass, void *data)
+static void lis302dl_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

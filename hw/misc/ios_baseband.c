@@ -35,9 +35,9 @@
 #include "qemu/timer.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
-#include "hw/qdev-core.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "hw/misc/ios_baseband.h"
@@ -269,17 +269,18 @@ static void iosbb_chr_accept_input(Chardev *chr)
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
 
-static void iosbb_chr_open(Chardev *chr, ChardevBackend *backend,
-                           bool *be_opened, Error **errp)
+static bool iosbb_chr_open(Chardev *chr, ChardevBackend *backend,
+                           Error **errp)
 {
-    *be_opened = true;
+    qemu_chr_be_event(chr, CHR_EVENT_OPENED);
+    return true;
 }
 
-static void iosbb_chr_class_init(ObjectClass *oc, void *data)
+static void iosbb_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
-    cc->open = iosbb_chr_open;
+    cc->chr_open = iosbb_chr_open;
     cc->chr_write = iosbb_chr_write;
     cc->chr_accept_input = iosbb_chr_accept_input;
 }
@@ -907,7 +908,7 @@ static const Property iosbb_props[] = {
     DEFINE_PROP_BOOL("nitz", IosBasebandState, nitz, false),
 };
 
-static void iosbb_class_init(ObjectClass *oc, void *data)
+static void iosbb_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

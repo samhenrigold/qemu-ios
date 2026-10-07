@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/block/flash.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -33,8 +33,8 @@
 #include "qemu/units.h"
 #include "trace.h"
 
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/ssi/aspeed_smc.h"
 
 /* CE Type Setting Register */
@@ -359,7 +359,7 @@ static const MemoryRegionOps aspeed_smc_flash_default_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
-        .max_access_size = 4,
+        .max_access_size = 8,
     },
 };
 
@@ -493,17 +493,18 @@ static void aspeed_smc_flash_setup(AspeedSMCFlash *fl, uint32_t addr)
     }
 }
 
-static uint64_t aspeed_smc_flash_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult aspeed_smc_flash_read(void *opaque, hwaddr addr,
+                                 uint64_t *data, unsigned size, MemTxAttrs attrs)
 {
     AspeedSMCFlash *fl = opaque;
     AspeedSMCState *s = fl->controller;
-    uint64_t ret = 0;
     int i;
 
+    *data = 0;
     switch (aspeed_smc_flash_mode(fl)) {
     case CTRL_USERMODE:
         for (i = 0; i < size; i++) {
-            ret |= (uint64_t) ssi_transfer(s->spi, 0x0) << (8 * i);
+            *data |= (uint64_t) ssi_transfer(s->spi, 0x0) << (8 * i);
         }
         break;
     case CTRL_READMODE:
@@ -512,18 +513,19 @@ static uint64_t aspeed_smc_flash_read(void *opaque, hwaddr addr, unsigned size)
         aspeed_smc_flash_setup(fl, addr);
 
         for (i = 0; i < size; i++) {
-            ret |= (uint64_t) ssi_transfer(s->spi, 0x0) << (8 * i);
+            *data |= (uint64_t) ssi_transfer(s->spi, 0x0) << (8 * i);
         }
 
         aspeed_smc_flash_unselect(fl);
         break;
     default:
         aspeed_smc_error("invalid flash mode %d", aspeed_smc_flash_mode(fl));
+        return MEMTX_ERROR;
     }
 
-    trace_aspeed_smc_flash_read(fl->cs, addr, size, ret,
+    trace_aspeed_smc_flash_read(fl->cs, addr, size, *data,
                                 aspeed_smc_flash_mode(fl));
-    return ret;
+    return MEMTX_OK;
 }
 
 /*
@@ -624,8 +626,8 @@ static bool aspeed_smc_do_snoop(AspeedSMCFlash *fl,  uint64_t data,
     return false;
 }
 
-static void aspeed_smc_flash_write(void *opaque, hwaddr addr, uint64_t data,
-                                   unsigned size)
+static MemTxResult aspeed_smc_flash_write(void *opaque, hwaddr addr,
+                                   uint64_t data, unsigned size, MemTxAttrs attrs)
 {
     AspeedSMCFlash *fl = opaque;
     AspeedSMCState *s = fl->controller;
@@ -636,7 +638,7 @@ static void aspeed_smc_flash_write(void *opaque, hwaddr addr, uint64_t data,
 
     if (!aspeed_smc_is_writable(fl)) {
         aspeed_smc_error("flash is not writable at 0x%" HWADDR_PRIx, addr);
-        return;
+        return MEMTX_ERROR;
     }
 
     switch (aspeed_smc_flash_mode(fl)) {
@@ -661,16 +663,19 @@ static void aspeed_smc_flash_write(void *opaque, hwaddr addr, uint64_t data,
         break;
     default:
         aspeed_smc_error("invalid flash mode %d", aspeed_smc_flash_mode(fl));
+        return MEMTX_ERROR;
     }
+
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps aspeed_smc_flash_ops = {
-    .read = aspeed_smc_flash_read,
-    .write = aspeed_smc_flash_write,
+    .read_with_attrs = aspeed_smc_flash_read,
+    .write_with_attrs = aspeed_smc_flash_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
-        .max_access_size = 4,
+        .max_access_size = 8,
     },
 };
 
@@ -754,7 +759,8 @@ static void aspeed_smc_reset(DeviceState *d)
     s->snoop_dummies = 0;
 }
 
-static uint64_t aspeed_smc_read(void *opaque, hwaddr addr, unsigned int size)
+static MemTxResult aspeed_smc_read(void *opaque, hwaddr addr, uint64_t *data,
+                                   unsigned int size, MemTxAttrs attrs)
 {
     AspeedSMCState *s = ASPEED_SMC(opaque);
     AspeedSMCClass *asc = ASPEED_SMC_GET_CLASS(opaque);
@@ -782,12 +788,13 @@ static uint64_t aspeed_smc_read(void *opaque, hwaddr addr, unsigned int size)
 
         trace_aspeed_smc_read(addr << 2, size, s->regs[addr]);
 
-        return s->regs[addr];
+        *data = s->regs[addr];
     } else {
         qemu_log_mask(LOG_UNIMP, "%s: not implemented: 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
-        return -1;
+        *data = -1;
     }
+    return MEMTX_OK;
 }
 
 static uint8_t aspeed_smc_hclk_divisor(uint8_t hclk_mask)
@@ -1108,8 +1115,8 @@ static void aspeed_2600_smc_dma_ctrl(AspeedSMCState *s, uint32_t dma_ctrl)
     s->regs[R_DMA_CTRL] &= ~(DMA_CTRL_REQUEST | DMA_CTRL_GRANT);
 }
 
-static void aspeed_smc_write(void *opaque, hwaddr addr, uint64_t data,
-                             unsigned int size)
+static MemTxResult aspeed_smc_write(void *opaque, hwaddr addr, uint64_t data,
+                                    unsigned int size, MemTxAttrs attrs)
 {
     AspeedSMCState *s = ASPEED_SMC(opaque);
     AspeedSMCClass *asc = ASPEED_SMC_GET_CLASS(s);
@@ -1159,13 +1166,13 @@ static void aspeed_smc_write(void *opaque, hwaddr addr, uint64_t data,
     } else {
         qemu_log_mask(LOG_UNIMP, "%s: not implemented: 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
-        return;
     }
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps aspeed_smc_ops = {
-    .read = aspeed_smc_read,
-    .write = aspeed_smc_write,
+    .read_with_attrs = aspeed_smc_read,
+    .write_with_attrs = aspeed_smc_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
@@ -1294,7 +1301,7 @@ static const Property aspeed_smc_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void aspeed_smc_class_init(ObjectClass *klass, void *data)
+static void aspeed_smc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1341,7 +1348,7 @@ static const Property aspeed_smc_flash_properties[] = {
                      AspeedSMCState *),
 };
 
-static void aspeed_smc_flash_class_init(ObjectClass *klass, void *data)
+static void aspeed_smc_flash_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1383,7 +1390,7 @@ static const AspeedSegments aspeed_2400_smc_segments[] = {
     { 0x10000000, 32 * MiB },
 };
 
-static void aspeed_2400_smc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2400_smc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1429,7 +1436,7 @@ static const AspeedSegments aspeed_2400_fmc_segments[] = {
     { 0x2A000000, 32 * MiB }
 };
 
-static void aspeed_2400_fmc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2400_fmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1473,7 +1480,7 @@ static int aspeed_2400_spi1_addr_width(const AspeedSMCState *s)
     return s->regs[R_SPI_CTRL0] & CTRL_AST2400_SPI_4BYTE ? 4 : 3;
 }
 
-static void aspeed_2400_spi1_class_init(ObjectClass *klass, void *data)
+static void aspeed_2400_spi1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1515,7 +1522,7 @@ static const AspeedSegments aspeed_2500_fmc_segments[] = {
     { 0x2A000000,  32 * MiB },
 };
 
-static void aspeed_2500_fmc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2500_fmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1555,7 +1562,7 @@ static const AspeedSegments aspeed_2500_spi1_segments[] = {
     { 0x32000000, 96 * MiB }, /* end address is readonly */
 };
 
-static void aspeed_2500_spi1_class_init(ObjectClass *klass, void *data)
+static void aspeed_2500_spi1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1591,7 +1598,7 @@ static const AspeedSegments aspeed_2500_spi2_segments[] = {
     { 0x3A000000, 96 * MiB }, /* end address is readonly */
 };
 
-static void aspeed_2500_spi2_class_init(ObjectClass *klass, void *data)
+static void aspeed_2500_spi2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1674,7 +1681,7 @@ static const AspeedSegments aspeed_2600_fmc_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2600_fmc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2600_fmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1715,7 +1722,7 @@ static const AspeedSegments aspeed_2600_spi1_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2600_spi1_class_init(ObjectClass *klass, void *data)
+static void aspeed_2600_spi1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1756,7 +1763,7 @@ static const AspeedSegments aspeed_2600_spi2_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2600_spi2_class_init(ObjectClass *klass, void *data)
+static void aspeed_2600_spi2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1839,7 +1846,7 @@ static const AspeedSegments aspeed_1030_fmc_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_1030_fmc_class_init(ObjectClass *klass, void *data)
+static void aspeed_1030_fmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1857,7 +1864,8 @@ static void aspeed_1030_fmc_class_init(ObjectClass *klass, void *data)
     asc->resets            = aspeed_1030_fmc_resets;
     asc->flash_window_base = 0x80000000;
     asc->flash_window_size = 0x10000000;
-    asc->features          = ASPEED_SMC_FEATURE_DMA;
+    asc->features          = ASPEED_SMC_FEATURE_DMA |
+                             ASPEED_SMC_FEATURE_WDT_CONTROL;
     asc->dma_flash_mask    = 0x0FFFFFFC;
     asc->dma_dram_mask     = 0x000BFFFC;
     asc->dma_start_length  = 1;
@@ -1879,7 +1887,7 @@ static const AspeedSegments aspeed_1030_spi1_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_1030_spi1_class_init(ObjectClass *klass, void *data)
+static void aspeed_1030_spi1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -1917,7 +1925,7 @@ static const AspeedSegments aspeed_1030_spi2_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_1030_spi2_class_init(ObjectClass *klass, void *data)
+static void aspeed_1030_spi2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -2006,8 +2014,8 @@ static const uint32_t aspeed_2700_fmc_resets[ASPEED_SMC_R_MAX] = {
 };
 
 static const MemoryRegionOps aspeed_2700_smc_flash_ops = {
-    .read = aspeed_smc_flash_read,
-    .write = aspeed_smc_flash_write,
+    .read_with_attrs = aspeed_smc_flash_read,
+    .write_with_attrs = aspeed_smc_flash_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
@@ -2022,7 +2030,7 @@ static const AspeedSegments aspeed_2700_fmc_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2700_fmc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_fmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -2064,7 +2072,7 @@ static const AspeedSegments aspeed_2700_spi0_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2700_spi0_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_spi0_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -2104,7 +2112,7 @@ static const AspeedSegments aspeed_2700_spi1_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2700_spi1_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_spi1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);
@@ -2144,7 +2152,7 @@ static const AspeedSegments aspeed_2700_spi2_segments[] = {
     { 0x0, 0 }, /* disabled */
 };
 
-static void aspeed_2700_spi2_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_spi2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSMCClass *asc = ASPEED_SMC_CLASS(klass);

@@ -24,7 +24,7 @@
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "hw/misc/mips_itu.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "target/mips/cpu.h"
 
 #define ITC_TAG_ADDRSPACE_SZ (ITC_ADDRESSMAP_NUM * 8)
@@ -540,7 +540,7 @@ static const Property mips_itu_properties[] = {
                       ITC_SEMAPH_NUM_MAX),
 };
 
-static void mips_itu_class_init(ObjectClass *klass, void *data)
+static void mips_itu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

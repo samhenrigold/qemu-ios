@@ -15,9 +15,9 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/arm/nrf51.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/timer/nrf51_timer.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -383,7 +383,7 @@ static const Property nrf51_timer_properties[] = {
     DEFINE_PROP_UINT8("id", NRF51TimerState, id, 0),
 };
 
-static void nrf51_timer_class_init(ObjectClass *klass, void *data)
+static void nrf51_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

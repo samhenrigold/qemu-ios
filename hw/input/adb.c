@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/input/adb.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -259,7 +259,7 @@ static void adb_bus_unrealize(BusState *qbus)
     vmstate_unregister(NULL, &vmstate_adb_bus, adb_bus);
 }
 
-static void adb_bus_class_init(ObjectClass *klass, void *data)
+static void adb_bus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *k = BUS_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -299,7 +299,7 @@ static void adb_device_realizefn(DeviceState *dev, Error **errp)
     bus->devices[bus->nb_devices++] = d;
 }
 
-static void adb_device_class_init(ObjectClass *oc, void *data)
+static void adb_device_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

@@ -28,10 +28,10 @@
 #include "qemu/module.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
-#include "audio/audio.h"
+#include "qemu/audio.h"
 #include "migration/vmstate.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930I2SState, S5L8930_I2S)
@@ -76,7 +76,7 @@ struct S5L8930I2SState {
     uint8_t rx_frame[4];            /* the stereo S16 frame being read out */
     unsigned rx_pos;                /* bytes of rx_frame already read */
 
-    QEMUSoundCard card;
+    AudioBackend *audio_be;
     SWVoiceOut *voice;
     SWVoiceIn *voice_in;
 };
@@ -88,7 +88,7 @@ static void i2s_in_cb(void *opaque, int avail)
     while (avail > 0 && s->in_level < I2S_RING) {
         uint32_t chunk = MIN(MIN((uint32_t)avail, I2S_RING - s->in_level),
                              I2S_RING - s->in_head);
-        size_t got = AUD_read(s->voice_in, s->in_ring + s->in_head, chunk);
+        size_t got = audio_be_read(s->audio_be, s->voice_in, s->in_ring + s->in_head, chunk);
 
         if (!got) {
             break;
@@ -102,14 +102,14 @@ static void i2s_in_cb(void *opaque, int avail)
 static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
 {
     struct audsettings as = {
-        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0,
+        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .big_endian = false,
     };
 
     if (rate == s->in_rate || s->tone_hz) {
         s->in_rate = rate;
         return;
     }
-    s->voice_in = AUD_open_in(&s->card, s->voice_in, "s5l8930-i2s.in", s,
+    s->voice_in = audio_be_open_in(s->audio_be, s->voice_in, "s5l8930-i2s.in", s,
                               i2s_in_cb, &as);
     if (s->voice_in) {
         s->in_rate = rate;
@@ -171,7 +171,7 @@ static void i2s_out_cb(void *opaque, int free_bytes)
     while (free_bytes > 0 && s->level > 0) {
         uint32_t chunk = MIN(MIN((uint32_t)free_bytes, s->level),
                              I2S_RING - s->tail);
-        size_t done = AUD_write(s->voice, s->ring + s->tail, chunk);
+        size_t done = audio_be_write(s->audio_be, s->voice, s->ring + s->tail, chunk);
 
         if (!done) {
             break;
@@ -185,16 +185,16 @@ static void i2s_out_cb(void *opaque, int free_bytes)
 static void i2s_set_rate(S5L8930I2SState *s, unsigned rate)
 {
     struct audsettings as = {
-        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0,
+        .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .big_endian = false,
     };
 
     if (rate == s->rate) {
         return;
     }
-    s->voice = AUD_open_out(&s->card, s->voice, "s5l8930-i2s.out", s,
+    s->voice = audio_be_open_out(s->audio_be, s->voice, "s5l8930-i2s.out", s,
                             i2s_out_cb, &as);
     if (s->voice) {
-        AUD_set_volume_out(s->voice, 0, 255, 255);
+        audio_be_set_volume_out_lr(s->audio_be, s->voice, 0, 255, 255);
         s->rate = rate;
     }
 }
@@ -242,14 +242,14 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
             s->rx_pos = 0;
         }
         if (s->voice_in) {
-            AUD_set_active_in(s->voice_in, run);
+            audio_be_set_active_in(s->audio_be, s->voice_in, run);
         }
     }
     if (offset == (s->ctrl_run ? I2S_CTRL : I2S_TXCOM) && s->voice) {
         if (i2s_tx_running(s)) {
             i2s_set_rate(s, s5l8930_i2s_rate(s->port));
         }
-        AUD_set_active_out(s->voice, i2s_tx_running(s));
+        audio_be_set_active_out(s->audio_be, s->voice, i2s_tx_running(s));
     }
 }
 
@@ -288,7 +288,7 @@ static void s5l8930_i2s_realize(DeviceState *dev, Error **errp)
     if (!s->audio_out) {
         return;
     }
-    if (!AUD_register_card("s5l8930-i2s", &s->card, errp)) {
+    if (!audio_be_check(&s->audio_be, errp)) {
         warn_report("s5l8930 i2s: no audio backend; output dropped");
         return;
     }
@@ -305,10 +305,10 @@ static void s5l8930_i2s_reset(DeviceState *dev)
     s->tone_frame = 0;
     s->rx_pos = 0;
     if (s->voice) {
-        AUD_set_active_out(s->voice, 0);
+        audio_be_set_active_out(s->audio_be, s->voice, 0);
     }
     if (s->voice_in) {
-        AUD_set_active_in(s->voice_in, 0);
+        audio_be_set_active_in(s->audio_be, s->voice_in, 0);
     }
 }
 
@@ -329,7 +329,7 @@ static int s5l8930_i2s_post_load(void *opaque, int version_id)
 
     if (s->voice && i2s_tx_running(s)) {
         i2s_set_rate(s, s5l8930_i2s_rate(s->port));
-        AUD_set_active_out(s->voice, 1);
+        audio_be_set_active_out(s->audio_be, s->voice, 1);
     }
     return 0;
 }
@@ -353,7 +353,7 @@ static const Property s5l8930_i2s_properties[] = {
     DEFINE_PROP_UINT32("tone-hz", S5L8930I2SState, tone_hz, 0),
 };
 
-static void s5l8930_i2s_class_init(ObjectClass *klass, void *data)
+static void s5l8930_i2s_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

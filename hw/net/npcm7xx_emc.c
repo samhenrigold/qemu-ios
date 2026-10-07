@@ -31,9 +31,9 @@
 
 #include <zlib.h> /* for crc32 */
 
-#include "hw/irq.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/net/npcm7xx_emc.h"
 #include "net/eth.h"
 #include "migration/vmstate.h"
@@ -849,7 +849,7 @@ static const Property npcm7xx_emc_properties[] = {
     DEFINE_NIC_PROPERTIES(NPCM7xxEMCState, conf),
 };
 
-static void npcm7xx_emc_class_init(ObjectClass *klass, void *data)
+static void npcm7xx_emc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

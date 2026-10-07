@@ -25,8 +25,9 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "system/reset.h"
+#include "system/ramblock.h"
 #include "qapi/error.h"
-#include "exec/tswap.h"
+#include "qemu/target-info.h"
 #include "hw/display/vga.h"
 #include "hw/i386/x86.h"
 #include "hw/pci/pci.h"
@@ -2234,8 +2235,8 @@ bool vga_common_init(VGACommonState *s, Object *obj, Error **errp)
         return false;
     }
 
-    memory_region_init_ram_nomigrate(&s->vram, obj, "vga.vram", s->vram_size,
-                                     &local_err);
+    memory_region_init_ram_flags_nomigrate(&s->vram, obj, "vga.vram",
+                                           s->vram_size, 0, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return false;
@@ -2264,7 +2265,7 @@ bool vga_common_init(VGACommonState *s, Object *obj, Error **errp)
      * into a device attribute set by the machine/platform to remove
      * all target endian dependencies from this file.
      */
-    s->default_endian_fb = target_words_bigendian();
+    s->default_endian_fb = target_big_endian();
     s->big_endian_fb = s->default_endian_fb;
 
     vga_dirty_log_start(s);

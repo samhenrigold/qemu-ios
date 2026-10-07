@@ -21,9 +21,9 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "net/net.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "elf.h"
 #include "hw/tricore/tricore.h"
 #include "qemu/error-report.h"
@@ -65,7 +65,7 @@ static void triboard_machine_init(MachineState *machine)
 }
 
 static void triboard_machine_tc277d_class_init(ObjectClass *oc,
-        void *data)
+                                               const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     TriBoardMachineClass *amc = TRIBOARD_MACHINE_CLASS(oc);

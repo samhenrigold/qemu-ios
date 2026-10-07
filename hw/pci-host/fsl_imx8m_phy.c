@@ -8,7 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci-host/fsl_imx8m_phy.h"
-#include "hw/resettable.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 
 #define CMN_REG075 0x1d4
@@ -76,7 +76,7 @@ static const VMStateDescription fsl_imx8m_pcie_phy_vmstate = {
     }
 };
 
-static void fsl_imx8m_pcie_phy_class_init(ObjectClass *klass, void *data)
+static void fsl_imx8m_pcie_phy_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

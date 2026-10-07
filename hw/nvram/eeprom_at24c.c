@@ -14,8 +14,8 @@
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
 #include "hw/nvram/eeprom_at24c.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "system/block-backend.h"
 #include "qom/object.h"
 
@@ -235,7 +235,7 @@ static const Property at24c_eeprom_props[] = {
 };
 
 static
-void at24c_eeprom_class_init(ObjectClass *klass, void *data)
+void at24c_eeprom_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

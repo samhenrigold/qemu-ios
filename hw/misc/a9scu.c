@@ -10,7 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/misc/a9scu.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -127,7 +127,7 @@ static const Property a9_scu_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", A9SCUState, num_cpu, 1),
 };
 
-static void a9_scu_class_init(ObjectClass *klass, void *data)
+static void a9_scu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

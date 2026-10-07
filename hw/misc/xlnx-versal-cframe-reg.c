@@ -9,16 +9,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/register.h"
-#include "hw/registerfields.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
+#include "hw/core/registerfields.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/xlnx-versal-cframe-reg.h"
 
 #ifndef XLNX_VERSAL_CFRAME_REG_ERR_DEBUG
@@ -693,6 +693,14 @@ static void cframe_reg_init(Object *obj)
     fifo32_create(&s->new_f_data, FRAME_NUM_WORDS);
 }
 
+static void cframe_reg_finalize(Object *obj)
+{
+    XlnxVersalCFrameReg *s = XLNX_VERSAL_CFRAME_REG(obj);
+
+    fifo32_destroy(&s->new_f_data);
+    g_tree_destroy(s->cframes);
+}
+
 static const VMStateDescription vmstate_cframe = {
     .name = "cframe",
     .version_id = 1,
@@ -803,7 +811,7 @@ static const Property cframe_bcast_regs_props[] = {
                      TYPE_XLNX_CFI_IF, XlnxCfiIf *),
 };
 
-static void cframe_reg_class_init(ObjectClass *klass, void *data)
+static void cframe_reg_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -817,7 +825,7 @@ static void cframe_reg_class_init(ObjectClass *klass, void *data)
     xcic->cfi_transfer_packet = cframe_reg_cfi_transfer_packet;
 }
 
-static void cframe_bcast_reg_class_init(ObjectClass *klass, void *data)
+static void cframe_bcast_reg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -833,7 +841,8 @@ static const TypeInfo cframe_reg_info = {
     .instance_size = sizeof(XlnxVersalCFrameReg),
     .class_init    = cframe_reg_class_init,
     .instance_init = cframe_reg_init,
-    .interfaces = (InterfaceInfo[]) {
+    .instance_finalize = cframe_reg_finalize,
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_XLNX_CFI_IF },
         { }
     }

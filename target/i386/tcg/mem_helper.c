@@ -20,8 +20,7 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
-#include "exec/exec-all.h"
-#include "exec/cpu_ldst.h"
+#include "accel/tcg/cpu-ldst.h"
 #include "qemu/int128.h"
 #include "qemu/atomic128.h"
 #include "tcg/tcg.h"
@@ -31,8 +30,8 @@ void helper_boundw(CPUX86State *env, target_ulong a0, int v)
 {
     int low, high;
 
-    low = cpu_ldsw_data_ra(env, a0, GETPC());
-    high = cpu_ldsw_data_ra(env, a0 + 2, GETPC());
+    low = cpu_ldsw_le_data_ra(env, a0, GETPC());
+    high = cpu_ldsw_le_data_ra(env, a0 + 2, GETPC());
     v = (int16_t)v;
     if (v < low || v > high) {
         if (env->hflags & HF_MPX_EN_MASK) {
@@ -46,8 +45,8 @@ void helper_boundl(CPUX86State *env, target_ulong a0, int v)
 {
     int low, high;
 
-    low = cpu_ldl_data_ra(env, a0, GETPC());
-    high = cpu_ldl_data_ra(env, a0 + 4, GETPC());
+    low = cpu_ldl_le_data_ra(env, a0, GETPC());
+    high = cpu_ldl_le_data_ra(env, a0 + 4, GETPC());
     if (v < low || v > high) {
         if (env->hflags & HF_MPX_EN_MASK) {
             env->bndcs_regs.sts = 0;

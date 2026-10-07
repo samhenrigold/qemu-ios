@@ -14,7 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/gpio/nrf51_gpio.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -304,7 +304,7 @@ static void nrf51_gpio_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(s), &s->detect, "detect", 1);
 }
 
-static void nrf51_gpio_class_init(ObjectClass *klass, void *data)
+static void nrf51_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

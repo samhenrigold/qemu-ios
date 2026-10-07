@@ -23,10 +23,10 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
 
 #ifndef EXYNOS4_I2C_DEBUG
@@ -309,7 +309,7 @@ static void exynos4210_i2c_init(Object *obj)
     s->bus = i2c_init_bus(dev, "i2c");
 }
 
-static void exynos4210_i2c_class_init(ObjectClass *klass, void *data)
+static void exynos4210_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -2,7 +2,7 @@
  * S5L8900 FMC NAND controller (iPod touch 1G). See s5l8900_fmc.h.
  */
 #include "hw/arm/s5l8900_fmc.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 
@@ -394,7 +394,7 @@ static const Property s5l8900_fmc_properties[] = {
     DEFINE_PROP_UINT32("banks", S5L8900FMCState, banks, FMC_NUM_BANKS),
 };
 
-static void s5l8900_fmc_class_init(ObjectClass *oc, void *data)
+static void s5l8900_fmc_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     device_class_set_legacy_reset(dc, s5l8900_fmc_reset);

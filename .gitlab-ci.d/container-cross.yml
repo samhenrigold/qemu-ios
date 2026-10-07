@@ -10,23 +10,11 @@ amd64-debian-user-cross-container:
   variables:
     NAME: debian-all-test-cross
 
-amd64-debian-legacy-cross-container:
-  extends: .container_job_template
-  stage: containers
-  variables:
-    NAME: debian-legacy-test-cross
-
 arm64-debian-cross-container:
   extends: .container_job_template
   stage: containers
   variables:
     NAME: debian-arm64-cross
-
-armhf-debian-cross-container:
-  extends: .container_job_template
-  stage: containers
-  variables:
-    NAME: debian-armhf-cross
 
 hexagon-cross-container:
   extends: .container_job_template
@@ -40,23 +28,11 @@ loongarch-debian-cross-container:
   variables:
     NAME: debian-loongarch-cross
 
-i686-debian-cross-container:
-  extends: .container_job_template
-  stage: containers
-  variables:
-    NAME: debian-i686-cross
-
 mips64el-debian-cross-container:
   extends: .container_job_template
   stage: containers
   variables:
     NAME: debian-mips64el-cross
-
-mipsel-debian-cross-container:
-  extends: .container_job_template
-  stage: containers
-  variables:
-    NAME: debian-mipsel-cross
 
 ppc64el-debian-cross-container:
   extends: .container_job_template
@@ -67,11 +43,8 @@ ppc64el-debian-cross-container:
 riscv64-debian-cross-container:
   extends: .container_job_template
   stage: containers
-  # as we are currently based on 'sid/unstable' we may break so...
-  allow_failure: true
   variables:
     NAME: debian-riscv64-cross
-    QEMU_JOB_OPTIONAL: 1
 
 s390x-debian-cross-container:
   extends: .container_job_template
@@ -94,3 +67,8 @@ win64-fedora-cross-container:
   extends: .container_job_template
   variables:
     NAME: fedora-win64-cross
+
+wasm64-emsdk-cross-container:
+  extends: .container_job_template
+  variables:
+    NAME: emsdk-wasm64-cross

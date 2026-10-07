@@ -41,7 +41,7 @@
 #include "hw/sparc/sparc32_dma.h"
 #include "migration/vmstate.h"
 #include "hw/net/lance.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "system/system.h"
 
@@ -143,7 +143,7 @@ static const Property lance_properties[] = {
     DEFINE_NIC_PROPERTIES(SysBusPCNetState, state.conf),
 };
 
-static void lance_class_init(ObjectClass *klass, void *data)
+static void lance_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

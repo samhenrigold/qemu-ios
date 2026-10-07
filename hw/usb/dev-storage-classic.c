@@ -10,7 +10,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "hw/usb/desc.h"
 #include "hw/usb/msd.h"
 #include "system/system.h"
@@ -74,7 +74,7 @@ static const Property msd_properties[] = {
     DEFINE_PROP_BOOL("commandlog", MSDState, commandlog, false),
 };
 
-static void usb_msd_class_storage_initfn(ObjectClass *klass, void *data)
+static void usb_msd_class_storage_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

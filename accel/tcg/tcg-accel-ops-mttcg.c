@@ -24,15 +24,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "exec/cpu-common.h"
 #include "system/tcg.h"
 #include "system/replay.h"
-#include "system/cpu-timers.h"
+#include "exec/icount.h"
 #include "qemu/main-loop.h"
 #include "qemu/notify.h"
 #include "qemu/guest-random.h"
 #include "qemu/timer.h"
 #include "system/runstate.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "tcg/startup.h"
 #include "tcg-accel-ops.h"
 #include "tcg-accel-ops-mttcg.h"
@@ -203,64 +204,8 @@ static void *mttcg_cpu_thread_fn(void *arg)
     cpu_thread_signal_created(cpu);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
-    /* process any pending work */
-    cpu->exit_request = 1;
-
     do {
-        if (cpu_can_run(cpu)) {
-            int r;
-            int64_t a = 0, b;
-            bql_unlock();
-            if (it_acct_on) {
-                a = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-            }
-            r = tcg_cpu_exec(cpu);
-            if (it_acct_on) {
-                b = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-                /*
-                 * cpu_exec() RETURNS on a halt, cheaply -- the actual sleep is
-                 * inside the qemu_wait_io_event() below, so the wait has to be
-                 * attributed by what the preceding exec returned, or halt time
-                 * hides inside "io" and the split says nothing.
-                 */
-                acct_run_ns += b - a;
-                acct_halted = (r == EXCP_HALTED);
-                acct_halts += acct_halted;
-                acct_io_mark = b;   /* closed after qemu_wait_io_event */
-                acct_io_cpu_mark = thread_cpu_ns();
-            }
-            bql_lock();
-            /*
-             * "io" is two very different things -- waiting for the BQL (the
-             * iothread is holding it, e.g. across an LCD conversion) and
-             * waiting in the main loop itself. Only the first is contention,
-             * and only the first is fixable here, so time it separately.
-             */
-            if (it_acct_on) {
-                acct_bql_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - b;
-            }
-            switch (r) {
-            case EXCP_DEBUG:
-                cpu_handle_guest_debug(cpu);
-                break;
-            case EXCP_HALTED:
-                /*
-                 * Usually cpu->halted is set, but may have already been
-                 * reset by another thread by the time we arrive here.
-                 */
-                break;
-            case EXCP_ATOMIC:
-                bql_unlock();
-                cpu_exec_step_atomic(cpu);
-                bql_lock();
-            default:
-                /* Ignore everything else? */
-                break;
-            }
-        }
-
-        qatomic_set_mb(&cpu->exit_request, 0);
-        qemu_wait_io_event(cpu);
+        qemu_process_cpu_events(cpu);
 
         if (it_acct_on) {
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -292,6 +237,58 @@ static void *mttcg_cpu_thread_fn(void *arg)
                 mttcg_acct_dump(now);
             }
         }
+
+        if (cpu_can_run(cpu)) {
+            int r;
+            int64_t a = 0, b;
+            bql_unlock();
+            if (it_acct_on) {
+                a = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+            }
+            r = tcg_cpu_exec(cpu);
+            if (it_acct_on) {
+                b = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+                /*
+                 * cpu_exec() RETURNS on a halt, cheaply -- the actual sleep is
+                 * inside qemu_process_cpu_events() at the top of the loop, so the wait has to be
+                 * attributed by what the preceding exec returned, or halt time
+                 * hides inside "io" and the split says nothing.
+                 */
+                acct_run_ns += b - a;
+                acct_halted = (r == EXCP_HALTED);
+                acct_halts += acct_halted;
+                acct_io_mark = b;   /* closed after qemu_process_cpu_events */
+                acct_io_cpu_mark = thread_cpu_ns();
+            }
+            bql_lock();
+            /*
+             * "io" is two very different things -- waiting for the BQL (the
+             * iothread is holding it, e.g. across an LCD conversion) and
+             * waiting in the main loop itself. Only the first is contention,
+             * and only the first is fixable here, so time it separately.
+             */
+            if (it_acct_on) {
+                acct_bql_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - b;
+            }
+            switch (r) {
+            case EXCP_DEBUG:
+                cpu_handle_guest_debug(cpu);
+                break;
+            case EXCP_HALTED:
+                /*
+                 * Usually cpu->halted is set, but may have already been
+                 * reset by another thread by the time we arrive here.
+                 */
+                break;
+            case EXCP_ATOMIC:
+                bql_unlock();
+                cpu_exec_step_atomic(cpu);
+                bql_lock();
+            default:
+                /* Ignore everything else? */
+                break;
+            }
+        }
     } while (!cpu->unplug || cpu_can_run(cpu));
 
     tcg_cpu_destroy(cpu);
@@ -299,11 +296,6 @@ static void *mttcg_cpu_thread_fn(void *arg)
     rcu_remove_force_rcu_notifier(&force_rcu.notifier);
     rcu_unregister_thread();
     return NULL;
-}
-
-void mttcg_kick_vcpu_thread(CPUState *cpu)
-{
-    cpu_exit(cpu);
 }
 
 void mttcg_start_vcpu_thread(CPUState *cpu)

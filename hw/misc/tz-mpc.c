@@ -14,12 +14,12 @@
 #include "qemu/module.h"
 #include "qapi/error.h"
 #include "trace.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/registerfields.h"
-#include "hw/irq.h"
+#include "hw/core/registerfields.h"
+#include "hw/core/irq.h"
 #include "hw/misc/tz-mpc.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /* Our IOMMU has two IOMMU indexes, one for secure transactions and one for
  * non-secure transactions.
@@ -592,7 +592,7 @@ static const Property tz_mpc_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void tz_mpc_class_init(ObjectClass *klass, void *data)
+static void tz_mpc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -611,7 +611,7 @@ static const TypeInfo tz_mpc_info = {
 };
 
 static void tz_mpc_iommu_memory_region_class_init(ObjectClass *klass,
-                                                  void *data)
+                                                  const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

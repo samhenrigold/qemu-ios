@@ -68,9 +68,11 @@ undocumented; you can get a complete list by running
 
    riscv/microblaze-v-generic
    riscv/microchip-icicle-kit
+   riscv/mips
    riscv/shakti-c
    riscv/sifive_u
    riscv/virt
+   riscv/xiangshan-kunminghu
 
 RISC-V CPU firmware
 -------------------

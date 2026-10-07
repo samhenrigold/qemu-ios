@@ -14,7 +14,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/intc/bcm2835_ic.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -219,7 +219,7 @@ static const VMStateDescription vmstate_bcm2835_ic = {
     }
 };
 
-static void bcm2835_ic_class_init(ObjectClass *klass, void *data)
+static void bcm2835_ic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

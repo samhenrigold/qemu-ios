@@ -35,7 +35,7 @@ typedef struct {
     uint64_t total_bytes, dropped, last_push_ns;
     bool pushed_since_tick, active, card_ok, running; unsigned enable;
     struct audsettings as;
-    void *pace_timer, *card;
+    void *pace_timer, *audio_be;
     FILE *dump;
     unsigned ring_tail, ring_level;
     void *voice;
@@ -50,17 +50,17 @@ static void it_i2s_trace(IPodTouchI2SState *s) {}
 static void it_i2s_activate(IPodTouchI2SState *s) {}
 static void it_i2s_update_dma_req(IPodTouchI2SState *s) {}
 static void it_i2s_out_cb(void *s,int free_bytes) {}
-static void *AUD_open_out(void *card,void *voice,const char *name,void *opaque,
+static void *audio_be_open_out(void *be,void *voice,const char *name,void *opaque,
                          void (*cb)(void *,int),struct audsettings *as) { return opaque; }
-static void AUD_set_volume_out(void *voice,int mute,int left,int right) {}
-static void AUD_set_active_out(void *voice,int active) {}
+static void audio_be_set_volume_out_lr(void *be,void *voice,int mute,int left,int right) {}
+static void audio_be_set_active_out(void *be,void *voice,int active) {}
 static void pl080_set_dma_request(void *dmac,unsigned id,bool request) {}
 #define warn_report(...) ((void)0)
 static uint16_t lduw_le_p(const uint8_t *p) { return p[0] | (p[1]<<8); }
 static void stw_le_p(uint8_t *p, uint16_t v) { p[0]=v; p[1]=v>>8; }
 static uint8_t played[64];
 static unsigned count, limit=64;
-static size_t AUD_write(void *voice, void *data, size_t size) {
+static size_t audio_be_write(void *be, void *voice, void *data, size_t size) {
     unsigned n=MIN(size,limit); n &= ~3u;
     assert(count+n<=sizeof(played));
     memcpy(played+count,data,n); count+=n;

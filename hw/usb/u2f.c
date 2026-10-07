@@ -26,7 +26,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "hw/usb/hid.h"
 #include "migration/vmstate.h"
 #include "desc.h"
@@ -317,7 +317,7 @@ const VMStateDescription vmstate_u2f_key = {
     }
 };
 
-static void u2f_key_class_init(ObjectClass *klass, void *data)
+static void u2f_key_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

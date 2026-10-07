@@ -6,15 +6,15 @@
 #include "chardev/char-fe.h"
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qom/object.h"
 
 #define VTERM_BUFSIZE   16
 
 struct SpaprVioVty {
     SpaprVioDevice sdev;
-    CharBackend chardev;
+    CharFrontend chardev;
     uint32_t in, out;
     uint8_t buf[VTERM_BUFSIZE];
 };
@@ -182,7 +182,7 @@ static const VMStateDescription vmstate_spapr_vty = {
     },
 };
 
-static void spapr_vty_class_init(ObjectClass *klass, void *data)
+static void spapr_vty_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SpaprVioDeviceClass *k = VIO_SPAPR_DEVICE_CLASS(klass);

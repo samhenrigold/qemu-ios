@@ -19,8 +19,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/gpio/imx_gpio.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -257,8 +257,6 @@ static void imx_gpio_write(void *opaque, hwaddr offset, uint64_t value,
                       HWADDR_PRIx "\n", TYPE_IMX_GPIO, __func__, offset);
         break;
     }
-
-    return;
 }
 
 static const MemoryRegionOps imx_gpio_ops = {
@@ -323,7 +321,7 @@ static void imx_gpio_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
-static void imx_gpio_class_init(ObjectClass *klass, void *data)
+static void imx_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

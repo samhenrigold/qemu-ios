@@ -11,26 +11,27 @@
 #include "qemu/bitops.h"
 #include "qapi/error.h"
 #include "hw/core/split-irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/sd/sd.h"
 #include "hw/ssi/ssi.h"
 #include "hw/arm/boot.h"
+#include "hw/arm/machines-qom.h"
 #include "qemu/timer.h"
 #include "hw/i2c/i2c.h"
 #include "net/net.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "qemu/log.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "system/system.h"
 #include "hw/arm/armv7m.h"
 #include "hw/char/pl011.h"
 #include "hw/input/stellaris_gamepad.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/watchdog/cmsdk-apb-watchdog.h"
 #include "migration/vmstate.h"
 #include "hw/misc/unimp.h"
 #include "hw/timer/stellaris-gptm.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-clock.h"
 #include "qom/object.h"
 #include "qobject/qlist.h"
 #include "ui/input.h"
@@ -1413,7 +1414,7 @@ static void lm3s6965evb_init(MachineState *machine)
  * Stellaris LM3S811 Evaluation Board Schematics:
  * https://www.ti.com/lit/ug/symlink/spmu030.pdf
  */
-static void lm3s811evb_class_init(ObjectClass *oc, void *data)
+static void lm3s811evb_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -1427,13 +1428,14 @@ static const TypeInfo lm3s811evb_type = {
     .name = MACHINE_TYPE_NAME("lm3s811evb"),
     .parent = TYPE_MACHINE,
     .class_init = lm3s811evb_class_init,
+    .interfaces = arm_machine_interfaces,
 };
 
 /*
  * Stellaris: LM3S6965 Evaluation Board Schematics:
  * https://www.ti.com/lit/ug/symlink/spmu029.pdf
  */
-static void lm3s6965evb_class_init(ObjectClass *oc, void *data)
+static void lm3s6965evb_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -1448,6 +1450,7 @@ static const TypeInfo lm3s6965evb_type = {
     .name = MACHINE_TYPE_NAME("lm3s6965evb"),
     .parent = TYPE_MACHINE,
     .class_init = lm3s6965evb_class_init,
+    .interfaces = arm_machine_interfaces,
 };
 
 static void stellaris_machine_init(void)
@@ -1458,7 +1461,7 @@ static void stellaris_machine_init(void)
 
 type_init(stellaris_machine_init)
 
-static void stellaris_i2c_class_init(ObjectClass *klass, void *data)
+static void stellaris_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -1477,7 +1480,7 @@ static const TypeInfo stellaris_i2c_info = {
     .class_init    = stellaris_i2c_class_init,
 };
 
-static void stellaris_adc_class_init(ObjectClass *klass, void *data)
+static void stellaris_adc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -1494,7 +1497,7 @@ static const TypeInfo stellaris_adc_info = {
     .class_init    = stellaris_adc_class_init,
 };
 
-static void stellaris_sys_class_init(ObjectClass *klass, void *data)
+static void stellaris_sys_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

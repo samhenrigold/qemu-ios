@@ -15,7 +15,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 
@@ -102,7 +102,7 @@ static const Property ltc4099_properties[] = {
     DEFINE_PROP_BOOL("usb-present", S5L8930LTC4099State, usb_present, true),
 };
 
-static void ltc4099_class_init(ObjectClass *klass, void *data)
+static void ltc4099_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

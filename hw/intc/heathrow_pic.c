@@ -27,7 +27,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "hw/intc/heathrow_pic.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "trace.h"
 
 static inline int heathrow_check_irq(HeathrowPICState *pic)
@@ -184,7 +184,7 @@ static void heathrow_init(Object *obj)
     sysbus_init_mmio(sbd, &s->mem);
 }
 
-static void heathrow_class_init(ObjectClass *oc, void *data)
+static void heathrow_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

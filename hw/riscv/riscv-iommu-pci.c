@@ -17,10 +17,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "exec/target_page.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "hw/pci/pci_bus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/riscv/riscv_hart.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -66,12 +67,6 @@ typedef struct RISCVIOMMUStatePci {
     MemoryRegion     bar0;    /* PCI BAR (including MSI-x config) */
     RISCVIOMMUState  iommu;   /* common IOMMU state */
 } RISCVIOMMUStatePci;
-
-struct RISCVIOMMUPciClass {
-    /*< public >*/
-    DeviceRealize parent_realize;
-    ResettablePhases parent_phases;
-};
 
 /* interrupt delivery callback */
 static void riscv_iommu_pci_notify(RISCVIOMMUState *iommu, unsigned vector)
@@ -163,6 +158,9 @@ static void riscv_iommu_pci_init(Object *obj)
 
     iommu->icvec_avail_vectors = RISCV_IOMMU_PCI_ICVEC_VECTORS;
     riscv_iommu_set_cap_igs(iommu, RISCV_IOMMU_CAP_IGS_MSI);
+
+    /* Report maximum physical address size of riscv64 */
+    iommu->pas_bits = 56;
 }
 
 static const Property riscv_iommu_pci_properties[] = {
@@ -183,7 +181,7 @@ static void riscv_iommu_pci_reset_hold(Object *obj, ResetType type)
     trace_riscv_iommu_pci_reset_hold(type);
 }
 
-static void riscv_iommu_pci_class_init(ObjectClass *klass, void *data)
+static void riscv_iommu_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -208,7 +206,7 @@ static const TypeInfo riscv_iommu_pci = {
     .class_init = riscv_iommu_pci_class_init,
     .instance_init = riscv_iommu_pci_init,
     .instance_size = sizeof(RISCVIOMMUStatePci),
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_PCIE_DEVICE },
         { },
     },

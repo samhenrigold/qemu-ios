@@ -3,11 +3,11 @@
 #include "migration/vmstate.h"
 #include "migration/qemu-file.h"
 #include "hw/core/cpu.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "target/arm/cpu.h"
 #include "trace.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "qemu/error-report.h"
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
@@ -473,7 +473,7 @@ static const Property mpvd_properties[] = {
     DEFINE_PROP_BOOL("decode", IPodTouchMPVDState, decode_enabled, false),
 };
 
-static void ipod_touch_mpvd_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_mpvd_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

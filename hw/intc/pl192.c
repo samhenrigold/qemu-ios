@@ -6,11 +6,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/core/cpu.h"
 #include "qemu/timer.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 #include "qapi/error.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/ipod_touch_guard.h"
@@ -541,7 +541,7 @@ static void pl192_init(Object *obj)
     //sysbus_init_irq(sbd, s->fiq);
 }
 
-static void pl192_class_init(ObjectClass *klass, void *data)
+static void pl192_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

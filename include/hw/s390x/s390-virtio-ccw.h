@@ -11,7 +11,7 @@
 #ifndef HW_S390X_S390_VIRTIO_CCW_H
 #define HW_S390X_S390_VIRTIO_CCW_H
 
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "qom/object.h"
 #include "hw/s390x/sclp.h"
 
@@ -53,11 +53,8 @@ struct S390CcwMachineClass {
     MachineClass parent_class;
 
     /*< public >*/
-    bool hpage_1m_allowed;
     int max_threads;
+    bool use_cpi;
 };
-
-/* 1M huge page mappings allowed by the machine */
-bool hpage_1m_allowed(void);
 
 #endif

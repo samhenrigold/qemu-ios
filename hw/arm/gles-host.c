@@ -31,8 +31,10 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "cpu.h"
-#include "exec/ram_addr.h"
-#include "hw/sysbus.h"
+#include "exec/target_page.h"
+#include "system/ram_addr.h"
+#include "system/physmem.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/guest-services/general.h"
 
@@ -1691,11 +1693,17 @@ bool gles_host_refuse(const char *fmt, ...)
     return gles_reject_note(name, 1, false);
 }
 
+static gint gles_strcmp_data(gconstpointer a, gconstpointer b, gpointer d)
+{
+    return strcmp(a, b);
+}
+
 char *gles_host_rejects(void)
 {
     GString *out = g_string_new(NULL);
-    GList *keys = gles_rejects ? g_list_sort(g_hash_table_get_keys(gles_rejects),
-                                             (GCompareFunc)strcmp) : NULL;
+    GList *keys = gles_rejects ?
+        g_list_sort_with_data(g_hash_table_get_keys(gles_rejects),
+                              gles_strcmp_data, NULL) : NULL;
 
     for (GList *k = keys; k; k = k->next) {
         g_string_append_printf(out, "%s\t%" PRIu64 "\n", (char *)k->data,
@@ -4163,13 +4171,15 @@ static bool gles_surface_changed(GLESSurface *s)
         /* one bitmap scan per physically contiguous run */
         for (j = i + 1; j < s->npages && s->pages[j] == s->pages[j - 1] + TARGET_PAGE_SIZE; j++) {
         }
-        if (!cpu_physical_memory_get_dirty(s->pages[i], (ram_addr_t)(j - i) * TARGET_PAGE_SIZE,
-                                           DIRTY_MEMORY_VGA)) {
-            continue;
-        }
+        bool any = false;
+
         for (unsigned k = i; k < j; k++) {
             size_t page = s->pages[k] >> TARGET_PAGE_BITS;
 
+            if (!physical_memory_get_dirty_flag(s->pages[k], DIRTY_MEMORY_VGA)) {
+                continue;
+            }
+            any = true;
             if (page >= gles_page_gen_len) {
                 size_t len = MAX(page + 1, gles_page_gen_len * 2);
 
@@ -4177,13 +4187,14 @@ static bool gles_surface_changed(GLESSurface *s)
                 memset(gles_page_gen + gles_page_gen_len, 0, (len - gles_page_gen_len) * sizeof(uint64_t));
                 gles_page_gen_len = len;
             }
-            if (cpu_physical_memory_get_dirty(s->pages[k], TARGET_PAGE_SIZE, DIRTY_MEMORY_VGA)) {
-                gles_page_gen[page] = ++gles_gen;
-            }
+            gles_page_gen[page] = ++gles_gen;
+        }
+        if (!any) {
+            continue;
         }
         /* one clear per run: each clear walks every TLB entry to re-arm write tracking */
-        cpu_physical_memory_test_and_clear_dirty(s->pages[i], (ram_addr_t)(j - i) * TARGET_PAGE_SIZE,
-                                                 DIRTY_MEMORY_VGA);
+        physical_memory_test_and_clear_dirty(s->pages[i], (ram_addr_t)(j - i) * TARGET_PAGE_SIZE,
+                                             DIRTY_MEMORY_VGA, NULL);
     }
     for (unsigned i = 0; i < s->npages && !changed; i++) {
         size_t page = s->pages[i] >> TARGET_PAGE_BITS;
@@ -4623,7 +4634,7 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
             WITH_RCU_READ_LOCK_GUARD() {
                 memcpy(qemu_map_ram_ptr(NULL, ram), src + done, n);
             }
-            cpu_physical_memory_set_dirty_range(ram, n, DIRTY_CLIENTS_ALL);
+            physical_memory_set_dirty_range(ram, n, DIRTY_CLIENTS_ALL);
             done += n;
         }
     }

@@ -132,6 +132,7 @@ struct SubchDev {
     bool ccw_fmt_1;
     bool thinint_active;
     uint8_t ccw_no_data_cnt;
+    uint8_t ccw_tic_cnt;
     uint16_t migrated_schid; /* used for mismatch detection */
     CcwDataStream cds;
     /* transport-provided data: */
@@ -238,7 +239,8 @@ uint32_t css_get_adapter_id(CssIoAdapterType type, uint8_t isc);
 void css_register_io_adapters(CssIoAdapterType type, bool swap, bool maskable,
                               uint8_t flags, Error **errp);
 
-#ifndef CONFIG_USER_ONLY
+#define S390_ADAPTER_SUPPRESSIBLE 0x01
+
 SubchDev *css_find_subch(uint8_t m, uint8_t cssid, uint8_t ssid,
                          uint16_t schid);
 bool css_subch_visible(SubchDev *sch);
@@ -262,7 +264,6 @@ int css_enable_mss(void);
 IOInstEnding css_do_rsch(SubchDev *sch);
 int css_do_rchp(uint8_t cssid, uint8_t chpid);
 bool css_present(uint8_t cssid);
-#endif
 
 extern const PropertyInfo css_devid_ro_propinfo;
 
@@ -332,11 +333,5 @@ static inline int ccw_dstream_read_buf(CcwDataStream *cds, void *buff, int len)
 
 #define ccw_dstream_read(cds, v) ccw_dstream_read_buf((cds), &(v), sizeof(v))
 #define ccw_dstream_write(cds, v) ccw_dstream_write_buf((cds), &(v), sizeof(v))
-
-/**
- * true if (vmstate based) migration of the channel subsystem
- * is enabled, false if it is disabled.
- */
-extern bool css_migration_enabled;
 
 #endif

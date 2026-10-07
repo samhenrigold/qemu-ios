@@ -27,10 +27,12 @@
 #define JOB_H
 
 #include "qapi/qapi-types-job.h"
+#include "qemu/aiocb.h"
 #include "qemu/queue.h"
 #include "qemu/progress_meter.h"
 #include "qemu/coroutine.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
+#include "block/graph-lock.h"
 
 typedef struct JobDriver JobDriver;
 typedef struct JobTxn JobTxn;
@@ -263,7 +265,7 @@ struct JobDriver {
      * This callback will not be invoked if the job has already failed.
      * If it fails, abort and then clean will be called.
      */
-    int (*prepare)(Job *job);
+    int GRAPH_UNLOCKED_PTR (*prepare)(Job *job);
 
     /**
      * If the callback is not NULL, it will be invoked when all the jobs
@@ -283,7 +285,7 @@ struct JobDriver {
      * All jobs will complete with a call to either .commit() or .abort() but
      * never both.
      */
-    void (*abort)(Job *job);
+    void GRAPH_UNLOCKED_PTR (*abort)(Job *job);
 
     /**
      * If the callback is not NULL, it will be invoked after a call to either

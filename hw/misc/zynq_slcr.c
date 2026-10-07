@@ -17,14 +17,14 @@
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "system/runstate.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/registerfields.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/registerfields.h"
+#include "hw/core/qdev-clock.h"
 #include "qom/object.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 
 #ifndef ZYNQ_SLCR_ERR_DEBUG
@@ -627,7 +627,7 @@ static const Property zynq_slcr_props[] = {
     DEFINE_PROP_UINT8("boot-mode", ZynqSLCRState, boot_mode, 1),
 };
 
-static void zynq_slcr_class_init(ObjectClass *klass, void *data)
+static void zynq_slcr_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

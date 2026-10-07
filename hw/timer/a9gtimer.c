@@ -21,9 +21,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/timer/a9gtimer.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -377,7 +377,7 @@ static const Property a9_gtimer_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", A9GTimerState, num_cpu, 0),
 };
 
-static void a9_gtimer_class_init(ObjectClass *klass, void *data)
+static void a9_gtimer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

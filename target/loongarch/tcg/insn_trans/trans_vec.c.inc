@@ -3465,7 +3465,7 @@ TRANS(xvmsknz_b, LASX, gen_xx, gen_helper_vmsknz_b)
 static uint64_t vldi_get_value(DisasContext *ctx, uint32_t imm)
 {
     int mode;
-    uint64_t data, t;
+    uint64_t data = 0, t;
 
     /*
      * imm bit [11:8] is mode, mode value is 0-12.
@@ -3570,10 +3570,14 @@ static uint64_t vldi_get_value(DisasContext *ctx, uint32_t imm)
         }
         break;
     default:
-        generate_exception(ctx, EXCCODE_INE);
         g_assert_not_reached();
     }
     return data;
+}
+
+static bool check_valid_vldi_mode(arg_vldi *a)
+{
+   return  extract32(a->imm, 8, 4) <= 12;
 }
 
 static bool gen_vldi(DisasContext *ctx, arg_vldi *a, uint32_t oprsz)
@@ -3581,11 +3585,16 @@ static bool gen_vldi(DisasContext *ctx, arg_vldi *a, uint32_t oprsz)
     int sel, vece;
     uint64_t value;
 
-    if (!check_vec(ctx, oprsz)) {
+    sel = (a->imm >> 12) & 0x1;
+
+    if (sel && !check_valid_vldi_mode(a)) {
+        generate_exception(ctx, EXCCODE_INE);
         return true;
     }
 
-    sel = (a->imm >> 12) & 0x1;
+    if (!check_vec(ctx, oprsz)) {
+        return true;
+    }
 
     if (sel) {
         value = vldi_get_value(ctx, a->imm);
@@ -4398,12 +4407,20 @@ TRANS(vfrecip_s, LSX, gen_vv_ptr, gen_helper_vfrecip_s)
 TRANS(vfrecip_d, LSX, gen_vv_ptr, gen_helper_vfrecip_d)
 TRANS(vfrsqrt_s, LSX, gen_vv_ptr, gen_helper_vfrsqrt_s)
 TRANS(vfrsqrt_d, LSX, gen_vv_ptr, gen_helper_vfrsqrt_d)
+TRANS(vfrecipe_s, FRECIPE_LSX, gen_vv_ptr, gen_helper_vfrecip_s)
+TRANS(vfrecipe_d, FRECIPE_LSX, gen_vv_ptr, gen_helper_vfrecip_d)
+TRANS(vfrsqrte_s, FRECIPE_LSX, gen_vv_ptr, gen_helper_vfrsqrt_s)
+TRANS(vfrsqrte_d, FRECIPE_LSX, gen_vv_ptr, gen_helper_vfrsqrt_d)
 TRANS(xvfsqrt_s, LASX, gen_xx_ptr, gen_helper_vfsqrt_s)
 TRANS(xvfsqrt_d, LASX, gen_xx_ptr, gen_helper_vfsqrt_d)
 TRANS(xvfrecip_s, LASX, gen_xx_ptr, gen_helper_vfrecip_s)
 TRANS(xvfrecip_d, LASX, gen_xx_ptr, gen_helper_vfrecip_d)
 TRANS(xvfrsqrt_s, LASX, gen_xx_ptr, gen_helper_vfrsqrt_s)
 TRANS(xvfrsqrt_d, LASX, gen_xx_ptr, gen_helper_vfrsqrt_d)
+TRANS(xvfrecipe_s, FRECIPE_LASX, gen_xx_ptr, gen_helper_vfrecip_s)
+TRANS(xvfrecipe_d, FRECIPE_LASX, gen_xx_ptr, gen_helper_vfrecip_d)
+TRANS(xvfrsqrte_s, FRECIPE_LASX, gen_xx_ptr, gen_helper_vfrsqrt_s)
+TRANS(xvfrsqrte_d, FRECIPE_LASX, gen_xx_ptr, gen_helper_vfrsqrt_d)
 
 TRANS(vfcvtl_s_h, LSX, gen_vv_ptr, gen_helper_vfcvtl_s_h)
 TRANS(vfcvth_s_h, LSX, gen_vv_ptr, gen_helper_vfcvth_s_h)
@@ -4655,19 +4672,23 @@ TRANS(xvslti_du, LASX, do_xcmpi, MO_64, TCG_COND_LTU)
 
 static bool do_vfcmp_cond_s(DisasContext *ctx, arg_vvv_fcond *a, uint32_t sz)
 {
-    uint32_t flags;
+    uint32_t flags = get_fcmp_flags(ctx, a->fcond >> 1);
     void (*fn)(TCGv_env, TCGv_i32, TCGv_i32, TCGv_i32, TCGv_i32, TCGv_i32);
     TCGv_i32 vd = tcg_constant_i32(a->vd);
     TCGv_i32 vj = tcg_constant_i32(a->vj);
     TCGv_i32 vk = tcg_constant_i32(a->vk);
     TCGv_i32 oprsz = tcg_constant_i32(sz);
 
+    if(flags == -1){
+        generate_exception(ctx, EXCCODE_INE);
+        return true;
+    }
+
     if (!check_vec(ctx, sz)) {
         return true;
     }
 
     fn = (a->fcond & 1 ? gen_helper_vfcmp_s_s : gen_helper_vfcmp_c_s);
-    flags = get_fcmp_flags(a->fcond >> 1);
     fn(tcg_env, oprsz, vd, vj, vk, tcg_constant_i32(flags));
 
     return true;
@@ -4675,19 +4696,23 @@ static bool do_vfcmp_cond_s(DisasContext *ctx, arg_vvv_fcond *a, uint32_t sz)
 
 static bool do_vfcmp_cond_d(DisasContext *ctx, arg_vvv_fcond *a, uint32_t sz)
 {
-    uint32_t flags;
+    uint32_t flags = get_fcmp_flags(ctx, a->fcond >> 1);
     void (*fn)(TCGv_env, TCGv_i32, TCGv_i32, TCGv_i32, TCGv_i32, TCGv_i32);
     TCGv_i32 vd = tcg_constant_i32(a->vd);
     TCGv_i32 vj = tcg_constant_i32(a->vj);
     TCGv_i32 vk = tcg_constant_i32(a->vk);
     TCGv_i32 oprsz = tcg_constant_i32(sz);
 
+    if (flags == -1) {
+        generate_exception(ctx, EXCCODE_INE);
+        return true;
+    }
+
     if (!check_vec(ctx, sz)) {
         return true;
     }
 
     fn = (a->fcond & 1 ? gen_helper_vfcmp_s_d : gen_helper_vfcmp_c_d);
-    flags = get_fcmp_flags(a->fcond >> 1);
     fn(tcg_env, oprsz, vd, vj, vk, tcg_constant_i32(flags));
 
     return true;
@@ -5262,7 +5287,7 @@ static bool trans_vld(DisasContext *ctx, arg_vr_i *a)
 
     addr = make_address_i(ctx, addr, a->imm);
 
-    tcg_gen_qemu_ld_i128(val, addr, ctx->mem_idx, MO_128 | MO_TE);
+    tcg_gen_qemu_ld_i128(val, addr, ctx->mem_idx, MO_128 | MO_LE);
     tcg_gen_extr_i128_i64(rl, rh, val);
     set_vreg64(rh, a->vd, 1);
     set_vreg64(rl, a->vd, 0);
@@ -5294,7 +5319,7 @@ static bool trans_vst(DisasContext *ctx, arg_vr_i *a)
     get_vreg64(ah, a->vd, 1);
     get_vreg64(al, a->vd, 0);
     tcg_gen_concat_i64_i128(val, al, ah);
-    tcg_gen_qemu_st_i128(val, addr, ctx->mem_idx, MO_128 | MO_TE);
+    tcg_gen_qemu_st_i128(val, addr, ctx->mem_idx, MO_128 | MO_LE);
 
     return true;
 }
@@ -5320,7 +5345,7 @@ static bool trans_vldx(DisasContext *ctx, arg_vrr *a)
     rh = tcg_temp_new_i64();
 
     addr = make_address_x(ctx, src1, src2);
-    tcg_gen_qemu_ld_i128(val, addr, ctx->mem_idx, MO_128 | MO_TE);
+    tcg_gen_qemu_ld_i128(val, addr, ctx->mem_idx, MO_128 | MO_LE);
     tcg_gen_extr_i128_i64(rl, rh, val);
     set_vreg64(rh, a->vd, 1);
     set_vreg64(rl, a->vd, 0);
@@ -5352,7 +5377,7 @@ static bool trans_vstx(DisasContext *ctx, arg_vrr *a)
     get_vreg64(ah, a->vd, 1);
     get_vreg64(al, a->vd, 0);
     tcg_gen_concat_i64_i128(val, al, ah);
-    tcg_gen_qemu_st_i128(val, addr, ctx->mem_idx, MO_128 | MO_TE);
+    tcg_gen_qemu_st_i128(val, addr, ctx->mem_idx, MO_128 | MO_LE);
 
     return true;
 }
@@ -5461,12 +5486,12 @@ static void gen_xvld(DisasContext *ctx, int vreg, TCGv addr)
     TCGv temp = tcg_temp_new();
     TCGv dest = tcg_temp_new();
 
-    tcg_gen_qemu_ld_i64(dest, addr, ctx->mem_idx, MO_TEUQ);
+    tcg_gen_qemu_ld_i64(dest, addr, ctx->mem_idx, MO_LEUQ);
     set_vreg64(dest, vreg, 0);
 
     for (i = 1; i < 4; i++) {
         tcg_gen_addi_tl(temp, addr, 8 * i);
-        tcg_gen_qemu_ld_i64(dest, temp, ctx->mem_idx, MO_TEUQ);
+        tcg_gen_qemu_ld_i64(dest, temp, ctx->mem_idx, MO_LEUQ);
         set_vreg64(dest, vreg, i);
     }
 }
@@ -5478,12 +5503,12 @@ static void gen_xvst(DisasContext * ctx, int vreg, TCGv addr)
     TCGv dest = tcg_temp_new();
 
     get_vreg64(dest, vreg, 0);
-    tcg_gen_qemu_st_i64(dest, addr, ctx->mem_idx, MO_TEUQ);
+    tcg_gen_qemu_st_i64(dest, addr, ctx->mem_idx, MO_LEUQ);
 
     for (i = 1; i < 4; i++) {
         tcg_gen_addi_tl(temp, addr, 8 * i);
         get_vreg64(dest, vreg, i);
-        tcg_gen_qemu_st_i64(dest, temp, ctx->mem_idx, MO_TEUQ);
+        tcg_gen_qemu_st_i64(dest, temp, ctx->mem_idx, MO_LEUQ);
     }
 }
 

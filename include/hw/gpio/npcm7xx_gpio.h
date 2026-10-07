@@ -15,8 +15,8 @@
 #ifndef NPCM7XX_GPIO_H
 #define NPCM7XX_GPIO_H
 
-#include "exec/memory.h"
-#include "hw/sysbus.h"
+#include "system/memory.h"
+#include "hw/core/sysbus.h"
 
 /* Number of pins managed by each controller. */
 #define NPCM7XX_GPIO_NR_PINS (32)

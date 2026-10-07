@@ -20,13 +20,12 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "exec/cputlb.h"
-#include "exec/memory.h"
-#include "exec/tb-flush.h"
-#include "exec/tswap.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "system/memory.h"
+#include "qemu/target-info.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/core/sysemu-cpu-ops.h"
 #include "migration/vmstate.h"
 #include "system/tcg.h"
@@ -87,7 +86,7 @@ int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs)
 
     if (cpu->cc->sysemu_ops->asidx_from_attrs) {
         ret = cpu->cc->sysemu_ops->asidx_from_attrs(cpu, attrs);
-        assert(ret < cpu->num_ases && ret >= 0);
+        assert(ret <= cpu->cc->max_as && ret >= 0);
     }
     return ret;
 }
@@ -128,12 +127,12 @@ int cpu_write_elf64_note(WriteCoreDumpFunction f, CPUState *cpu,
     return (*cpu->cc->sysemu_ops->write_elf64_note)(f, cpu, cpuid, opaque);
 }
 
-bool cpu_virtio_is_big_endian(CPUState *cpu)
+bool cpu_internal_is_big_endian(CPUState *cpu)
 {
-    if (cpu->cc->sysemu_ops->virtio_is_big_endian) {
-        return cpu->cc->sysemu_ops->virtio_is_big_endian(cpu);
+    if (cpu->cc->sysemu_ops->internal_is_big_endian) {
+        return cpu->cc->sysemu_ops->internal_is_big_endian(cpu);
     }
-    return target_words_bigendian();
+    return target_big_endian();
 }
 
 GuestPanicInformation *cpu_get_crash_info(CPUState *cpu)
@@ -204,17 +203,9 @@ static int cpu_common_post_load(void *opaque, int version_id)
          * 0x01 was CPU_INTERRUPT_EXIT. This line can be removed when the
          * version_id is increased.
          */
-        cpu->interrupt_request &= ~0x01;
+        cpu_reset_interrupt(cpu, 0x01);
 
         tlb_flush(cpu);
-
-        /*
-         * loadvm has just updated the content of RAM, bypassing the
-         * usual mechanisms that ensure we flush TBs for writes to
-         * memory we've translated code from. So we must flush all TBs,
-         * which will now be stale.
-         */
-        tb_flush(cpu);
     }
 
     return 0;

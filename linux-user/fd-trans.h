@@ -36,6 +36,16 @@ static inline void fd_trans_init(void)
     qemu_mutex_init(&target_fd_trans_lock);
 }
 
+static inline void fd_trans_prefork(void)
+{
+    qemu_mutex_lock(&target_fd_trans_lock);
+}
+
+static inline void fd_trans_postfork(void)
+{
+    qemu_mutex_unlock(&target_fd_trans_lock);
+}
+
 static inline TargetFdDataFunc fd_trans_target_to_host_data(int fd)
 {
     if (fd < 0) {
@@ -131,9 +141,5 @@ extern TargetFdTrans target_netlink_audit_trans;
 extern TargetFdTrans target_signalfd_trans;
 extern TargetFdTrans target_eventfd_trans;
 extern TargetFdTrans target_timerfd_trans;
-#if (defined(TARGET_NR_inotify_init) && defined(__NR_inotify_init)) || \
-    (defined(CONFIG_INOTIFY1) && defined(TARGET_NR_inotify_init1) && \
-     defined(__NR_inotify_init1))
 extern TargetFdTrans target_inotify_trans;
-#endif
 #endif

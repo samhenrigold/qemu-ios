@@ -27,8 +27,8 @@
 #include "qapi/error.h"
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/nvram/mac_nvram.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "system/block-backend.h"
 #include "migration/vmstate.h"
 #include "qemu/cutils.h"
@@ -140,7 +140,7 @@ static const Property macio_nvram_properties[] = {
     DEFINE_PROP_DRIVE("drive", MacIONVRAMState, blk),
 };
 
-static void macio_nvram_class_init(ObjectClass *oc, void *data)
+static void macio_nvram_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

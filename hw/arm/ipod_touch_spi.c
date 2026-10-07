@@ -6,7 +6,7 @@
 
 #include "hw/arm/ipod_touch_spi.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "trace.h"
 
@@ -418,7 +418,7 @@ static const Property ipod_touch_spi_properties[] = {
     DEFINE_PROP_UINT32("tx-fifo-depth", IPodTouchSPIState, tx_fifo_depth, R_FIFO_TX_DEPTH),
 };
 
-static void ipod_touch_spi_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = ipod_touch_spi_realize;

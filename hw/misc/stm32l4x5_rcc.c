@@ -23,12 +23,12 @@
 #include "migration/vmstate.h"
 #include "hw/misc/stm32l4x5_rcc.h"
 #include "hw/misc/stm32l4x5_rcc_internals.h"
-#include "hw/clock.h"
-#include "hw/irq.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/registerfields.h"
+#include "hw/core/clock.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/registerfields.h"
 #include "trace.h"
 
 #define HSE_DEFAULT_FRQ 48000000ULL
@@ -141,7 +141,7 @@ static const VMStateDescription clock_mux_vmstate = {
     }
 };
 
-static void clock_mux_class_init(ObjectClass *klass, void *data)
+static void clock_mux_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -295,7 +295,7 @@ static const VMStateDescription pll_vmstate = {
     }
 };
 
-static void pll_class_init(ObjectClass *klass, void *data)
+static void pll_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -1439,7 +1439,7 @@ static const Property stm32l4x5_rcc_properties[] = {
         sai2_extclk_frequency, 0),
 };
 
-static void stm32l4x5_rcc_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_rcc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

@@ -23,8 +23,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -311,7 +311,7 @@ static void unin_internal_pci_host_realize(PCIDevice *d, Error **errp)
     d->config[PCI_CAPABILITY_LIST] = 0x00;
 }
 
-static void unin_main_pci_host_class_init(ObjectClass *klass, void *data)
+static void unin_main_pci_host_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -333,13 +333,13 @@ static const TypeInfo unin_main_pci_host_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = unin_main_pci_host_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
 };
 
-static void u3_agp_pci_host_class_init(ObjectClass *klass, void *data)
+static void u3_agp_pci_host_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -361,13 +361,13 @@ static const TypeInfo u3_agp_pci_host_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = u3_agp_pci_host_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
 };
 
-static void unin_agp_pci_host_class_init(ObjectClass *klass, void *data)
+static void unin_agp_pci_host_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -389,13 +389,14 @@ static const TypeInfo unin_agp_pci_host_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = unin_agp_pci_host_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
 };
 
-static void unin_internal_pci_host_class_init(ObjectClass *klass, void *data)
+static void unin_internal_pci_host_class_init(ObjectClass *klass,
+                                              const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -417,7 +418,7 @@ static const TypeInfo unin_internal_pci_host_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = unin_internal_pci_host_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -427,14 +428,13 @@ static const Property pci_unin_main_pci_host_props[] = {
     DEFINE_PROP_UINT32("ofw-addr", UNINHostState, ofw_addr, -1),
 };
 
-static void pci_unin_main_class_init(ObjectClass *klass, void *data)
+static void pci_unin_main_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SysBusDeviceClass *sbc = SYS_BUS_DEVICE_CLASS(klass);
 
     dc->realize = pci_unin_main_realize;
     device_class_set_props(dc, pci_unin_main_pci_host_props);
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "pci";
     sbc->explicit_ofw_unit_address = pci_unin_main_ofw_unit_address;
 }
@@ -447,12 +447,11 @@ static const TypeInfo pci_unin_main_info = {
     .class_init    = pci_unin_main_class_init,
 };
 
-static void pci_u3_agp_class_init(ObjectClass *klass, void *data)
+static void pci_u3_agp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pci_u3_agp_realize;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 
 static const TypeInfo pci_u3_agp_info = {
@@ -463,12 +462,11 @@ static const TypeInfo pci_u3_agp_info = {
     .class_init    = pci_u3_agp_class_init,
 };
 
-static void pci_unin_agp_class_init(ObjectClass *klass, void *data)
+static void pci_unin_agp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pci_unin_agp_realize;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 
 static const TypeInfo pci_unin_agp_info = {
@@ -479,12 +477,11 @@ static const TypeInfo pci_unin_agp_info = {
     .class_init    = pci_unin_agp_class_init,
 };
 
-static void pci_unin_internal_class_init(ObjectClass *klass, void *data)
+static void pci_unin_internal_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pci_unin_internal_realize;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 
 static const TypeInfo pci_unin_internal_info = {
@@ -535,7 +532,7 @@ static void unin_init(Object *obj)
     sysbus_init_mmio(sbd, &s->mem);
 }
 
-static void unin_class_init(ObjectClass *klass, void *data)
+static void unin_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

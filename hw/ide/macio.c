@@ -24,9 +24,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ppc/mac_dbdma.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "hw/misc/macio/macio.h"
@@ -463,7 +463,7 @@ static const Property macio_ide_properties[] = {
     DEFINE_PROP_UINT32("addr", MACIOIDEState, addr, -1),
 };
 
-static void macio_ide_class_init(ObjectClass *oc, void *data)
+static void macio_ide_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

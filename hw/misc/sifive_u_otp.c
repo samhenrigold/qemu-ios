@@ -20,9 +20,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/sysbus.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/sysbus.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -187,7 +187,7 @@ static void sifive_u_otp_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps sifive_u_otp_ops = {
     .read = sifive_u_otp_read,
     .write = sifive_u_otp_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4
@@ -270,7 +270,7 @@ static void sifive_u_otp_realize(DeviceState *dev, Error **errp)
     memset(s->fuse_wo, 0x00, sizeof(s->fuse_wo));
 }
 
-static void sifive_u_otp_class_init(ObjectClass *klass, void *data)
+static void sifive_u_otp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

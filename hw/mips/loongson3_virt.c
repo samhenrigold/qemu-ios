@@ -37,18 +37,19 @@
 #include "hw/misc/unimp.h"
 #include "hw/intc/i8259.h"
 #include "hw/intc/loongson_ipi.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/isa/superio.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/gpex.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "net/net.h"
 #include "system/kvm.h"
 #include "system/qtest.h"
 #include "system/reset.h"
 #include "system/runstate.h"
+#include "system/system.h"
 #include "qemu/error-report.h"
 
 #define PM_CNTL_MODE          0x10
@@ -286,7 +287,7 @@ static void fw_conf_init(void)
     FWCfgState *fw_cfg;
     hwaddr cfg_addr = virt_memmap[VIRT_FW_CFG].base;
 
-    fw_cfg = fw_cfg_init_mem_wide(cfg_addr, cfg_addr + 8, 8, 0, NULL);
+    fw_cfg = fw_cfg_init_mem_nodma(cfg_addr, cfg_addr + 8, 8);
     fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, (uint16_t)current_machine->smp.cpus);
     fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, (uint16_t)current_machine->smp.max_cpus);
     fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, loaderparams.ram_size);
@@ -370,7 +371,7 @@ static uint64_t load_kernel(CPUMIPSState *env)
     initrd_size = 0;
     initrd_offset = 0;
     if (loaderparams.initrd_filename) {
-        initrd_size = get_image_size(loaderparams.initrd_filename);
+        initrd_size = get_image_size(loaderparams.initrd_filename, NULL);
         if (initrd_size > 0) {
             initrd_offset = MAX(loader_memmap[LOADER_INITRD].base,
                                 ROUND_UP(kernel_high, INITRD_PAGE_SIZE));
@@ -382,8 +383,9 @@ static uint64_t load_kernel(CPUMIPSState *env)
             }
 
             initrd_size = load_image_targphys(loaderparams.initrd_filename,
-                                              initrd_offset,
-                                              loaderparams.ram_size - initrd_offset);
+                                        initrd_offset,
+                                        loaderparams.ram_size - initrd_offset,
+                                        NULL);
         }
 
         if (initrd_size == (target_ulong) -1) {
@@ -649,7 +651,8 @@ static void mips_loongson3_virt_init(MachineState *machine)
         if (filename) {
             bios_size = load_image_targphys(filename,
                                             virt_memmap[VIRT_BIOS_ROM].base,
-                                            virt_memmap[VIRT_BIOS_ROM].size);
+                                            virt_memmap[VIRT_BIOS_ROM].size,
+                                            NULL);
             g_free(filename);
         } else {
             bios_size = -1;
@@ -667,7 +670,7 @@ static void mips_loongson3_virt_init(MachineState *machine)
     loongson3_virt_devices_init(machine, liointc);
 }
 
-static void loongson3v_machine_class_init(ObjectClass *oc, void *data)
+static void loongson3v_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 

@@ -28,10 +28,10 @@
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
 #include "qapi/error.h"
-#include "hw/usb.h"
-#include "hw/qdev-properties.h"
+#include "hw/usb/usb.h"
+#include "hw/core/qdev-properties.h"
 
-#include <u2f-emu/u2f-emu.h>
+#include <u2f-emu.h>
 
 #include "u2f.h"
 
@@ -377,7 +377,7 @@ static const Property u2f_emulated_properties[] = {
     DEFINE_PROP_STRING("counter", U2FEmulatedState, counter),
 };
 
-static void u2f_emulated_class_init(ObjectClass *klass, void *data)
+static void u2f_emulated_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     U2FKeyClass *kc = U2F_KEY_CLASS(klass);

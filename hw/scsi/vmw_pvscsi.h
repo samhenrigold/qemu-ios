@@ -14,8 +14,8 @@
  * details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * along with this program; if not, see
+ * <https://www.gnu.org/licenses/>.
  *
  * Maintained by: Arvind Kumar <arvindkumar@vmware.com>
  *
@@ -107,6 +107,20 @@ enum PVSCSICommands {
 #define PVSCSI_COMMAND_PROCESSING_SUCCEEDED   (0)
 #define PVSCSI_COMMAND_PROCESSING_FAILED     (-1)
 #define PVSCSI_COMMAND_NOT_ENOUGH_DATA       (-2)
+
+/*
+ * About endianess for the below structs:
+ *
+ * These structs are used to describe the data that is exchanged between the
+ * guest and the PVSCSI device. The endianess of the fields in these structs
+ * is not defined by any standard. The current implemented drivers are designed
+ * to only work on x86 architecture, so there is no endianess awareness in the
+ * drivers and thus we have no idea whether the fields should be in little-
+ * endian or target native endian format.
+ *
+ * Considering the above, we assume that PVSCSI is implicitly little-endian and
+ * expect the fields in these structs to be in little-endian format.
+ */
 
 /*
  * Command descriptor for PVSCSI_CMD_RESET_DEVICE --

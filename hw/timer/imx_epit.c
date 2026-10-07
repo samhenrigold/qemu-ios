@@ -16,7 +16,7 @@
 #include "qemu/osdep.h"
 #include "hw/timer/imx_epit.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/imx_ccm.h"
 #include "qemu/module.h"
 #include "qemu/log.h"
@@ -427,7 +427,7 @@ static void imx_epit_dev_reset(DeviceState *dev)
     imx_epit_reset(s, true);
 }
 
-static void imx_epit_class_init(ObjectClass *klass, void *data)
+static void imx_epit_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc  = DEVICE_CLASS(klass);
 

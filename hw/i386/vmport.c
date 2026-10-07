@@ -31,8 +31,8 @@
 #include "qemu/osdep.h"
 #include "hw/isa/isa.h"
 #include "hw/i386/vmport.h"
-#include "hw/qdev-properties.h"
-#include "hw/boards.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/boards.h"
 #include "system/system.h"
 #include "system/hw_accel.h"
 #include "system/qtest.h"
@@ -286,7 +286,7 @@ static const Property vmport_properties[] = {
     DEFINE_PROP_UINT8("vmware-vmx-type", VMPortState, vmware_vmx_type, 2),
 };
 
-static void vmport_class_initfn(ObjectClass *klass, void *data)
+static void vmport_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

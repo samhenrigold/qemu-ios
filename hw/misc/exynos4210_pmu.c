@@ -25,7 +25,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "system/runstate.h"
@@ -498,7 +498,7 @@ static const VMStateDescription exynos4210_pmu_vmstate = {
     }
 };
 
-static void exynos4210_pmu_class_init(ObjectClass *klass, void *data)
+static void exynos4210_pmu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

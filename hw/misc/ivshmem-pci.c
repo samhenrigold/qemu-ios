@@ -22,8 +22,8 @@
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "system/kvm.h"
@@ -94,7 +94,7 @@ struct IVShmemState {
 
     /* exactly one of these two may be set */
     HostMemoryBackend *hostmem; /* with interrupts */
-    CharBackend server_chr; /* without interrupts */
+    CharFrontend server_chr; /* without interrupts */
 
     /* registers */
     uint32_t intrmask;
@@ -442,13 +442,14 @@ static void ivshmem_add_kvm_msi_virq(IVShmemState *s, int vector,
     s->msi_vectors[vector].pdev = pdev;
 }
 
-static void setup_interrupt(IVShmemState *s, int vector, Error **errp)
+static bool setup_interrupt(IVShmemState *s, int vector, Error **errp)
 {
     EventNotifier *n = &s->peers[s->vm_id].eventfds[vector];
     bool with_irqfd = kvm_msi_via_irqfd_enabled() &&
         ivshmem_has_feature(s, IVSHMEM_MSI);
     PCIDevice *pdev = PCI_DEVICE(s);
     Error *err = NULL;
+    int ret;
 
     IVSHMEM_DPRINTF("setting up interrupt for vector: %d\n", vector);
 
@@ -460,24 +461,33 @@ static void setup_interrupt(IVShmemState *s, int vector, Error **errp)
         ivshmem_add_kvm_msi_virq(s, vector, &err);
         if (err) {
             error_propagate(errp, err);
-            return;
+            return false;
         }
 
         if (!msix_is_masked(pdev, vector)) {
-            kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, NULL,
+            ret = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, NULL,
                                                s->msi_vectors[vector].virq);
-            /* TODO handle error */
+            if (ret < 0) {
+                error_setg(errp, "Failed to configure irqfd notifier");
+                return false;
+            }
         }
     } else {
         /* it will be delayed until msix is enabled, in write_config */
         IVSHMEM_DPRINTF("with irqfd, delayed until msix enabled\n");
     }
+    return true;
 }
 
 static void process_msg_shmem(IVShmemState *s, int fd, Error **errp)
 {
     struct stat buf;
     size_t size;
+
+    if (fd < 0) {
+        error_setg(errp, "server didn't provide fd with shared memory message");
+        return;
+    }
 
     if (s->ivshmem_bar2) {
         error_setg(errp, "server sent unexpected shared memory message");
@@ -535,7 +545,12 @@ static void process_msg_connect(IVShmemState *s, uint16_t posn, int fd,
 
     IVSHMEM_DPRINTF("eventfds[%d][%d] = %d\n", posn, vector, fd);
     event_notifier_init_fd(&peer->eventfds[vector], fd);
-    g_unix_set_fd_nonblocking(fd, true, NULL); /* msix/irqfd poll non block */
+
+    /* msix/irqfd poll non block */
+    if (!qemu_set_blocking(fd, false, errp)) {
+        close(fd);
+        return;
+    }
 
     if (posn == s->vm_id) {
         setup_interrupt(s, vector, errp);
@@ -553,7 +568,9 @@ static void process_msg(IVShmemState *s, int64_t msg, int fd, Error **errp)
 
     if (msg < -1 || msg > IVSHMEM_MAX_PEERS) {
         error_setg(errp, "server sent invalid message %" PRId64, msg);
-        close(fd);
+        if (fd >= 0) {
+            close(fd);
+        }
         return;
     }
 
@@ -861,10 +878,11 @@ static void ivshmem_common_realize(PCIDevice *dev, Error **errp)
         host_memory_backend_set_mapped(s->hostmem, true);
     } else {
         Chardev *chr = qemu_chr_fe_get_driver(&s->server_chr);
-        assert(chr);
+        g_autofree char *filename = NULL;
 
-        IVSHMEM_DPRINTF("using shared memory server (socket = %s)\n",
-                        chr->filename);
+        assert(chr);
+        filename = qemu_chr_get_filename(chr);
+        IVSHMEM_DPRINTF("using shared memory server (socket = %s)\n", filename);
 
         /* we allocate enough space for 16 peers and grow as needed */
         resize_peers(s, 16);
@@ -920,6 +938,9 @@ static void ivshmem_exit(PCIDevice *dev)
     IVShmemState *s = IVSHMEM_COMMON(dev);
     int i;
 
+    qemu_chr_fe_set_handlers(&s->server_chr,
+                             NULL, NULL, NULL, NULL, NULL, NULL, true);
+
     migrate_del_blocker(&s->migration_blocker);
 
     if (memory_region_is_mapped(s->ivshmem_bar2)) {
@@ -948,6 +969,8 @@ static void ivshmem_exit(PCIDevice *dev)
             close_peer_eventfds(s, i);
         }
         g_free(s->peers);
+        s->peers = NULL;
+        s->nb_peers = 0;
     }
 
     if (ivshmem_has_feature(s, IVSHMEM_MSI)) {
@@ -955,6 +978,7 @@ static void ivshmem_exit(PCIDevice *dev)
     }
 
     g_free(s->msi_vectors);
+    s->msi_vectors = NULL;
 }
 
 static int ivshmem_pre_load(void *opaque)
@@ -979,7 +1003,7 @@ static int ivshmem_post_load(void *opaque, int version_id)
     return 0;
 }
 
-static void ivshmem_common_class_init(ObjectClass *klass, void *data)
+static void ivshmem_common_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -1002,7 +1026,7 @@ static const TypeInfo ivshmem_common_info = {
     .instance_size = sizeof(IVShmemState),
     .abstract      = true,
     .class_init    = ivshmem_common_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -1044,7 +1068,7 @@ static void ivshmem_plain_realize(PCIDevice *dev, Error **errp)
     ivshmem_common_realize(dev, errp);
 }
 
-static void ivshmem_plain_class_init(ObjectClass *klass, void *data)
+static void ivshmem_plain_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -1103,7 +1127,7 @@ static void ivshmem_doorbell_realize(PCIDevice *dev, Error **errp)
     ivshmem_common_realize(dev, errp);
 }
 
-static void ivshmem_doorbell_class_init(ObjectClass *klass, void *data)
+static void ivshmem_doorbell_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);

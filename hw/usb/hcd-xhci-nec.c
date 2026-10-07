@@ -20,10 +20,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "qemu/module.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 #include "hcd-xhci-pci.h"
 
@@ -50,7 +50,7 @@ static void nec_xhci_instance_init(Object *obj)
     pci->xhci.numslots = nec->slots;
 }
 
-static void nec_xhci_class_init(ObjectClass *klass, void *data)
+static void nec_xhci_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

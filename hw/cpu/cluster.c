@@ -22,7 +22,7 @@
 
 #include "hw/core/cpu.h"
 #include "hw/cpu/cluster.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 
 static const Property cpu_cluster_properties[] = {
@@ -72,7 +72,7 @@ static void cpu_cluster_realize(DeviceState *dev, Error **errp)
     assert(cbdata.cpu_count > 0);
 }
 
-static void cpu_cluster_class_init(ObjectClass *klass, void *data)
+static void cpu_cluster_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

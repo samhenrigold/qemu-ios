@@ -17,7 +17,7 @@
 
 #include "qemu/osdep.h"
 
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio-serial.h"
 #include "qemu/module.h"
 #include "hw/virtio/virtio-pci.h"
@@ -76,7 +76,7 @@ static const Property virtio_serial_pci_properties[] = {
     DEFINE_PROP_UINT32("class", VirtIOPCIProxy, class_code, 0),
 };
 
-static void virtio_serial_pci_class_init(ObjectClass *klass, void *data)
+static void virtio_serial_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioPCIClass *k = VIRTIO_PCI_CLASS(klass);

@@ -13,10 +13,10 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/runstate.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930PMGRState, S5L8930_PMGR)
@@ -478,7 +478,7 @@ static const Property s5l8930_pmgr_props[] = {
     DEFINE_PROP_UINT8("board-id", S5L8930PMGRState, board_id, 0x02),   /* K48 */
 };
 
-static void s5l8930_pmgr_class_init(ObjectClass *klass, void *data)
+static void s5l8930_pmgr_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

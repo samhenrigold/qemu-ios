@@ -18,10 +18,10 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "hw/char/serial.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 
 #define PCI_DEVICE_ID_HP_DIVA           0x1048
@@ -51,8 +51,6 @@ typedef struct PCIDivaSerialState {
     SerialState  state[PCI_SERIAL_MAX_PORTS];
     uint32_t     level[PCI_SERIAL_MAX_PORTS];
     qemu_irq     *irqs;
-    uint8_t      prog_if;
-    bool         disable;
 } PCIDivaSerialState;
 
 static void diva_pci_exit(PCIDevice *dev)
@@ -63,8 +61,8 @@ static void diva_pci_exit(PCIDevice *dev)
 
     for (i = 0; i < pci->ports; i++) {
         s = pci->state + i;
-        qdev_unrealize(DEVICE(s));
         memory_region_del_subregion(&pci->membar, &s->io);
+        qdev_unrealize(DEVICE(s));
         g_free(pci->name[i]);
     }
     qemu_free_irqs(pci->irqs, pci->ports);
@@ -124,8 +122,8 @@ static void diva_pci_realize(PCIDevice *dev, Error **errp)
     size_t i, offset = 0;
     size_t portmask = di.omask;
 
-    pci->dev.config[PCI_CLASS_PROG] = pci->prog_if;
-    pci->dev.config[PCI_INTERRUPT_PIN] = 0x01;
+    pci->dev.config[PCI_CLASS_PROG] = 2; /* 16550 compatible */
+    pci->dev.config[PCI_INTERRUPT_PIN] = 1;
     memory_region_init(&pci->membar, OBJECT(pci), "serial_ports", 4096);
     pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &pci->membar);
     pci->irqs = qemu_allocate_irqs(multi_serial_irq_mux, pci, di.nports);
@@ -160,30 +158,27 @@ static void diva_pci_realize(PCIDevice *dev, Error **errp)
 
 static const VMStateDescription vmstate_pci_diva = {
     .name = "pci-diva-serial",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, PCIDivaSerialState),
         VMSTATE_STRUCT_ARRAY(state, PCIDivaSerialState, PCI_SERIAL_MAX_PORTS,
                              0, vmstate_serial, SerialState),
         VMSTATE_UINT32_ARRAY(level, PCIDivaSerialState, PCI_SERIAL_MAX_PORTS),
-        VMSTATE_BOOL(disable, PCIDivaSerialState),
         VMSTATE_END_OF_LIST()
     }
 };
 
 static const Property diva_serial_properties[] = {
-    DEFINE_PROP_BOOL("disable",  PCIDivaSerialState, disable, false),
     DEFINE_PROP_CHR("chardev1",  PCIDivaSerialState, state[0].chr),
     DEFINE_PROP_CHR("chardev2",  PCIDivaSerialState, state[1].chr),
     DEFINE_PROP_CHR("chardev3",  PCIDivaSerialState, state[2].chr),
     DEFINE_PROP_CHR("chardev4",  PCIDivaSerialState, state[3].chr),
-    DEFINE_PROP_UINT8("prog_if",  PCIDivaSerialState, prog_if, 0x02),
     DEFINE_PROP_UINT32("subvendor", PCIDivaSerialState, subvendor,
                                     PCI_DEVICE_ID_HP_DIVA_TOSCA1),
 };
 
-static void diva_serial_class_initfn(ObjectClass *klass, void *data)
+static void diva_serial_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
@@ -242,7 +237,7 @@ static void diva_aux_exit(PCIDevice *dev)
     qemu_free_irq(pci->irq);
 }
 
-static void diva_aux_class_initfn(ObjectClass *klass, void *data)
+static void diva_aux_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
@@ -268,7 +263,7 @@ static const TypeInfo diva_aux_info = {
     .instance_size = sizeof(DivaAuxState),
     .instance_init = diva_aux_init,
     .class_init    = diva_aux_class_initfn,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -282,7 +277,7 @@ static const TypeInfo diva_serial_pci_info = {
     .instance_size = sizeof(PCIDivaSerialState),
     .instance_init = diva_serial_init,
     .class_init    = diva_serial_class_initfn,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

@@ -20,9 +20,9 @@
 #ifndef HW_NET_DP8393X_H
 #define HW_NET_DP8393X_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "net/net.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 #define SONIC_REG_COUNT  0x40
 

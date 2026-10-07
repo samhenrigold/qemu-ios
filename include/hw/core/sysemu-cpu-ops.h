@@ -18,6 +18,9 @@
 typedef struct SysemuCPUOps {
     /**
      * @has_work: Callback for checking if there is work to do.
+     *
+     * This function should be idempotent (i.e. not change state) as
+     * it will likely be queried multiple times before a CPU resumes.
      */
     bool (*has_work)(CPUState *cpu); /* MANDATORY NON-NULL */
     /**
@@ -77,13 +80,13 @@ typedef struct SysemuCPUOps {
     int (*write_elf64_qemunote)(WriteCoreDumpFunction f, CPUState *cpu,
                                 DumpState *s);
     /**
-     * @virtio_is_big_endian: Callback to return %true if a CPU which supports
+     * @internal_is_big_endian: Callback to return %true if a CPU which supports
      * runtime configurable endianness is currently big-endian.
      * Non-configurable CPUs can use the default implementation of this method.
      * This method should not be used by any callers other than the pre-1.0
-     * virtio devices.
+     * virtio devices and the semihosting interface.
      */
-    bool (*virtio_is_big_endian)(CPUState *cpu);
+    bool (*internal_is_big_endian)(CPUState *cpu);
 
     /**
      * @legacy_vmsd: Legacy state for migration.

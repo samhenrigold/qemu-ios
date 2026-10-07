@@ -769,7 +769,7 @@ static void it_i2s_drain(IPodTouchI2SState *s, int free_bytes)
             long value = lrint(sample * gain[(i / 2) & 1]);
             stw_le_p(amplified + i, CLAMP(value, INT16_MIN, INT16_MAX));
         }
-        size_t written = AUD_write(s->voice, amplified, chunk);
+        size_t written = audio_be_write(s->audio_be, s->voice, amplified, chunk);
         if (written == 0) {
             break;
         }
@@ -793,7 +793,7 @@ static void it_i2s_out_cb(void *opaque, int free_bytes)
      * voice so the backend stops pulling silence. */
     if (!s->running && s->ring_level == 0 && s->active) {
         it_i2s_vlog(s, "DEACT", 0, 0);
-        AUD_set_active_out(s->voice, 0);
+        audio_be_set_active_out(s->audio_be, s->voice, 0);
         s->active = 0;
         /* Next sound prebuffers again from scratch. */
         s->prefilled = false;
@@ -808,7 +808,7 @@ static void it_i2s_update_voice(IPodTouchI2SState *s)
     if (rate == s->voice_rate) return;
     struct audsettings as = s->as;
     as.freq = rate;
-    s->voice = AUD_open_out(&s->card, s->voice, "ipod-i2s.out", s,
+    s->voice = audio_be_open_out(s->audio_be, s->voice, "ipod-i2s.out", s,
                            it_i2s_out_cb, &as);
     if (!s->voice) {
         warn_report("ipod i2s: could not change output rate to %u", rate);
@@ -816,8 +816,8 @@ static void it_i2s_update_voice(IPodTouchI2SState *s)
         return;
     }
     s->voice_rate = rate;
-    AUD_set_volume_out(s->voice, 0, 255, 255);
-    AUD_set_active_out(s->voice, s->active);
+    audio_be_set_volume_out_lr(s->audio_be, s->voice, 0, 255, 255);
+    audio_be_set_active_out(s->audio_be, s->voice, s->active);
 }
 
 static void it_i2s_clock_update(void *opaque, ClockEvent event)
@@ -910,7 +910,7 @@ static void it_i2s_activate(IPodTouchI2SState *s)
     }
     s->prefilled = true;
     it_i2s_vlog(s, "ACT", s->ring_level, 0);
-    AUD_set_active_out(s->voice, 1);
+    audio_be_set_active_out(s->audio_be, s->voice, 1);
     s->active = 1;
 }
 
@@ -1279,7 +1279,7 @@ static const MemoryRegionOps ipod_touch_i2s_ops = {
 /*
  * IT_I2S_TONE=<seconds> feeds a synthetic sine straight into the TX FIFO at
  * reset, as if the DMA had delivered it. It exercises exactly the same path
- * the guest's PCM will take (push -> ring -> AUD_write -> backend), so it tells
+ * the guest's PCM will take (push -> ring -> audio_be_write -> backend), so it tells
  * you whether the host side works without waiting on the AMC handshake.
  * IT_I2S_TONE_HZ overrides the pitch (default 440).
  */
@@ -1326,7 +1326,7 @@ static void ipod_touch_i2s_reset(DeviceState *dev)
     s->ring_head = s->ring_tail = s->ring_level = 0;
     s->running = false;
     if (s->active && s->voice) {
-        AUD_set_active_out(s->voice, 0);
+        audio_be_set_active_out(s->audio_be, s->voice, 0);
     }
     s->active = false;
     s->ready_ticks = 0;
@@ -1392,7 +1392,7 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     }
     s->as.nchannels = 2;
     s->as.fmt = AUDIO_FORMAT_S16;
-    s->as.endianness = 0; /* little endian */
+    s->as.big_endian = false;
 
     s->prebuffer = IT_I2S_PREBUFFER_BYTES_DEFAULT;
     const char *pre = getenv("IT_I2S_PREBUFFER_BYTES");
@@ -1417,22 +1417,22 @@ static void ipod_touch_i2s_realize(DeviceState *dev, Error **errp)
     if (!s->host_output) {
         return;     /* the DMA and its pacing run; the PCM goes nowhere */
     }
-    s->card_ok = AUD_register_card("ipod-i2s", &s->card, errp);
+    s->card_ok = audio_be_check(&s->audio_be, errp);
     if (!s->card_ok) {
         /* No audio backend registered: run silent but keep the machine alive. */
         warn_report("ipod i2s: no audio card; output will be dropped");
         return;
     }
 
-    s->voice = AUD_open_out(&s->card, s->voice, "ipod-i2s.out", s,
+    s->voice = audio_be_open_out(s->audio_be, s->voice, "ipod-i2s.out", s,
                             it_i2s_out_cb, &s->as);
     if (!s->voice) {
         warn_report("ipod i2s: could not open output voice");
         s->card_ok = false;
         return;
     }
-    AUD_set_volume_out(s->voice, 0, 255, 255);
-    AUD_set_active_out(s->voice, 0);
+    audio_be_set_volume_out_lr(s->audio_be, s->voice, 0, 255, 255);
+    audio_be_set_active_out(s->audio_be, s->voice, 0);
 }
 
 static void ipod_touch_i2s_init(Object *obj)
@@ -1481,11 +1481,11 @@ static int i2s_post_load(void *opaque, int version_id)
     if (s->card_ok) {
         struct audsettings as = s->as;
         as.freq = s->voice_rate;
-        s->voice = AUD_open_out(&s->card, s->voice, "ipod-i2s.out", s,
+        s->voice = audio_be_open_out(s->audio_be, s->voice, "ipod-i2s.out", s,
                                it_i2s_out_cb, &as);
         if (!s->voice) return -EIO;
-        AUD_set_volume_out(s->voice, 0, 255, 255);
-        AUD_set_active_out(s->voice, s->active);
+        audio_be_set_volume_out_lr(s->audio_be, s->voice, 0, 255, 255);
+        audio_be_set_active_out(s->audio_be, s->voice, s->active);
     }
     if (s->dmac) pl080_set_dma_request(s->dmac, s->dma_req_id, s->dma_req);
     return 0;
@@ -1544,7 +1544,7 @@ static const Property ipod_touch_i2s_properties[] = {
     DEFINE_PROP_BOOL("host-output", IPodTouchI2SState, host_output, true),
 };
 
-static void ipod_touch_i2s_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_i2s_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     device_class_set_props(dc, ipod_touch_i2s_properties);

@@ -25,7 +25,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "trace.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/misc/stm32f4xx_exti.h"
 
@@ -164,7 +164,7 @@ static const VMStateDescription vmstate_stm32f4xx_exti = {
     }
 };
 
-static void stm32f4xx_exti_class_init(ObjectClass *klass, void *data)
+static void stm32f4xx_exti_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

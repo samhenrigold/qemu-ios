@@ -19,3 +19,7 @@
     - docker push "$TAG"
   after_script:
     - docker logout
+  rules:
+    # because we want to enable this for scheduled runs we also have to replicate the normal rules
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_PROJECT_NAMESPACE == $QEMU_CI_UPSTREAM'
+    - !reference [.base_job_template, rules]

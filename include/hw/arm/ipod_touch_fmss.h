@@ -6,9 +6,9 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qemu/notify.h"
-#include "hw/sysbus.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
 
 bool ipod_touch_fmss_io_failed(void);
 

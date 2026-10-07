@@ -23,9 +23,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
-#include "hw/registerfields.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/registerfields.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/timer/renesas_cmt.h"
 #include "migration/vmstate.h"
 
@@ -257,7 +257,7 @@ static const Property rcmt_properties[] = {
     DEFINE_PROP_UINT64("input-freq", RCMTState, input_freq, 0),
 };
 
-static void rcmt_class_init(ObjectClass *klass, void *data)
+static void rcmt_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -20,10 +20,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/ptimer.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/timer/arm_mptimer.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -304,7 +304,7 @@ static const Property arm_mptimer_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", ARMMPTimerState, num_cpu, 0),
 };
 
-static void arm_mptimer_class_init(ObjectClass *klass, void *data)
+static void arm_mptimer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

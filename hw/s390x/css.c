@@ -14,16 +14,15 @@
 #include "qapi/visitor.h"
 #include "qemu/bitops.h"
 #include "qemu/error-report.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "hw/s390x/ioinst.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/s390x/css.h"
 #include "trace.h"
 #include "hw/s390x/s390_flic.h"
 #include "hw/s390x/s390-virtio-ccw.h"
 #include "hw/s390x/s390-ccw.h"
-
-bool css_migration_enabled = true;
+#include "exec/cpu-common.h"
 
 typedef struct CrwContainer {
     CRW crw;
@@ -180,16 +179,10 @@ static const VMStateDescription vmstate_orb = {
     }
 };
 
-static bool vmstate_schdev_orb_needed(void *opaque)
-{
-    return css_migration_enabled;
-}
-
 static const VMStateDescription vmstate_schdev_orb = {
     .name = "s390_subch_dev/orb",
     .version_id = 1,
     .minimum_version_id = 1,
-    .needed = vmstate_schdev_orb_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(orb, SubchDev, 1, vmstate_orb, ORB),
         VMSTATE_END_OF_LIST()
@@ -390,33 +383,12 @@ static int subch_dev_post_load(void *opaque, int version_id)
         css_subch_assign(s->cssid, s->ssid, s->schid, s->devno, s);
     }
 
-    if (css_migration_enabled) {
-        /* No compat voodoo to do ;) */
-        return 0;
-    }
-    /*
-     * Hack alert. If we don't migrate the channel subsystem status
-     * we still need to find out if the guest enabled mss/mcss-e.
-     * If the subchannel is enabled, it certainly was able to access it,
-     * so adjust the max_ssid/max_cssid values for relevant ssid/cssid
-     * values. This is not watertight, but better than nothing.
-     */
-    if (s->curr_status.pmcw.flags & PMCW_FLAGS_MASK_ENA) {
-        if (s->ssid) {
-            channel_subsys.max_ssid = MAX_SSID;
-        }
-        if (s->cssid != channel_subsys.default_cssid) {
-            channel_subsys.max_cssid = MAX_CSSID;
-        }
-    }
     return 0;
 }
 
 void css_register_vmstate(void)
 {
-    if (css_migration_enabled) {
-        vmstate_register(NULL, 0, &vmstate_css, &channel_subsys);
-    }
+    vmstate_register(NULL, 0, &vmstate_css, &channel_subsys);
 }
 
 IndAddr *get_indicator(hwaddr ind_addr, int len)
@@ -1104,6 +1076,12 @@ static int css_interpret_ccw(SubchDev *sch, hwaddr ccw_addr,
             ret = -EINVAL;
             break;
         }
+        /* Limit the number of TICs in a given channel program */
+        if (sch->ccw_tic_cnt == 255) {
+            ret = -EINVAL;
+            break;
+        }
+        sch->ccw_tic_cnt++;
         sch->channel_prog = ccw.cda;
         ret = -EAGAIN;
         break;
@@ -1155,6 +1133,7 @@ static void sch_handle_start_func_virtual(SubchDev *sch)
         sch->ccw_fmt_1 = !!(orb->ctrl0 & ORB_CTRL0_MASK_FMT);
         schib->scsw.flags |= (sch->ccw_fmt_1) ? SCSW_FLAGS_MASK_FMT : 0;
         sch->ccw_no_data_cnt = 0;
+        sch->ccw_tic_cnt = 0;
         suspend_allowed = !!(orb->ctrl0 & ORB_CTRL0_MASK_SPND);
     } else {
         /* Start Function resumed via rsch */
@@ -1611,27 +1590,25 @@ static void css_update_chnmon(SubchDev *sch)
         /* Format 1, per-subchannel area. */
         uint32_t count;
 
-        count = address_space_ldl(&address_space_memory,
-                                  sch->curr_status.mba,
-                                  MEMTXATTRS_UNSPECIFIED,
-                                  NULL);
+        count = address_space_ldl_be(&address_space_memory,
+                                     sch->curr_status.mba,
+                                     MEMTXATTRS_UNSPECIFIED, NULL);
         count++;
-        address_space_stl(&address_space_memory, sch->curr_status.mba, count,
-                          MEMTXATTRS_UNSPECIFIED, NULL);
+        address_space_stl_be(&address_space_memory, sch->curr_status.mba, count,
+                             MEMTXATTRS_UNSPECIFIED, NULL);
     } else {
         /* Format 0, global area. */
         uint32_t offset;
         uint16_t count;
 
         offset = sch->curr_status.pmcw.mbi << 5;
-        count = address_space_lduw(&address_space_memory,
-                                   channel_subsys.chnmon_area + offset,
-                                   MEMTXATTRS_UNSPECIFIED,
-                                   NULL);
+        count = address_space_lduw_be(&address_space_memory,
+                                      channel_subsys.chnmon_area + offset,
+                                      MEMTXATTRS_UNSPECIFIED, NULL);
         count++;
-        address_space_stw(&address_space_memory,
-                          channel_subsys.chnmon_area + offset, count,
-                          MEMTXATTRS_UNSPECIFIED, NULL);
+        address_space_stw_be(&address_space_memory,
+                             channel_subsys.chnmon_area + offset, count,
+                             MEMTXATTRS_UNSPECIFIED, NULL);
     }
 }
 
@@ -1900,6 +1877,7 @@ int css_collect_chp_desc(int m, uint8_t cssid, uint8_t f_chpid, uint8_t l_chpid,
     int i, desc_size;
     uint32_t words[8];
     uint32_t chpid_type_word;
+    uint32_t max_chpids, chpid_count = 0;
     CssImage *css;
 
     if (!m && !cssid) {
@@ -1910,9 +1888,25 @@ int css_collect_chp_desc(int m, uint8_t cssid, uint8_t f_chpid, uint8_t l_chpid,
     if (!css) {
         return 0;
     }
+
+    if (rfmt == 0) {
+        max_chpids = 256;
+    } else if (rfmt == 1) {
+        max_chpids = 127;
+    } else {
+        /* Should be rejected by caller */
+        return 0;
+    }
+
     desc_size = 0;
     for (i = f_chpid; i <= l_chpid; i++) {
         if (css->chpids[i].in_use) {
+            /* Limit number of CHPIDs sent back */
+            if (chpid_count == max_chpids) {
+                break;
+            }
+
+            chpid_count++;
             chpid_type_word = 0x80000000 | (css->chpids[i].type << 8) | i;
             if (rfmt == 0) {
                 words[0] = cpu_to_be32(chpid_type_word);

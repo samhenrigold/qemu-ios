@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/allwinner-i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/i2c/i2c.h"
 #include "qemu/log.h"
@@ -438,7 +438,7 @@ static void allwinner_i2c_realize(DeviceState *dev, Error **errp)
     s->bus = i2c_init_bus(dev, "i2c");
 }
 
-static void allwinner_i2c_class_init(ObjectClass *klass, void *data)
+static void allwinner_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

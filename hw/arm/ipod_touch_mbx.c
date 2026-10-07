@@ -1,12 +1,12 @@
 #include "hw/arm/ipod_touch_mbx.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
 #include "cpu.h"
-#include "exec/address-spaces.h"
-#include "hw/qdev-properties.h"
+#include "system/address-spaces.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/bswap.h"
 
 /*
@@ -512,7 +512,7 @@ static const Property ipod_touch_mbx_properties[] = {
     DEFINE_PROP_BOOL("x-2d-fill", IPodTouchMBXState, fill_enabled, false),
 };
 
-static void ipod_touch_mbx_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_mbx_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

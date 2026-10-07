@@ -10,7 +10,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "migration/vmstate.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/iosb.h"
 #include "trace.h"
 
@@ -111,7 +111,7 @@ static const VMStateDescription vmstate_iosb = {
     }
 };
 
-static void iosb_class_init(ObjectClass *oc, void *data)
+static void iosb_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);

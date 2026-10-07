@@ -112,7 +112,7 @@ static const VMStateDescription vmstate_ipod_touch_wdt = {
     }
 };
 
-static void ipod_touch_wdt_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_wdt_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

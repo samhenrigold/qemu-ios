@@ -2,8 +2,8 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-clock.h"
 #include "trace.h"
 
 /* IT_CLOCK_TRACE=1: every clock-controller access with a host timestamp. */
@@ -308,7 +308,7 @@ static void ipod_touch_clock_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void s5l8900_clock_class_init(ObjectClass *klass, void *data)
+static void s5l8900_clock_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

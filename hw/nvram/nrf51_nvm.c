@@ -23,7 +23,7 @@
 #include "qemu/module.h"
 #include "hw/arm/nrf51.h"
 #include "hw/nvram/nrf51_nvm.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 /*
@@ -370,7 +370,7 @@ static const VMStateDescription vmstate_nvm = {
     }
 };
 
-static void nrf51_nvm_class_init(ObjectClass *klass, void *data)
+static void nrf51_nvm_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

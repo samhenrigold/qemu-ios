@@ -34,7 +34,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "ccid.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qom/object.h"
 
@@ -591,7 +591,7 @@ static const Property emulated_card_properties[] = {
     DEFINE_PROP_UINT8("debug", EmulatedState, debug, 0),
 };
 
-static void emulated_class_initfn(ObjectClass *klass, void *data)
+static void emulated_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     CCIDCardClass *cc = CCID_CARD_CLASS(klass);

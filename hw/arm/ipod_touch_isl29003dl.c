@@ -107,7 +107,7 @@ static const VMStateDescription vmstate_isl29003dl = {
     }
 };
 
-static void isl29003dl_class_init(ObjectClass *klass, void *data)
+static void isl29003dl_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

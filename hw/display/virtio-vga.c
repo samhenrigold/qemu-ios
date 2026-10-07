@@ -1,6 +1,6 @@
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio-gpu.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -213,7 +213,7 @@ static const Property virtio_vga_base_properties[] = {
     DEFINE_VIRTIO_GPU_PCI_PROPERTIES(VirtIOPCIProxy),
 };
 
-static void virtio_vga_base_class_init(ObjectClass *klass, void *data)
+static void virtio_vga_base_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioPCIClass *k = VIRTIO_PCI_CLASS(klass);

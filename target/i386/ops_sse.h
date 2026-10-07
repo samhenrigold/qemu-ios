@@ -842,7 +842,7 @@ int64_t helper_cvttsd2sq(CPUX86State *env, ZMMReg *s)
 
 void glue(helper_rsqrtps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     int i;
     for (i = 0; i < 2 << SHIFT; i++) {
         d->ZMM_S(i) = float32_div(float32_one,
@@ -855,7 +855,7 @@ void glue(helper_rsqrtps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 #if SHIFT == 1
 void helper_rsqrtss(CPUX86State *env, ZMMReg *d, ZMMReg *v, ZMMReg *s)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     int i;
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
@@ -869,7 +869,7 @@ void helper_rsqrtss(CPUX86State *env, ZMMReg *d, ZMMReg *v, ZMMReg *s)
 
 void glue(helper_rcpps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     int i;
     for (i = 0; i < 2 << SHIFT; i++) {
         d->ZMM_S(i) = float32_div(float32_one, s->ZMM_S(i), &env->sse_status);
@@ -880,7 +880,7 @@ void glue(helper_rcpps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 #if SHIFT == 1
 void helper_rcpss(CPUX86State *env, ZMMReg *d, ZMMReg *v, ZMMReg *s)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     int i;
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
     for (i = 1; i < 2 << SHIFT; i++) {
@@ -1714,7 +1714,7 @@ void glue(helper_phminposuw, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
 void glue(helper_roundps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
                                   uint32_t mode)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     signed char prev_rounding_mode;
     int i;
 
@@ -1738,7 +1738,7 @@ void glue(helper_roundps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
 void glue(helper_roundpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
                                   uint32_t mode)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     signed char prev_rounding_mode;
     int i;
 
@@ -1763,7 +1763,7 @@ void glue(helper_roundpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s,
 void glue(helper_roundss, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s,
                                   uint32_t mode)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     signed char prev_rounding_mode;
     int i;
 
@@ -1788,7 +1788,7 @@ void glue(helper_roundss, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s,
 void glue(helper_roundsd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s,
                                   uint32_t mode)
 {
-    uint8_t old_flags = get_float_exception_flags(&env->sse_status);
+    int old_flags = get_float_exception_flags(&env->sse_status);
     signed char prev_rounding_mode;
     int i;
 
@@ -2326,7 +2326,7 @@ void glue(helper_vpmaskmovd_st, SUFFIX)(CPUX86State *env,
 
     for (i = 0; i < (2 << SHIFT); i++) {
         if (v->L(i) >> 31) {
-            cpu_stl_data_ra(env, a0 + i * 4, s->L(i), GETPC());
+            cpu_stl_le_data_ra(env, a0 + i * 4, s->L(i), GETPC());
         }
     }
 }
@@ -2338,7 +2338,7 @@ void glue(helper_vpmaskmovq_st, SUFFIX)(CPUX86State *env,
 
     for (i = 0; i < (1 << SHIFT); i++) {
         if (v->Q(i) >> 63) {
-            cpu_stq_data_ra(env, a0 + i * 8, s->Q(i), GETPC());
+            cpu_stq_le_data_ra(env, a0 + i * 8, s->Q(i), GETPC());
         }
     }
 }
@@ -2362,42 +2362,42 @@ void glue(helper_vpmaskmovq, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 }
 
 void glue(helper_vpgatherdd, SUFFIX)(CPUX86State *env,
-        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale)
+        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale, target_ulong amask)
 {
     int i;
     for (i = 0; i < (2 << SHIFT); i++) {
         if (v->L(i) >> 31) {
             target_ulong addr = a0
                 + ((target_ulong)(int32_t)s->L(i) << scale);
-            d->L(i) = cpu_ldl_data_ra(env, addr, GETPC());
+            d->L(i) = cpu_ldl_le_data_ra(env, addr & amask, GETPC());
         }
         v->L(i) = 0;
     }
 }
 
 void glue(helper_vpgatherdq, SUFFIX)(CPUX86State *env,
-        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale)
+        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale, target_ulong amask)
 {
     int i;
     for (i = 0; i < (1 << SHIFT); i++) {
         if (v->Q(i) >> 63) {
             target_ulong addr = a0
                 + ((target_ulong)(int32_t)s->L(i) << scale);
-            d->Q(i) = cpu_ldq_data_ra(env, addr, GETPC());
+            d->Q(i) = cpu_ldq_le_data_ra(env, addr & amask, GETPC());
         }
         v->Q(i) = 0;
     }
 }
 
 void glue(helper_vpgatherqd, SUFFIX)(CPUX86State *env,
-        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale)
+        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale, target_ulong amask)
 {
     int i;
     for (i = 0; i < (1 << SHIFT); i++) {
         if (v->L(i) >> 31) {
             target_ulong addr = a0
                 + ((target_ulong)(int64_t)s->Q(i) << scale);
-            d->L(i) = cpu_ldl_data_ra(env, addr, GETPC());
+            d->L(i) = cpu_ldl_le_data_ra(env, addr & amask, GETPC());
         }
         v->L(i) = 0;
     }
@@ -2408,14 +2408,14 @@ void glue(helper_vpgatherqd, SUFFIX)(CPUX86State *env,
 }
 
 void glue(helper_vpgatherqq, SUFFIX)(CPUX86State *env,
-        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale)
+        Reg *d, Reg *v, Reg *s, target_ulong a0, unsigned scale, target_ulong amask)
 {
     int i;
     for (i = 0; i < (1 << SHIFT); i++) {
         if (v->Q(i) >> 63) {
             target_ulong addr = a0
                 + ((target_ulong)(int64_t)s->Q(i) << scale);
-            d->Q(i) = cpu_ldq_data_ra(env, addr, GETPC());
+            d->Q(i) = cpu_ldq_le_data_ra(env, addr & amask, GETPC());
         }
         v->Q(i) = 0;
     }

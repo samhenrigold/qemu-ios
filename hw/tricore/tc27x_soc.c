@@ -20,8 +20,8 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/loader.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/loader.h"
 #include "qemu/units.h"
 #include "hw/misc/unimp.h"
 
@@ -201,14 +201,14 @@ static void tc27x_soc_init(Object *obj)
     object_initialize_child(obj, "tc27x", &s->cpu, sc->cpu_type);
 }
 
-static void tc27x_soc_class_init(ObjectClass *klass, void *data)
+static void tc27x_soc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = tc27x_soc_realize;
 }
 
-static void tc277d_soc_class_init(ObjectClass *oc, void *data)
+static void tc277d_soc_class_init(ObjectClass *oc, const void *data)
 {
     TC27XSoCClass *sc = TC27X_SOC_CLASS(oc);
 

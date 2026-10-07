@@ -8,6 +8,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qapi/visitor.h"
 #include "qapi/error.h"
 #include "hw/pci-host/pnv_phb3_regs.h"
@@ -17,8 +18,8 @@
 #include "hw/pci/pcie_port.h"
 #include "hw/ppc/pnv.h"
 #include "hw/ppc/pnv_chip.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
 #include "system/system.h"
 
@@ -474,6 +475,11 @@ void pnv_phb3_reg_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
 
     /* Special case configuration data */
     if ((off & 0xfffc) == PHB_CONFIG_DATA) {
+        if (size > 4) {
+            phb3_error(phb, "Invalid config access, offset: 0x%"PRIx64" size: %d",
+                      off, size);
+            return;
+        }
         pnv_phb3_config_write(phb, off & 0x3, size, val);
         return;
     }
@@ -596,6 +602,11 @@ uint64_t pnv_phb3_reg_read(void *opaque, hwaddr off, unsigned size)
     uint64_t val;
 
     if ((off & 0xfffc) == PHB_CONFIG_DATA) {
+        if (size > 4) {
+            phb3_error(phb, "Invalid config access, offset: 0x%"PRIx64" size: %d",
+                      off, size);
+            return ~0ull;
+        }
         return pnv_phb3_config_read(phb, off & 0x3, size);
     }
 
@@ -888,7 +899,7 @@ DECLARE_INSTANCE_CHECKER(IOMMUMemoryRegion, PNV_PHB3_IOMMU_MEMORY_REGION,
                          TYPE_PNV_PHB3_IOMMU_MEMORY_REGION)
 
 static void pnv_phb3_iommu_memory_region_class_init(ObjectClass *klass,
-                                                    void *data)
+                                                    const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 
@@ -1097,7 +1108,7 @@ static const Property pnv_phb3_properties[] = {
     DEFINE_PROP_LINK("phb-base", PnvPHB3, phb_base, TYPE_PNV_PHB, PnvPHB *),
 };
 
-static void pnv_phb3_class_init(ObjectClass *klass, void *data)
+static void pnv_phb3_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1149,7 +1160,7 @@ static void pnv_phb3_root_bus_set_prop(Object *obj, Visitor *v,
     }
 }
 
-static void pnv_phb3_root_bus_class_init(ObjectClass *klass, void *data)
+static void pnv_phb3_root_bus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *k = BUS_CLASS(klass);
 

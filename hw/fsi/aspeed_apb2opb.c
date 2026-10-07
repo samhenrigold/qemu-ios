@@ -13,7 +13,7 @@
 #include "trace.h"
 
 #include "hw/fsi/aspeed_apb2opb.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 
 #define TO_REG(x) (x >> 2)
 
@@ -320,7 +320,7 @@ static void fsi_aspeed_apb2opb_reset(DeviceState *dev)
     memcpy(s->regs, aspeed_apb2opb_reset, ASPEED_APB2OPB_NR_REGS);
 }
 
-static void fsi_aspeed_apb2opb_class_init(ObjectClass *klass, void *data)
+static void fsi_aspeed_apb2opb_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -373,7 +373,6 @@ static bool scsi_sense_is_guest_recoverable(int key, int asc, int ascq)
     case 0x1a00: /* PARAMETER LIST LENGTH ERROR */
     case 0x2000: /* INVALID OPERATION CODE */
     case 0x2400: /* INVALID FIELD IN CDB */
-    case 0x2500: /* LOGICAL UNIT NOT SUPPORTED */
     case 0x2600: /* INVALID FIELD IN PARAMETER LIST */
 
     case 0x2104: /* UNALIGNED WRITE COMMAND */
@@ -587,19 +586,26 @@ int scsi_sense_from_errno(int errno_value, SCSISense *sense)
         return GOOD;
     case EDOM:
         return TASK_SET_FULL;
+#if ENODEV != ENOMEDIUM
+    case ENODEV:
+        /*
+         * Some of the BSDs have ENODEV and ENOMEDIUM as synonyms.  For
+         * everyone else, give a more severe sense code for ENODEV.
+         */
+#endif
 #ifdef CONFIG_LINUX
         /* These errno mapping are specific to Linux.  For more information:
          * - scsi_check_sense and scsi_decide_disposition in drivers/scsi/scsi_error.c
          * - scsi_result_to_blk_status in drivers/scsi/scsi_lib.c
          * - blk_errors[] in block/blk-core.c
          */
+    case EREMOTEIO:
+        *sense = SENSE_CODE(TARGET_FAILURE);
+        return CHECK_CONDITION;
     case EBADE:
         return RESERVATION_CONFLICT;
     case ENODATA:
         *sense = SENSE_CODE(READ_ERROR);
-        return CHECK_CONDITION;
-    case EREMOTEIO:
-        *sense = SENSE_CODE(TARGET_FAILURE);
         return CHECK_CONDITION;
 #endif
     case ENOMEDIUM:

@@ -2,8 +2,8 @@
 #define HW_ARM_IPOD_TOUCH_MBX_H
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "hw/sysbus.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/sysbus.h"
 #include "qemu/timer.h"
 #include "hw/arm/mbx_fill.h"
 

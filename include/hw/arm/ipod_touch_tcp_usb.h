@@ -34,8 +34,8 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qemu/main-loop.h"
-#include "hw/usb.h"
-#include "hw/sysbus.h"
+#include "hw/usb/usb.h"
+#include "hw/core/sysbus.h"
 
 enum
 {

@@ -32,7 +32,7 @@
 #include "migration/vmstate.h"
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/system.h"
 #include "trace.h"
 
@@ -848,7 +848,7 @@ static const VMStateDescription vmstate_spapr_llan = {
     }
 };
 
-static void spapr_vlan_class_init(ObjectClass *klass, void *data)
+static void spapr_vlan_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SpaprVioDeviceClass *k = VIO_SPAPR_DEVICE_CLASS(klass);

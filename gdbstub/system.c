@@ -18,15 +18,14 @@
 #include "gdbstub/syscalls.h"
 #include "gdbstub/commands.h"
 #include "exec/hwaddr.h"
-#include "exec/tb-flush.h"
-#include "system/accel-ops.h"
+#include "accel/accel-ops.h"
+#include "accel/accel-cpu-ops.h"
 #include "system/cpus.h"
 #include "system/runstate.h"
 #include "system/replay.h"
-#include "system/tcg.h"
 #include "hw/core/cpu.h"
 #include "hw/cpu/cluster.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "chardev/char.h"
 #include "chardev/char-fe.h"
 #include "monitor/monitor.h"
@@ -35,7 +34,7 @@
 
 /* System emulation specific state */
 typedef struct {
-    CharBackend chr;
+    CharFrontend chr;
     Chardev *mon_chr;
 } GDBSystemState;
 
@@ -173,9 +172,6 @@ static void gdb_vm_state_change(void *opaque, bool running, RunState state)
         } else {
             trace_gdbstub_hit_break();
         }
-        if (tcg_enabled()) {
-            tb_flush(cpu);
-        }
         ret = GDB_SIGNAL_TRAP;
         break;
     case RUN_STATE_PAUSED:
@@ -229,7 +225,7 @@ static void gdb_sigterm_handler(int signal)
 }
 #endif
 
-static int gdb_monitor_write(Chardev *chr, const uint8_t *buf, int len)
+static int gdb_chr_write(Chardev *chr, const uint8_t *buf, int len)
 {
     g_autoptr(GString) hex_buf = g_string_new("O");
     gdb_memtohex(hex_buf, buf, len);
@@ -237,19 +233,19 @@ static int gdb_monitor_write(Chardev *chr, const uint8_t *buf, int len)
     return len;
 }
 
-static void gdb_monitor_open(Chardev *chr, ChardevBackend *backend,
-                             bool *be_opened, Error **errp)
+static bool gdb_chr_open(Chardev *chr, ChardevBackend *backend, Error **errp)
 {
-    *be_opened = false;
+    /* Never send CHR_EVENT_OPENED */
+    return true;
 }
 
-static void char_gdb_class_init(ObjectClass *oc, void *data)
+static void char_gdb_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
     cc->internal = true;
-    cc->open = gdb_monitor_open;
-    cc->chr_write = gdb_monitor_write;
+    cc->chr_open = gdb_chr_open;
+    cc->chr_write = gdb_chr_write;
 }
 
 #define TYPE_CHARDEV_GDB "chardev-gdb"
@@ -665,4 +661,15 @@ void gdb_breakpoint_remove_all(CPUState *cs)
     if (ops->remove_all_breakpoints) {
         ops->remove_all_breakpoints(cs);
     }
+}
+
+/*
+ * The minimal system-mode stop reply packet is:
+ *   T05core:{id};
+ */
+
+void gdb_build_stop_packet(GString *buf, CPUState *cs)
+{
+    g_string_printf(buf,
+                    "T%02xcore:%02x;", GDB_SIGNAL_TRAP, gdb_get_cpu_index(cs));
 }

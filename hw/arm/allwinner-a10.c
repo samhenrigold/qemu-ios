@@ -20,13 +20,13 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/char/serial-mm.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/allwinner-a10.h"
 #include "hw/misc/unimp.h"
 #include "system/system.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/usb/hcd-ohci.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "target/arm/cpu-qom.h"
 
 #define AW_A10_SRAM_A_BASE      0x00000000
@@ -208,7 +208,7 @@ static void aw_a10_realize(DeviceState *dev, Error **errp)
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(&s->wdt), 0, AW_A10_WDT_BASE, 1);
 }
 
-static void aw_a10_class_init(ObjectClass *oc, void *data)
+static void aw_a10_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

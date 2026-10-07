@@ -29,8 +29,9 @@
 #include "hw/ppc/pnv_core.h"
 #include "hw/ppc/pnv_xscom.h"
 #include "hw/ppc/xics.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "helper_regs.h"
+#include "migration/vmstate.h"
 
 static const char *pnv_core_cpu_typename(PnvCore *pc)
 {
@@ -449,7 +450,7 @@ static const Property pnv_core_properties[] = {
     DEFINE_PROP_LINK("chip", PnvCore, chip, TYPE_PNV_CHIP, PnvChip *),
 };
 
-static void pnv_core_power8_class_init(ObjectClass *oc, void *data)
+static void pnv_core_power8_class_init(ObjectClass *oc, const void *data)
 {
     PnvCoreClass *pcc = PNV_CORE_CLASS(oc);
 
@@ -457,7 +458,7 @@ static void pnv_core_power8_class_init(ObjectClass *oc, void *data)
     pcc->xscom_size = PNV_XSCOM_EX_SIZE;
 }
 
-static void pnv_core_power9_class_init(ObjectClass *oc, void *data)
+static void pnv_core_power9_class_init(ObjectClass *oc, const void *data)
 {
     PnvCoreClass *pcc = PNV_CORE_CLASS(oc);
 
@@ -465,7 +466,7 @@ static void pnv_core_power9_class_init(ObjectClass *oc, void *data)
     pcc->xscom_size = PNV_XSCOM_EX_SIZE;
 }
 
-static void pnv_core_power10_class_init(ObjectClass *oc, void *data)
+static void pnv_core_power10_class_init(ObjectClass *oc, const void *data)
 {
     PnvCoreClass *pcc = PNV_CORE_CLASS(oc);
 
@@ -473,7 +474,21 @@ static void pnv_core_power10_class_init(ObjectClass *oc, void *data)
     pcc->xscom_size = PNV10_XSCOM_EC_SIZE;
 }
 
-static void pnv_core_class_init(ObjectClass *oc, void *data)
+static void pnv_core_power11_class_init(ObjectClass *oc, const void *data)
+{
+    pnv_core_power10_class_init(oc, data);
+}
+
+static const VMStateDescription pnv_core_vmstate = {
+    .name = TYPE_PNV_CORE,
+    .version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(scratch, PnvCore, 8),
+        VMSTATE_END_OF_LIST(),
+    },
+};
+
+static void pnv_core_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
@@ -481,6 +496,7 @@ static void pnv_core_class_init(ObjectClass *oc, void *data)
     dc->unrealize = pnv_core_unrealize;
     device_class_set_props(dc, pnv_core_properties);
     dc->user_creatable = false;
+    dc->vmsd = &pnv_core_vmstate;
 }
 
 #define DEFINE_PNV_CORE_TYPE(family, cpu_model) \
@@ -504,6 +520,7 @@ static const TypeInfo pnv_core_infos[] = {
     DEFINE_PNV_CORE_TYPE(power8, "power8nvl_v1.0"),
     DEFINE_PNV_CORE_TYPE(power9, "power9_v2.2"),
     DEFINE_PNV_CORE_TYPE(power10, "power10_v2.0"),
+    DEFINE_PNV_CORE_TYPE(power11, "power11_v2.0"),
 };
 
 DEFINE_TYPES(pnv_core_infos)
@@ -700,7 +717,7 @@ static const Property pnv_quad_properties[] = {
     DEFINE_PROP_UINT32("quad-id", PnvQuad, quad_id, 0),
 };
 
-static void pnv_quad_power9_class_init(ObjectClass *oc, void *data)
+static void pnv_quad_power9_class_init(ObjectClass *oc, const void *data)
 {
     PnvQuadClass *pqc = PNV_QUAD_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -711,7 +728,7 @@ static void pnv_quad_power9_class_init(ObjectClass *oc, void *data)
     pqc->xscom_size = PNV9_XSCOM_EQ_SIZE;
 }
 
-static void pnv_quad_power10_class_init(ObjectClass *oc, void *data)
+static void pnv_quad_power10_class_init(ObjectClass *oc, const void *data)
 {
     PnvQuadClass *pqc = PNV_QUAD_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -725,12 +742,29 @@ static void pnv_quad_power10_class_init(ObjectClass *oc, void *data)
     pqc->xscom_qme_size = PNV10_XSCOM_QME_SIZE;
 }
 
-static void pnv_quad_class_init(ObjectClass *oc, void *data)
+static void pnv_quad_power11_class_init(ObjectClass *oc, const void *data)
+{
+    /* Power11 quad is similar to Power10 quad */
+    pnv_quad_power10_class_init(oc, data);
+}
+
+static const VMStateDescription pnv_quad_vmstate = {
+    .name = TYPE_PNV_QUAD,
+    .version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(special_wakeup_done, PnvQuad),
+        VMSTATE_BOOL_ARRAY(special_wakeup, PnvQuad, 4),
+        VMSTATE_END_OF_LIST(),
+    },
+};
+
+static void pnv_quad_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     device_class_set_props(dc, pnv_quad_properties);
     dc->user_creatable = false;
+    dc->vmsd = &pnv_quad_vmstate;
 }
 
 static const TypeInfo pnv_quad_infos[] = {
@@ -751,6 +785,11 @@ static const TypeInfo pnv_quad_infos[] = {
         .parent = TYPE_PNV_QUAD,
         .name = PNV_QUAD_TYPE_NAME("power10"),
         .class_init = pnv_quad_power10_class_init,
+    },
+    {
+        .parent = TYPE_PNV_QUAD,
+        .name = PNV_QUAD_TYPE_NAME("power11"),
+        .class_init = pnv_quad_power11_class_init,
     },
 };
 

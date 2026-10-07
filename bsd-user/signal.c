@@ -441,7 +441,6 @@ void queue_signal(CPUArchState *env, int sig, int si_type,
     ts->sync_signal.pending = sig;
     /* Signal that a new signal is pending. */
     qatomic_set(&ts->signal_pending, 1);
-    return;
 }
 
 static int fatal_signal(int sig)
@@ -999,7 +998,12 @@ void process_pending_signals(CPUArchState *env)
                 sigdelset(&ts->signal_mask, target_to_host_signal(sig));
                 sigact_table[sig - 1]._sa_handler = TARGET_SIG_DFL;
             }
+            /*
+             * Restart scan from the beginning, as handle_pending_signal
+             * might have resulted in a new synchronous signal (eg SIGSEGV).
+             */
             handle_pending_signal(env, sig, &ts->sync_signal);
+            goto restart_scan;
         }
 
         k = ts->sigtab;
@@ -1009,10 +1013,7 @@ void process_pending_signals(CPUArchState *env)
             if (k->pending &&
                 !sigismember(blocked_set, target_to_host_signal(sig))) {
                 handle_pending_signal(env, sig, k);
-                /*
-                 * Restart scan from the beginning, as handle_pending_signal
-                 * might have resulted in a new synchronous signal (eg SIGSEGV).
-                 */
+                /* Restart scan, explained above. */
                 goto restart_scan;
             }
         }
@@ -1031,7 +1032,7 @@ void process_pending_signals(CPUArchState *env)
     ts->in_sigsuspend = false;
 }
 
-void cpu_loop_exit_sigsegv(CPUState *cpu, target_ulong addr,
+void cpu_loop_exit_sigsegv(CPUState *cpu, vaddr addr,
                            MMUAccessType access_type, bool maperr, uintptr_t ra)
 {
     const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
@@ -1047,7 +1048,7 @@ void cpu_loop_exit_sigsegv(CPUState *cpu, target_ulong addr,
     cpu_loop_exit_restore(cpu, ra);
 }
 
-void cpu_loop_exit_sigbus(CPUState *cpu, target_ulong addr,
+void cpu_loop_exit_sigbus(CPUState *cpu, vaddr addr,
                           MMUAccessType access_type, uintptr_t ra)
 {
     const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;

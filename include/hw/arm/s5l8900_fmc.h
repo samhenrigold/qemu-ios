@@ -10,8 +10,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 
 #define FMC_NUM_BANKS 8
 #define FMC_BYTES_PER_PAGE 2048

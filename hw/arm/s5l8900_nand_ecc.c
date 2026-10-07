@@ -6,8 +6,8 @@
  * over the DATA/ECC buffers named by +0x4/+0x8.
  */
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/arm/s5l8900_nand_ecc.h"
 
 static uint64_t s5l8900_nand_ecc_read(void *opaque, hwaddr addr, unsigned size)
@@ -69,7 +69,7 @@ static void s5l8900_nand_ecc_reset(DeviceState *d)
     qemu_irq_lower(s->irq);
 }
 
-static void s5l8900_nand_ecc_class_init(ObjectClass *oc, void *data)
+static void s5l8900_nand_ecc_class_init(ObjectClass *oc, const void *data)
 {
     device_class_set_legacy_reset(DEVICE_CLASS(oc), s5l8900_nand_ecc_reset);
 }

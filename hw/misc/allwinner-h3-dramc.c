@@ -20,12 +20,12 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/error-report.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "exec/address-spaces.h"
-#include "hw/qdev-properties.h"
+#include "system/address-spaces.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "hw/misc/allwinner-h3-dramc.h"
 #include "trace.h"
@@ -331,7 +331,7 @@ static const VMStateDescription allwinner_h3_dramc_vmstate = {
     }
 };
 
-static void allwinner_h3_dramc_class_init(ObjectClass *klass, void *data)
+static void allwinner_h3_dramc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

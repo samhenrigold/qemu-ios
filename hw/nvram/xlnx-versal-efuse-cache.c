@@ -26,7 +26,7 @@
 #include "hw/nvram/xlnx-versal-efuse.h"
 
 #include "qemu/log.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 #define MR_SIZE 0xC00
 
@@ -89,7 +89,7 @@ static const Property efuse_cache_props[] = {
                      TYPE_XLNX_EFUSE, XlnxEFuse *),
 };
 
-static void efuse_cache_class_init(ObjectClass *klass, void *data)
+static void efuse_cache_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

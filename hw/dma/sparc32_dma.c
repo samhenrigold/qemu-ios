@@ -26,11 +26,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/sparc/sparc32_dma.h"
 #include "hw/sparc/sun4m_iommu.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
 #include "qapi/error.h"
@@ -230,7 +230,7 @@ static void dma_mem_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps dma_mem_ops = {
     .read = dma_mem_read,
     .write = dma_mem_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -274,7 +274,7 @@ static void sparc32_dma_device_init(Object *obj)
     qdev_init_gpio_out(dev, s->gpio, 2);
 }
 
-static void sparc32_dma_device_class_init(ObjectClass *klass, void *data)
+static void sparc32_dma_device_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -316,7 +316,8 @@ static void sparc32_espdma_device_realize(DeviceState *dev, Error **errp)
     sysbus_realize(SYS_BUS_DEVICE(sysbus), &error_fatal);
 }
 
-static void sparc32_espdma_device_class_init(ObjectClass *klass, void *data)
+static void sparc32_espdma_device_class_init(ObjectClass *klass,
+                                             const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -351,7 +352,8 @@ static void sparc32_ledma_device_realize(DeviceState *dev, Error **errp)
     sysbus_realize(SYS_BUS_DEVICE(lance), &error_fatal);
 }
 
-static void sparc32_ledma_device_class_init(ObjectClass *klass, void *data)
+static void sparc32_ledma_device_class_init(ObjectClass *klass,
+                                            const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -426,7 +428,7 @@ static void sparc32_dma_init(Object *obj)
                             TYPE_SPARC32_LEDMA_DEVICE);
 }
 
-static void sparc32_dma_class_init(ObjectClass *klass, void *data)
+static void sparc32_dma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

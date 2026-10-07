@@ -80,7 +80,7 @@ static const VMStateDescription vmstate_wm8758 = {
     }
 };
 
-static void wm8758_class_init(ObjectClass *klass, void *data)
+static void wm8758_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

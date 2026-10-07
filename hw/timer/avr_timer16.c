@@ -34,8 +34,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/timer/avr_timer16.h"
 #include "trace.h"
 
@@ -595,7 +595,7 @@ static void avr_timer16_realize(DeviceState *dev, Error **errp)
     s->enabled = true;
 }
 
-static void avr_timer16_class_init(ObjectClass *klass, void *data)
+static void avr_timer16_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

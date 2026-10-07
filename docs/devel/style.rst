@@ -433,7 +433,7 @@ We also suggest avoiding bitfields even in structures where the exact
 layout does not matter, unless you can show that they provide a significant
 usability benefit.
 
-We encourage the usage of ``include/hw/registerfields.h`` as a safe replacement
+We encourage the usage of ``include/hw/core/registerfields.h`` as a safe replacement
 for bitfields.
 
 Reserved namespaces in C and POSIX
@@ -446,8 +446,8 @@ Low level memory management
 ===========================
 
 Use of the ``malloc/free/realloc/calloc/valloc/memalign/posix_memalign``
-APIs is not allowed in the QEMU codebase. Instead of these routines,
-use the GLib memory allocation routines
+or ``alloca/g_alloca/g_newa/g_newa0`` APIs is not allowed in the QEMU codebase.
+Instead of these routines, use the GLib memory allocation routines
 ``g_malloc/g_malloc0/g_new/g_new0/g_realloc/g_free``
 or QEMU's ``qemu_memalign/qemu_blockalign/qemu_vfree`` APIs.
 

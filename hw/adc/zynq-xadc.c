@@ -14,7 +14,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/adc/zynq-xadc.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
@@ -281,7 +281,7 @@ static const VMStateDescription vmstate_zynq_xadc = {
     }
 };
 
-static void zynq_xadc_class_init(ObjectClass *klass, void *data)
+static void zynq_xadc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -23,7 +23,7 @@
 #include "qemu/range.h"
 #include "qemu/reserved-region.h"
 #include "exec/target_page.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio.h"
 #include "system/kvm.h"
 #include "system/reset.h"
@@ -1522,9 +1522,10 @@ static void virtio_iommu_device_reset_exit(Object *obj, ResetType type)
                                    NULL, NULL, virtio_iommu_put_endpoint);
 }
 
-static void virtio_iommu_set_status(VirtIODevice *vdev, uint8_t status)
+static int virtio_iommu_set_status(VirtIODevice *vdev, uint8_t status)
 {
     trace_virtio_iommu_device_status(status);
+    return 0;
 }
 
 static void virtio_iommu_instance_init(Object *obj)
@@ -1664,7 +1665,7 @@ static const Property virtio_iommu_properties[] = {
     DEFINE_PROP_UINT8("aw-bits", VirtIOIOMMU, aw_bits, 64),
 };
 
-static void virtio_iommu_class_init(ObjectClass *klass, void *data)
+static void virtio_iommu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
@@ -1690,7 +1691,7 @@ static void virtio_iommu_class_init(ObjectClass *klass, void *data)
 }
 
 static void virtio_iommu_memory_region_class_init(ObjectClass *klass,
-                                                  void *data)
+                                                  const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

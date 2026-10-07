@@ -8,9 +8,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ssi/pl022.h"
 #include "hw/ssi/ssi.h"
 #include "qemu/log.h"
@@ -292,7 +292,7 @@ static void pl022_realize(DeviceState *dev, Error **errp)
     s->ssi = ssi_create_bus(dev, "ssi");
 }
 
-static void pl022_class_init(ObjectClass *klass, void *data)
+static void pl022_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

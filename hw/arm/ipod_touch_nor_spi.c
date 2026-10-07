@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_nor_spi.h"
+#include "qemu/bswap.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 #include "qapi/error.h"
@@ -414,7 +415,7 @@ static const VMStateDescription vmstate_ipod_touch_nor_spi = {
     }
 };
 
-static void ipod_touch_nor_spi_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_nor_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

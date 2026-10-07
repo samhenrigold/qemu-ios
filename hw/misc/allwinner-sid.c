@@ -19,14 +19,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/misc/allwinner-sid.h"
 #include "trace.h"
 
@@ -143,7 +143,7 @@ static const VMStateDescription allwinner_sid_vmstate = {
     }
 };
 
-static void allwinner_sid_class_init(ObjectClass *klass, void *data)
+static void allwinner_sid_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

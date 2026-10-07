@@ -27,10 +27,10 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "trace.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 #include "ui/console.h"
@@ -618,7 +618,7 @@ static void vmsvga_fifo_run(struct vmsvga_state_s *s)
     uint32_t cmd, colour;
     int args, len, maxloop = 1024;
     int x, y, dx, dy, width, height;
-    struct vmsvga_cursor_definition_s cursor;
+    QEMU_UNINITIALIZED struct vmsvga_cursor_definition_s cursor;
     uint32_t cmd_start;
 
     len = vmsvga_fifo_length(s);
@@ -1335,11 +1335,9 @@ static void pci_vmsvga_realize(PCIDevice *dev, Error **errp)
 static const Property vga_vmware_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", struct pci_vmsvga_state_s,
                        chip.vga.vram_size_mb, 16),
-    DEFINE_PROP_BOOL("global-vmstate", struct pci_vmsvga_state_s,
-                     chip.vga.global_vmstate, false),
 };
 
-static void vmsvga_class_init(ObjectClass *klass, void *data)
+static void vmsvga_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -1363,7 +1361,7 @@ static const TypeInfo vmsvga_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(struct pci_vmsvga_state_s),
     .class_init    = vmsvga_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

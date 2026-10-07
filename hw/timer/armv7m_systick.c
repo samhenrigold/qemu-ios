@@ -12,9 +12,9 @@
 #include "qemu/osdep.h"
 #include "hw/timer/armv7m_systick.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-clock.h"
 #include "qemu/timer.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -285,7 +285,7 @@ static const VMStateDescription vmstate_systick = {
     }
 };
 
-static void systick_class_init(ObjectClass *klass, void *data)
+static void systick_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

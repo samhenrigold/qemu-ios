@@ -3,10 +3,10 @@
 
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_sha1.h"
-#include "hw/platform-bus.h"
-#include "hw/hw.h"
+#include "hw/core/platform-bus.h"
+#include "hw/core/hw-error.h"
 #include "exec/hwaddr.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 #define TYPE_IPOD_TOUCH_PKE                "ipodtouch.pke"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPKEState, IPOD_TOUCH_PKE)

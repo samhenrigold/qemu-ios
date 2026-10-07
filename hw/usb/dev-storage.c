@@ -13,10 +13,10 @@
 #include "qemu/module.h"
 #include "qemu/option.h"
 #include "qemu/config-file.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "hw/usb/msd.h"
 #include "desc.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/scsi/scsi.h"
 #include "migration/vmstate.h"
 #include "qemu/cutils.h"
@@ -585,7 +585,7 @@ static const VMStateDescription vmstate_usb_msd = {
     }
 };
 
-static void usb_msd_class_initfn_common(ObjectClass *klass, void *data)
+static void usb_msd_class_initfn_common(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

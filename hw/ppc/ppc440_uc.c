@@ -12,11 +12,12 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ppc/ppc4xx.h"
 #include "hw/pci-host/ppc4xx.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci.h"
+#include "exec/cpu-common.h"
 #include "system/reset.h"
 #include "cpu.h"
 #include "ppc440.h"
@@ -1027,7 +1028,7 @@ static const Property ppc460ex_pcie_props[] = {
                      PowerPCCPU *),
 };
 
-static void ppc460ex_pcie_class_init(ObjectClass *klass, void *data)
+static void ppc460ex_pcie_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -1,7 +1,8 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "exec/address-spaces.h"
+#include "exec/cpu-common.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
@@ -271,7 +272,7 @@ static const VMStateDescription scaler_vmstate = {
     },
 };
 
-static void scaler_class_init(ObjectClass *klass, void *data)
+static void scaler_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &scaler_vmstate;

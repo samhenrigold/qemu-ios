@@ -30,9 +30,9 @@
 #include "trace.h"
 #include "qapi/qapi-types-machine.h"
 #include "system/hw_accel.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/resettable.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/resettable.h"
 #include "fpu/softfloat-helpers.h"
 #include "disas/capstone.h"
 #include "system/tcg.h"
@@ -40,6 +40,7 @@
 #include "system/reset.h"
 #endif
 #include "hw/s390x/cpu-topology.h"
+#include "tcg/tcg_s390x.h"
 
 #define CR0_RESET       0xE0UL
 #define CR14_RESET      0xC2000000UL;
@@ -74,26 +75,25 @@ void s390_cpu_set_psw(CPUS390XState *env, uint64_t mask, uint64_t addr)
     env->psw.mask = mask;
 
     /* KVM will handle all WAITs and trigger a WAIT exit on disabled_wait */
-    if (!tcg_enabled()) {
-        return;
-    }
-    env->cc_op = (mask >> 44) & 3;
+    if (tcg_enabled()) {
+        env->cc_op = (mask >> 44) & 3;
 
 #ifndef CONFIG_USER_ONLY
-    if (is_early_exception_psw(mask, addr)) {
-        env->int_pgm_ilen = 0;
-        trigger_pgm_exception(env, PGM_SPECIFICATION);
-        return;
-    }
+        if (is_early_exception_psw(mask, addr)) {
+            env->int_pgm_ilen = 0;
+            trigger_pgm_exception(env, PGM_SPECIFICATION);
+            return;
+        }
 
-    if ((old_mask ^ mask) & PSW_MASK_PER) {
-        s390_cpu_recompute_watchpoints(env_cpu(env));
-    }
+        if ((old_mask ^ mask) & PSW_MASK_PER) {
+            s390_cpu_recompute_watchpoints(env_cpu(env));
+        }
 
-    if (mask & PSW_MASK_WAIT) {
-        s390_handle_wait(env_archcpu(env));
-    }
+        if (mask & PSW_MASK_WAIT) {
+            s390_handle_wait(env_archcpu(env));
+        }
 #endif
+    }
 }
 
 uint64_t s390_cpu_get_psw_mask(CPUS390XState *env)
@@ -126,11 +126,6 @@ static vaddr s390_cpu_get_pc(CPUState *cs)
     return cpu->env.psw.addr;
 }
 
-static int s390x_cpu_mmu_index(CPUState *cs, bool ifetch)
-{
-    return s390x_env_mmu_index(cpu_env(cs), ifetch);
-}
-
 static void s390_query_cpu_fast(CPUState *cpu, CpuInfoFast *value)
 {
     S390CPU *s390_cpu = S390_CPU(cpu);
@@ -144,6 +139,11 @@ static void s390_query_cpu_fast(CPUState *cpu, CpuInfoFast *value)
         value->u.s390x.entitlement = s390_cpu->env.entitlement;
     }
 #endif
+}
+
+void s390_do_cpu_full_reset(CPUState *cs, run_on_cpu_data arg)
+{
+    cpu_reset(cs);
 }
 
 /* S390CPUClass Resettable reset_hold phase method */
@@ -222,7 +222,7 @@ static void s390_cpu_reset_hold(Object *obj, ResetType type)
     }
 }
 
-static void s390_cpu_disas_set_info(CPUState *cpu, disassemble_info *info)
+static void s390_cpu_disas_set_info(const CPUState *cpu, disassemble_info *info)
 {
     info->mach = bfd_mach_s390_64;
     info->cap_arch = CS_ARCH_SYSZ;
@@ -307,10 +307,16 @@ static const Property s390x_cpu_properties[] = {
 
 #ifdef CONFIG_TCG
 #include "accel/tcg/cpu-ops.h"
+#include "tcg/tcg_s390x.h"
 
-void cpu_get_tb_cpu_state(CPUS390XState *env, vaddr *pc,
-                          uint64_t *cs_base, uint32_t *pflags)
+static int s390x_cpu_mmu_index(CPUState *cs, bool ifetch)
 {
+    return s390x_env_mmu_index(cpu_env(cs), ifetch);
+}
+
+static TCGTBCPUState s390x_get_tb_cpu_state(CPUState *cs)
+{
+    CPUS390XState *env = cpu_env(cs);
     uint32_t flags;
 
     if (env->psw.addr & 1) {
@@ -321,9 +327,6 @@ void cpu_get_tb_cpu_state(CPUS390XState *env, vaddr *pc,
         env->int_pgm_ilen = 2; /* see s390_cpu_tlb_fill() */
         tcg_s390_program_interrupt(env, PGM_SPECIFICATION, 0);
     }
-
-    *pc = env->psw.addr;
-    *cs_base = env->ex_value;
 
     flags = (env->psw.mask >> FLAG_MASK_PSW_SHIFT) & FLAG_MASK_PSW;
     if (env->psw.mask & PSW_MASK_PER) {
@@ -341,21 +344,46 @@ void cpu_get_tb_cpu_state(CPUS390XState *env, vaddr *pc,
     if (env->cregs[0] & CR0_VECTOR) {
         flags |= FLAG_MASK_VECTOR;
     }
-    *pflags = flags;
+
+    return (TCGTBCPUState){
+        .pc = env->psw.addr,
+        .flags = flags,
+        .cs_base = env->ex_value,
+    };
 }
 
+#ifndef CONFIG_USER_ONLY
+static vaddr s390_pointer_wrap(CPUState *cs, int mmu_idx,
+                               vaddr result, vaddr base)
+{
+    return wrap_address(cpu_env(cs), result);
+}
+#endif
+
 static const TCGCPUOps s390_tcg_ops = {
+    .mttcg_supported = true,
+    .precise_smc = true,
+    /*
+     * The z/Architecture has a strong memory model with some
+     * store-after-load re-ordering.
+     */
+    .guest_default_memory_order = TCG_MO_ALL & ~TCG_MO_ST_LD,
+
     .initialize = s390x_translate_init,
     .translate_code = s390x_translate_code,
+    .get_tb_cpu_state = s390x_get_tb_cpu_state,
     .restore_state_to_opc = s390x_restore_state_to_opc,
+    .mmu_index = s390x_cpu_mmu_index,
 
 #ifdef CONFIG_USER_ONLY
     .record_sigsegv = s390_cpu_record_sigsegv,
     .record_sigbus = s390_cpu_record_sigbus,
 #else
     .tlb_fill = s390_cpu_tlb_fill,
+    .pointer_wrap = s390_pointer_wrap,
     .cpu_exec_interrupt = s390_cpu_exec_interrupt,
     .cpu_exec_halt = s390_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
     .do_interrupt = s390_cpu_do_interrupt,
     .debug_excp_handler = s390x_cpu_debug_excp_handler,
     .do_unaligned_access = s390x_cpu_do_unaligned_access,
@@ -363,7 +391,7 @@ static const TCGCPUOps s390_tcg_ops = {
 };
 #endif /* CONFIG_TCG */
 
-static void s390_cpu_class_init(ObjectClass *oc, void *data)
+static void s390_cpu_class_init(ObjectClass *oc, const void *data)
 {
     S390CPUClass *scc = S390_CPU_CLASS(oc);
     CPUClass *cc = CPU_CLASS(scc);
@@ -378,7 +406,7 @@ static void s390_cpu_class_init(ObjectClass *oc, void *data)
                                        &scc->parent_phases);
 
     cc->class_by_name = s390_cpu_class_by_name;
-    cc->mmu_index = s390x_cpu_mmu_index;
+    cc->list_cpus = s390_cpu_list;
     cc->dump_state = s390_cpu_dump_state;
     cc->query_cpu_fast = s390_query_cpu_fast;
     cc->set_pc = s390_cpu_set_pc;

@@ -21,12 +21,12 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "migration/vmstate.h"
 #include "hw/pci/pci_device.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-dma.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-dma.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "hcd-ohci.h"
 #include "qom/object.h"
@@ -126,7 +126,7 @@ static const VMStateDescription vmstate_ohci = {
     }
 };
 
-static void ohci_pci_class_init(ObjectClass *klass, void *data)
+static void ohci_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -149,7 +149,7 @@ static const TypeInfo ohci_pci_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(OHCIPCIState),
     .class_init    = ohci_pci_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

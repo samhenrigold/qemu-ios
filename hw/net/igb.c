@@ -45,14 +45,14 @@
 #include "qemu/module.h"
 #include "qemu/range.h"
 #include "system/system.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 #include "hw/net/mii.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pcie.h"
 #include "hw/pci/pcie_sriov.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 #include "igb_common.h"
@@ -599,7 +599,7 @@ static const Property igb_properties[] = {
     DEFINE_PROP_BOOL("x-pcie-flr-init", IGBState, has_flr, true),
 };
 
-static void igb_class_init(ObjectClass *class, void *data)
+static void igb_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(class);
     ResettableClass *rc = RESETTABLE_CLASS(class);
@@ -635,7 +635,7 @@ static const TypeInfo igb_info = {
     .instance_size = sizeof(IGBState),
     .class_init = igb_class_init,
     .instance_init = igb_instance_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_PCIE_DEVICE },
         { }
     },

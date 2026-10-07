@@ -23,9 +23,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/or-irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/or-irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 
@@ -119,7 +119,7 @@ static const Property or_irq_properties[] = {
     DEFINE_PROP_UINT16("num-lines", OrIRQState, num_lines, 1),
 };
 
-static void or_irq_class_init(ObjectClass *klass, void *data)
+static void or_irq_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

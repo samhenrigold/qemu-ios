@@ -15,7 +15,7 @@
 #include "qemu/module.h"
 #include "hw/s390x/css.h"
 #include "hw/s390x/css-bridge.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/s390x/3270-ccw.h"
 
 /* Handle READ ccw commands from guest */
@@ -150,7 +150,7 @@ out_err:
     g_free(sch);
 }
 
-static void emulated_ccw_3270_class_init(ObjectClass *klass, void *data)
+static void emulated_ccw_3270_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

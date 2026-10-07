@@ -19,8 +19,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 #include "trace.h"
@@ -334,7 +334,7 @@ static void mpc_i2c_realize(DeviceState *dev, Error **errp)
     i2c->bus = i2c_init_bus(dev, "i2c");
 }
 
-static void mpc_i2c_class_init(ObjectClass *klass, void *data)
+static void mpc_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

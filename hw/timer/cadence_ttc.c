@@ -17,8 +17,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -451,7 +451,7 @@ static const VMStateDescription vmstate_cadence_ttc = {
     }
 };
 
-static void cadence_ttc_class_init(ObjectClass *klass, void *data)
+static void cadence_ttc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

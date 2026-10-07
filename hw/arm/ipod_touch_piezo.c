@@ -17,8 +17,8 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
-#include "hw/qdev-properties.h"
-#include "audio/audio.h"
+#include "hw/core/qdev-properties.h"
+#include "qemu/audio.h"
 #include "hw/arm/ipod_touch_piezo.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPiezoState, IPOD_TOUCH_PIEZO)
@@ -30,7 +30,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchPiezoState, IPOD_TOUCH_PIEZO)
 
 struct IPodTouchPiezoState {
     DeviceState parent_obj;
-    QEMUSoundCard card;
+    AudioBackend *audio_be;
     SWVoiceOut *voice;
     IPodTouchTimerOutput seg[PIEZO_SEGS];   /* oldest first */
     unsigned nseg;
@@ -92,7 +92,7 @@ static void piezo_out_cb(void *opaque, int free_bytes)
             int64_t t = s->base_ns + muldiv64(s->played + i, NANOSECONDS_PER_SECOND, PIEZO_RATE);
             buf[i] = piezo_level(s->seg, s->nseg, t, s->amplitude);
         }
-        size_t wrote = AUD_write(s->voice, buf, frames * 2) / 2;
+        size_t wrote = audio_be_write(s->audio_be, s->voice, buf, frames * 2) / 2;
         if (!wrote) {
             break;
         }
@@ -119,26 +119,26 @@ static void piezo_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "amplitude is at most 32767");
         return;
     }
-    if (!AUD_register_card("ipod-piezo", &s->card, errp)) {
+    if (!audio_be_check(&s->audio_be, errp)) {
         return;
     }
-    s->voice = AUD_open_out(&s->card, NULL, "ipod-piezo.out", s, piezo_out_cb, &as);
+    s->voice = audio_be_open_out(s->audio_be, NULL, "ipod-piezo.out", s, piezo_out_cb, &as);
     if (!s->voice) {
         warn_report("ipod piezo: could not open an output voice; the buzzer is silent");
         return;
     }
-    AUD_set_volume_out(s->voice, 0, 255, 255);
-    AUD_set_active_out(s->voice, 1);
+    audio_be_set_volume_out_lr(s->audio_be, s->voice, 0, 255, 255);
+    audio_be_set_active_out(s->audio_be, s->voice, 1);
 }
 
 static const Property piezo_properties[] = {
-    DEFINE_AUDIO_PROPERTIES(IPodTouchPiezoState, card),
+    DEFINE_AUDIO_PROPERTIES(IPodTouchPiezoState, audio_be),
     DEFINE_PROP_UINT32("channel", IPodTouchPiezoState, channel, 1),
     /* A calibration knob, not a measurement: how loud the host plays it. */
     DEFINE_PROP_UINT32("amplitude", IPodTouchPiezoState, amplitude, 8000),
 };
 
-static void piezo_class_init(ObjectClass *klass, void *data)
+static void piezo_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -14,12 +14,13 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/arm/machines-qom.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
-#include "exec/address-spaces.h"
-#include "hw/boards.h"
-#include "hw/irq.h"
+#include "system/address-spaces.h"
+#include "hw/core/boards.h"
+#include "hw/core/irq.h"
 #include "hw/misc/unimp.h"
 #include "hw/misc/ios_baseband.h"
 #include "hw/core/split-irq.h"
@@ -41,12 +42,12 @@
 #include "hw/arm/ipod_touch_cd3272_mikey.h"
 #include "hw/i2c/i2c.h"
 #include "chardev/char.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "qemu/timer.h"
@@ -1423,7 +1424,7 @@ static char *s5l8920_get_gles_rejects(Object *obj, Error **errp)
     return gles_host_rejects();
 }
 
-static void s5l8920_class_init(ObjectClass *klass, void *data)
+static void s5l8920_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
@@ -1498,6 +1499,7 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
 static const TypeInfo s5l8920_machine_info = {
     .name = TYPE_S5L8920_MACHINE,
     .parent = TYPE_MACHINE,
+    .interfaces = arm_machine_interfaces,
     .abstract = true,
     .instance_size = sizeof(S5L8920MachineState),
     .class_size = sizeof(S5L8920MachineClass),
@@ -1507,7 +1509,7 @@ static const TypeInfo s5l8920_machine_info = {
 };
 
 /* One machine type per board: -M n18, -M n88. */
-static void s5l8920_board_class_init(ObjectClass *klass, void *data)
+static void s5l8920_board_class_init(ObjectClass *klass, const void *data)
 {
     const S5L8920Board *board = data;
 

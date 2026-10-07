@@ -5,7 +5,7 @@
 #include "qemu/bswap.h"
 #include "qemu/error-report.h"
 #include "system/runstate.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -1826,7 +1826,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
     }
 };
 
-static void ipod_touch_fmss_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_fmss_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

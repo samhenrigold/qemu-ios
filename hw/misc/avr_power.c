@@ -25,8 +25,8 @@
 #include "qemu/osdep.h"
 #include "hw/misc/avr_power.h"
 #include "qemu/log.h"
-#include "hw/qdev-properties.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "trace.h"
 
 static void avr_mask_reset(DeviceState *dev)
@@ -73,6 +73,9 @@ static const MemoryRegionOps avr_mask_ops = {
     .impl = {
         .max_access_size = 1,
     },
+    .valid = {
+        .max_access_size = 1,
+    },
 };
 
 static void avr_mask_init(Object *dev)
@@ -90,7 +93,7 @@ static void avr_mask_init(Object *dev)
     s->val = 0x00;
 }
 
-static void avr_mask_class_init(ObjectClass *klass, void *data)
+static void avr_mask_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

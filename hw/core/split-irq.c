@@ -25,8 +25,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/core/split-irq.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 
@@ -63,7 +63,7 @@ static const Property split_irq_properties[] = {
     DEFINE_PROP_UINT16("num-lines", SplitIRQ, num_lines, 1),
 };
 
-static void split_irq_class_init(ObjectClass *klass, void *data)
+static void split_irq_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

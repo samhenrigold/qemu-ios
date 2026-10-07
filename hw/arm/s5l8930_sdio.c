@@ -37,9 +37,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/arm/s5l8930.h"
 
@@ -396,7 +396,7 @@ static const Property s5l8930_sdio_props[] = {
                      IPodTouchSDIOState *),
 };
 
-static void s5l8930_sdio_class_init(ObjectClass *klass, void *data)
+static void s5l8930_sdio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

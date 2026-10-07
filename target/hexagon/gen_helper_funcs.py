@@ -69,7 +69,7 @@ def gen_helper_function(f, tag, tagregs, tagimms):
     if hex_common.need_slot(tag):
         if "A_LOAD" in hex_common.attribdict[tag]:
             f.write(hex_common.code_fmt(f"""\
-                bool pkt_has_store_s1 = slotval & 0x1;
+                bool pkt_has_scalar_store_s1 = slotval & 0x1;
             """))
         f.write(hex_common.code_fmt(f"""\
             uint32_t slot = slotval >> 1;
@@ -83,11 +83,6 @@ def gen_helper_function(f, tag, tagregs, tagimms):
     f.write(hex_common.code_fmt(f"""\
         {hex_common.semdict[tag]}
     """))
-
-    if "A_FPOP" in hex_common.attribdict[tag]:
-        f.write(hex_common.code_fmt(f"""\
-            arch_fpop_end(env);
-        """))
 
     ## Return the scalar result
     for regtype, regid in regs:
@@ -115,6 +110,9 @@ def main():
                 continue
             ## Skip the guest instructions
             if "A_GUEST" in hex_common.attribdict[tag]:
+                continue
+            ## Skip the floating point instructions
+            if "A_FPOP" in hex_common.attribdict[tag]:
                 continue
             ## Skip the diag instructions
             if tag == "Y6_diag":

@@ -28,12 +28,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/register.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
 #include "qemu/bitops.h"
 #include "qom/object.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/usb/hcd-dwc3.h"
 #include "qapi/error.h"
 
@@ -666,7 +666,7 @@ static const Property usb_dwc3_properties[] = {
                        0x12345678),
 };
 
-static void usb_dwc3_class_init(ObjectClass *klass, void *data)
+static void usb_dwc3_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

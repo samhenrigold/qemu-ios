@@ -18,7 +18,7 @@
 #include "qemu/osdep.h"
 #include "system/reset.h"
 #include "system/watchdog.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/watchdog/sbsa_gwdt.h"
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
@@ -174,7 +174,6 @@ static void sbsa_gwdt_write(void *opaque, hwaddr offset, uint64_t data,
         qemu_log_mask(LOG_GUEST_ERROR, "bad address in control frame write :"
                 " 0x%x\n", (int)offset);
     }
-    return;
 }
 
 static void wdt_sbsa_gwdt_reset(DeviceState *dev)
@@ -272,7 +271,7 @@ static const Property wdt_sbsa_gwdt_props[] = {
                        62500000),
 };
 
-static void wdt_sbsa_gwdt_class_init(ObjectClass *klass, void *data)
+static void wdt_sbsa_gwdt_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

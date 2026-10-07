@@ -21,8 +21,8 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/ppc/pnv.h"
 #include "hw/ppc/pnv_chip.h"
 #include "hw/ppc/pnv_xscom.h"
@@ -150,7 +150,6 @@ static void pnv_occ_common_area_write(void *opaque, hwaddr addr,
                                              uint64_t val, unsigned width)
 {
     /* callback function defined to occ common area write */
-    return;
 }
 
 static const MemoryRegionOps pnv_occ_power8_xscom_ops = {
@@ -173,7 +172,7 @@ const MemoryRegionOps pnv_occ_sram_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
 };
 
-static void pnv_occ_power8_class_init(ObjectClass *klass, void *data)
+static void pnv_occ_power8_class_init(ObjectClass *klass, const void *data)
 {
     PnvOCCClass *poc = PNV_OCC_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -196,6 +195,49 @@ static const TypeInfo pnv_occ_power8_type_info = {
 #define P9_OCB_OCI_OCCMISC_CLEAR        0x6081
 #define P9_OCB_OCI_OCCMISC_OR           0x6082
 
+/* OCC scratch registers for flag setting */
+#define P9_OCCFLG0                      0x60ac
+#define P9_OCCFLG7_OR                   0x60c3
+
+enum ScomType {
+    SCOM_TYPE_RW          = 0,
+    SCOM_TYPE_WO_CLEAR    = 1,
+    SCOM_TYPE_WO_OR       = 2,
+};
+
+static void rw_occ_flag_regs(PnvOCC *occ, uint32_t offset, bool read,
+        uint64_t *val)
+{
+    int flag_num;
+    int flag_type;
+
+    /*
+     * Each OCCFLG register has SCOM0 - RW, SCOM1 - WO_CLEAR, SCOM2 - WO_OR
+     * hence divide by 3 to get flag index and mod 3 to get SCOM type.
+     */
+    flag_num = (offset - P9_OCCFLG0) / 3;
+    flag_type = (offset - P9_OCCFLG0) % 3;
+
+    if (read) {
+        if (flag_type) {
+            qemu_log_mask(LOG_GUEST_ERROR, "OCC: Write only register: Ox%"
+                      PRIx32 "\n", offset);
+            return;
+        }
+        *val = occ->occflags[flag_num];
+    } else {
+        switch (flag_type) {
+        case SCOM_TYPE_RW:
+            occ->occflags[flag_num] = *val;
+            break;
+        case SCOM_TYPE_WO_CLEAR:
+            occ->occflags[flag_num] &= ~(*val);
+            break;
+        case SCOM_TYPE_WO_OR:
+            occ->occflags[flag_num] |= *val;
+        }
+    }
+}
 
 static uint64_t pnv_occ_power9_xscom_read(void *opaque, hwaddr addr,
                                           unsigned size)
@@ -208,8 +250,11 @@ static uint64_t pnv_occ_power9_xscom_read(void *opaque, hwaddr addr,
     case P9_OCB_OCI_OCCMISC:
         val = occ->occmisc;
         break;
+    case P9_OCCFLG0 ... P9_OCCFLG7_OR:
+        rw_occ_flag_regs(occ, offset, 1, &val);
+        break;
     default:
-        qemu_log_mask(LOG_UNIMP, "OCC Unimplemented register: Ox%"
+        qemu_log_mask(LOG_UNIMP, "OCC Unimplemented register read: Ox%"
                       HWADDR_PRIx "\n", addr >> 3);
     }
     return val;
@@ -230,9 +275,12 @@ static void pnv_occ_power9_xscom_write(void *opaque, hwaddr addr,
         break;
     case P9_OCB_OCI_OCCMISC:
         pnv_occ_set_misc(occ, val);
-       break;
+        break;
+    case P9_OCCFLG0 ... P9_OCCFLG7_OR:
+        rw_occ_flag_regs(occ, offset, 0, &val);
+        break;
     default:
-        qemu_log_mask(LOG_UNIMP, "OCC Unimplemented register: Ox%"
+        qemu_log_mask(LOG_UNIMP, "OCC Unimplemented register write: Ox%"
                       HWADDR_PRIx "\n", addr >> 3);
     }
 }
@@ -247,7 +295,7 @@ static const MemoryRegionOps pnv_occ_power9_xscom_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
 };
 
-static void pnv_occ_power9_class_init(ObjectClass *klass, void *data)
+static void pnv_occ_power9_class_init(ObjectClass *klass, const void *data)
 {
     PnvOCCClass *poc = PNV_OCC_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -267,7 +315,7 @@ static const TypeInfo pnv_occ_power9_type_info = {
     .class_init    = pnv_occ_power9_class_init,
 };
 
-static void pnv_occ_power10_class_init(ObjectClass *klass, void *data)
+static void pnv_occ_power10_class_init(ObjectClass *klass, const void *data)
 {
     PnvOCCClass *poc = PNV_OCC_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -336,7 +384,7 @@ static const Property pnv_occ_properties[] = {
     DEFINE_PROP_LINK("homer", PnvOCC, homer, TYPE_PNV_HOMER, PnvHomer *),
 };
 
-static void pnv_occ_class_init(ObjectClass *klass, void *data)
+static void pnv_occ_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -790,7 +838,7 @@ static bool occ_opal_process_command(PnvOCC *occ,
 
 static bool occ_model_tick(PnvOCC *occ)
 {
-    struct occ_dynamic_data dynamic_data;
+    QEMU_UNINITIALIZED struct occ_dynamic_data dynamic_data;
 
     if (!occ_read_dynamic_data(occ, &dynamic_data, NULL)) {
         /* Can't move OCC state field to safe because we can't map it! */

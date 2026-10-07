@@ -23,11 +23,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/acpi/tpm.h"
 #include "tpm_prop.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "tpm_tis.h"
 #include "qom/object.h"
 
@@ -124,7 +124,7 @@ static void tpm_tis_sysbus_realizefn(DeviceState *dev, Error **errp)
     }
 }
 
-static void tpm_tis_sysbus_class_init(ObjectClass *klass, void *data)
+static void tpm_tis_sysbus_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     TPMIfClass *tc = TPM_IF_CLASS(klass);
@@ -145,7 +145,7 @@ static const TypeInfo tpm_tis_sysbus_info = {
     .instance_size = sizeof(TPMStateSysBus),
     .instance_init = tpm_tis_sysbus_initfn,
     .class_init  = tpm_tis_sysbus_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_TPM_IF },
         { }
     }

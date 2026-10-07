@@ -15,7 +15,7 @@
 #include "hw/pci-host/pnv_phb3.h"
 #include "hw/pci-host/pnv_phb4.h"
 #include "hw/ppc/pnv.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
 #include "system/system.h"
 
@@ -194,7 +194,7 @@ static const Property pnv_phb_properties[] = {
                      PnvPhb4PecState *),
 };
 
-static void pnv_phb_class_init(ObjectClass *klass, void *data)
+static void pnv_phb_class_init(ObjectClass *klass, const void *data)
 {
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -202,7 +202,6 @@ static void pnv_phb_class_init(ObjectClass *klass, void *data)
     hc->root_bus_path = pnv_phb_root_bus_path;
     dc->realize = pnv_phb_realize;
     device_class_set_props(dc, pnv_phb_properties);
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->user_creatable = true;
 }
 
@@ -304,7 +303,7 @@ static const Property pnv_phb_root_port_properties[] = {
     DEFINE_PROP_UINT32("version", PnvPHBRootPort, version, 0),
 };
 
-static void pnv_phb_root_port_class_init(ObjectClass *klass, void *data)
+static void pnv_phb_root_port_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

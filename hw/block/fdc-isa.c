@@ -33,16 +33,16 @@
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "hw/acpi/acpi_aml_interface.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "hw/block/block.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/system.h"
-#include "exec/ioport.h"
+#include "system/ioport.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -298,7 +298,7 @@ static const Property isa_fdc_properties[] = {
                         FloppyDriveType),
 };
 
-static void isabus_fdc_class_init(ObjectClass *klass, void *data)
+static void isabus_fdc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
@@ -331,7 +331,7 @@ static const TypeInfo isa_fdc_info = {
     .instance_size = sizeof(FDCtrlISABus),
     .class_init    = isabus_fdc_class_init,
     .instance_init = isabus_fdc_instance_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_ACPI_DEV_AML_IF },
         { },
     },

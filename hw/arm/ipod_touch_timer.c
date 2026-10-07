@@ -1,6 +1,6 @@
 #include "hw/arm/ipod_touch_timer.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /*
  * freq_out is 10 MHz here while the tick counter at TIMER_TICKSHIGH/LOW runs at
@@ -454,7 +454,7 @@ static const Property ipod_touch_timer_properties[] = {
     DEFINE_PROP_UINT32("input-hz", IPodTouchTimerState, input_hz, 0),
 };
 
-static void s5l8900_timer_class_init(ObjectClass *klass, void *data)
+static void s5l8900_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -1337,7 +1337,7 @@ static const VMStateDescription vmstate_ipod_touch_multitouch = {
     }
 };
 
-static void ipod_touch_multitouch_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_multitouch_class_init(ObjectClass *klass, const void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

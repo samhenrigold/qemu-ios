@@ -29,7 +29,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/m68k/next-cube.h"
 #include "ui/console.h"
 #include "migration/vmstate.h"
@@ -312,7 +312,7 @@ static const VMStateDescription nextkbd_vmstate = {
     .unmigratable = 1,    /* TODO: Implement this when m68k CPU is migratable */
 };
 
-static void nextkbd_class_init(ObjectClass *oc, void *data)
+static void nextkbd_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

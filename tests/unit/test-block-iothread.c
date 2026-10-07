@@ -63,7 +63,7 @@ bdrv_test_co_truncate(BlockDriverState *bs, int64_t offset, bool exact,
 }
 
 static int coroutine_fn bdrv_test_co_block_status(BlockDriverState *bs,
-                                                  bool want_zero,
+                                                  unsigned int mode,
                                                   int64_t offset, int64_t count,
                                                   int64_t *pnum, int64_t *map,
                                                   BlockDriverState **file)
@@ -270,11 +270,11 @@ static void test_sync_op_blk_pdiscard(BlockBackend *blk)
     int ret;
 
     /* Early success: UNMAP not supported */
-    ret = blk_pdiscard(blk, 0, 512);
+    ret = blk_pdiscard(blk, 0, 512, 0);
     g_assert_cmpint(ret, ==, 0);
 
     /* Early error: Negative offset */
-    ret = blk_pdiscard(blk, -2, 512);
+    ret = blk_pdiscard(blk, -2, 512, 0);
     g_assert_cmpint(ret, ==, -EIO);
 }
 

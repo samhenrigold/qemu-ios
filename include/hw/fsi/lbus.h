@@ -7,9 +7,9 @@
 #ifndef FSI_LBUS_H
 #define FSI_LBUS_H
 
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "qemu/units.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 #define TYPE_FSI_LBUS_DEVICE "fsi.lbus.device"
 OBJECT_DECLARE_SIMPLE_TYPE(FSILBusDevice, FSI_LBUS_DEVICE)

@@ -9,7 +9,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/misc/aspeed_sli.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
@@ -124,7 +124,7 @@ static void aspeed_sliio_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-static void aspeed_sli_class_init(ObjectClass *klass, void *data)
+static void aspeed_sli_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -140,14 +140,14 @@ static const TypeInfo aspeed_sli_info = {
     .abstract      = true,
 };
 
-static void aspeed_2700_sli_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_sli_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "AST2700 SLI Controller";
 }
 
-static void aspeed_2700_sliio_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_sliio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

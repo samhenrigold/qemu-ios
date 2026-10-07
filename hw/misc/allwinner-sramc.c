@@ -19,13 +19,13 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/misc/allwinner-sramc.h"
 #include "trace.h"
 
@@ -135,7 +135,7 @@ static void allwinner_sramc_reset(DeviceState *dev)
     }
 }
 
-static void allwinner_sramc_class_init(ObjectClass *klass, void *data)
+static void allwinner_sramc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -163,7 +163,7 @@ static const TypeInfo allwinner_sramc_info = {
     .class_init    = allwinner_sramc_class_init,
 };
 
-static void allwinner_r40_sramc_class_init(ObjectClass *klass, void *data)
+static void allwinner_r40_sramc_class_init(ObjectClass *klass, const void *data)
 {
     AwSRAMCClass *sc = AW_SRAMC_CLASS(klass);
 

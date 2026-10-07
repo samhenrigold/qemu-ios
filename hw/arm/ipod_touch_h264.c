@@ -1,8 +1,8 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/arm/ipod_video.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "qemu/error-report.h"
@@ -959,7 +959,7 @@ static const VMStateDescription h264_vmstate = {
     },
 };
 
-static void h264_class_init(ObjectClass *klass, void *data)
+static void h264_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &h264_vmstate;

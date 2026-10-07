@@ -2,10 +2,10 @@
 #define HW_ARM_IPOD_TOUCH_AES_H
 
 #include "qemu/osdep.h"
-#include "hw/platform-bus.h"
-#include "hw/hw.h"
+#include "hw/core/platform-bus.h"
+#include "hw/core/hw-error.h"
 #include "exec/hwaddr.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include <openssl/aes.h>
 
 #define TYPE_IPOD_TOUCH_AES                "ipodtouch.aes"

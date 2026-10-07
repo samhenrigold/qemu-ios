@@ -17,8 +17,8 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/tricore/tricore_testdevice.h"
 
 static void tricore_testdevice_write(void *opaque, hwaddr offset,
@@ -58,7 +58,7 @@ static void tricore_testdevice_init(Object *obj)
                           "tricore_testdevice", 0x4);
 }
 
-static void tricore_testdevice_class_init(ObjectClass *klass, void *data)
+static void tricore_testdevice_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -11,7 +11,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "hw/ipack/ipack.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "qemu/bitops.h"
@@ -629,7 +629,7 @@ static const VMStateDescription vmstate_tpci200 = {
     }
 };
 
-static void tpci200_class_init(ObjectClass *klass, void *data)
+static void tpci200_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -650,7 +650,7 @@ static const TypeInfo tpci200_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(TPCI200State),
     .class_init    = tpci200_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

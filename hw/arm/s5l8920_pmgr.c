@@ -11,10 +11,10 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "target/arm/cpu.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 #define TYPE_S5L8920_PMGR "s5l8920.pmgr"
@@ -212,7 +212,7 @@ static const VMStateDescription vmstate_s5l8920_pmgr = {
     }
 };
 
-static void s5l8920_pmgr_class_init(ObjectClass *klass, void *data)
+static void s5l8920_pmgr_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

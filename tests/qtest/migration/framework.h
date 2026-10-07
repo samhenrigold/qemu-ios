@@ -12,13 +12,34 @@
 #define TEST_FRAMEWORK_H
 
 #include "libqtest.h"
+#include <qapi/qapi-types-migration.h>
 
 #define FILE_TEST_FILENAME "migfile"
 #define FILE_TEST_OFFSET 0x1000
 #define FILE_TEST_MARKER 'X'
 
+typedef enum {
+    /*
+     * Use memory-backend-ram, private mappings
+     */
+    MEM_TYPE_ANON,
+    /*
+     * Use shmem file (under /dev/shm), shared mappings
+     */
+    MEM_TYPE_SHMEM,
+    /*
+     * Use anonymous memfd, shared mappings.
+     *
+     * NOTE: this is internally almost the same as MEM_TYPE_SHMEM on Linux,
+     * but only anonymously allocated.
+     */
+    MEM_TYPE_MEMFD,
+    MEM_TYPE_NUM,
+} MemType;
+
 typedef struct MigrationTestEnv {
     bool has_kvm;
+    bool has_hvf;
     bool has_tcg;
     bool has_uffd;
     bool uffd_feature_thread_id;
@@ -101,7 +122,9 @@ typedef struct {
      * unconditionally, because it means the user would like to be verbose.
      */
     bool hide_stderr;
-    bool use_shmem;
+    MemType mem_type;
+    /* only launch the source process */
+    bool only_source;
     /* only launch the target process */
     bool only_target;
     /* Use dirty ring if true; dirty logging otherwise */
@@ -112,14 +135,16 @@ typedef struct {
     bool suspend_me;
     /* enable OOB QMP capability */
     bool oob;
-    /*
-     * Format string for the main memory backend, containing one %s where the
-     * size is plugged in.  If omitted, "-m %s" is used.
-     */
-    const char *memory_backend;
 
     /* Do not connect to target monitor and qtest sockets in qtest_init */
     bool defer_target_connect;
+
+    /*
+     * Migration capabilities to be set in both source and
+     * destination. For unilateral capabilities, use
+     * migration_set_capabilities().
+     */
+    bool caps[MIGRATION_CAPABILITY__MAX];
 } MigrateStart;
 
 typedef enum PostcopyRecoveryFailStage {
@@ -183,8 +208,6 @@ typedef struct {
         MIG_TEST_SUCCEED = 0,
         /* This test should fail, dest qemu should keep alive */
         MIG_TEST_FAIL,
-        /* This test should fail, dest qemu should fail with abnormal status */
-        MIG_TEST_FAIL_DEST_QUIT_ERR,
         /* The QMP command for this migration should fail with an error */
         MIG_TEST_QMP_ERROR,
     } result;
@@ -204,23 +227,21 @@ typedef struct {
      * refer to existing ones with live=true), or use live=off by default.
      */
     bool live;
-
-    /* Postcopy specific fields */
-    void *postcopy_data;
-    bool postcopy_preempt;
-    PostcopyRecoveryFailStage postcopy_recovery_fail_stage;
 } MigrateCommon;
 
 void wait_for_serial(const char *side);
 void migrate_prepare_for_dirty_mem(QTestState *from);
 void migrate_wait_for_dirty_mem(QTestState *from, QTestState *to);
+
+int migrate_args(char **from, char **to, const char *uri, MigrateStart *args);
 int migrate_start(QTestState **from, QTestState **to, const char *uri,
                   MigrateStart *args);
 void migrate_end(QTestState *from, QTestState *to, bool test_dest);
 
 void test_postcopy_common(MigrateCommon *args);
-void test_postcopy_recovery_common(MigrateCommon *args);
-void test_precopy_common(MigrateCommon *args);
+void test_postcopy_recovery_common(MigrateCommon *args,
+                                   PostcopyRecoveryFailStage fail_stage);
+int test_precopy_common(MigrateCommon *args);
 void test_file_common(MigrateCommon *args, bool stop_src);
 void *migrate_hook_start_precopy_tcp_multifd_common(QTestState *from,
                                                     QTestState *to,
@@ -228,6 +249,7 @@ void *migrate_hook_start_precopy_tcp_multifd_common(QTestState *from,
 
 typedef struct QTestMigrationState QTestMigrationState;
 QTestMigrationState *get_src(void);
+QTestMigrationState *get_dst(void);
 
 #ifdef CONFIG_GNUTLS
 void migration_test_add_tls(MigrationTestEnv *env);
@@ -240,5 +262,10 @@ void migration_test_add_file(MigrationTestEnv *env);
 void migration_test_add_precopy(MigrationTestEnv *env);
 void migration_test_add_cpr(MigrationTestEnv *env);
 void migration_test_add_misc(MigrationTestEnv *env);
+#ifdef CONFIG_REPLICATION
+void migration_test_add_colo(MigrationTestEnv *env);
+#else
+static inline void migration_test_add_colo(MigrationTestEnv *env) {};
+#endif
 
 #endif /* TEST_FRAMEWORK_H */

@@ -13,7 +13,7 @@
 #include "qemu/module.h"
 #include "hw/cpu/arm11mpcore.h"
 #include "hw/intc/realview_gic.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
 
 #define TYPE_REALVIEW_MPCORE_RIRQ "realview_mpcore"
@@ -107,7 +107,7 @@ static void mpcore_rirq_init(Object *obj)
     }
 }
 
-static void mpcore_rirq_class_init(ObjectClass *klass, void *data)
+static void mpcore_rirq_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

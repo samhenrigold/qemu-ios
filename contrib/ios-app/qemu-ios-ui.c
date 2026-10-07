@@ -18,13 +18,13 @@
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "qemu/seqlock.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
 #include "ui/console.h"
 #include "ui/surface.h"
 #include "ui/input.h"
 #include "qapi/error.h"
 #include "hw/arm/ipod_touch_buttons.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 
 void gles_host_set_allowed(bool allowed);
 bool ipod_touch_fmss_io_failed(void);
@@ -864,7 +864,7 @@ static void ios_snapshot2_bh(void *opaque)
      * suspend, so nothing else in global-state is needed.
      */
     migrate_get_current()->store_global_state = false;
-    qmp_migrate(uri, false, NULL, false, false, false, false, &err);
+    qmp_migrate(uri, false, NULL, false, false, &err);
     if (err) {
         snprintf(ios_snap_err, sizeof(ios_snap_err), "save: %s", error_get_pretty(err));
         error_free(err);

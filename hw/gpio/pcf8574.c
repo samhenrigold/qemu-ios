@@ -9,7 +9,7 @@
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
 #include "hw/gpio/pcf8574.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -138,7 +138,7 @@ static void pcf8574_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_out_named(dev, &s->intrq, "nINT", 1);
 }
 
-static void pcf8574_class_init(ObjectClass *klass, void *data)
+static void pcf8574_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass   *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k  = I2C_SLAVE_CLASS(klass);

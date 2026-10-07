@@ -3,9 +3,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 
 /* National LM48821 amplifier, I2C 0x76, single-byte gain/mute control. */
 

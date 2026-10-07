@@ -57,7 +57,7 @@ static const VMStateDescription vmstate_cd3272mikey = {
     }
 };
 
-static void cd3272_mikey_class_init(ObjectClass *klass, void *data)
+static void cd3272_mikey_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

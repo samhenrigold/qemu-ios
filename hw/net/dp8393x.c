@@ -18,10 +18,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/net/dp8393x.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "qapi/error.h"
@@ -939,7 +939,7 @@ static const Property dp8393x_properties[] = {
     DEFINE_PROP_BOOL("big_endian", dp8393xState, big_endian, false),
 };
 
-static void dp8393x_class_init(ObjectClass *klass, void *data)
+static void dp8393x_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -13,7 +13,6 @@
 #include "ui/input.h"
 #include "qom/object_interfaces.h"
 #include "system/iothread.h"
-#include "block/aio.h"
 
 #include <sys/ioctl.h>
 #include "standard-headers/linux/input.h"
@@ -316,8 +315,7 @@ static void input_linux_complete(UserCreatable *uc, Error **errp)
         error_setg_file_open(errp, errno, il->evdev);
         return;
     }
-    if (!g_unix_set_fd_nonblocking(il->fd, true, NULL)) {
-        error_setg_errno(errp, errno, "Failed to set FD nonblocking");
+    if (!qemu_set_blocking(il->fd, false, errp)) {
         return;
     }
 
@@ -412,7 +410,6 @@ err_read_event_bits:
 
 err_close:
     close(il->fd);
-    return;
 }
 
 static void input_linux_instance_finalize(Object *obj)
@@ -495,7 +492,7 @@ static void input_linux_instance_init(Object *obj)
 {
 }
 
-static void input_linux_class_init(ObjectClass *oc, void *data)
+static void input_linux_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
 
@@ -523,7 +520,7 @@ static const TypeInfo input_linux_info = {
     .instance_size = sizeof(InputLinux),
     .instance_init = input_linux_instance_init,
     .instance_finalize = input_linux_instance_finalize,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

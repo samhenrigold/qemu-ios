@@ -12,8 +12,8 @@
 #include "qemu/module.h"
 #include "hw/cpu/arm11mpcore.h"
 #include "hw/intc/realview_gic.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 
 #define ARM11MPCORE_NUM_GIC_PRIORITY_BITS    4
 
@@ -144,7 +144,7 @@ static const Property mpcore_priv_properties[] = {
     DEFINE_PROP_UINT32("num-irq", ARM11MPCorePriveState, num_irq, 64),
 };
 
-static void mpcore_priv_class_init(ObjectClass *klass, void *data)
+static void mpcore_priv_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -7,9 +7,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/net/mv88w8618_eth.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
@@ -377,7 +377,7 @@ static const Property mv88w8618_eth_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void mv88w8618_eth_class_init(ObjectClass *klass, void *data)
+static void mv88w8618_eth_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

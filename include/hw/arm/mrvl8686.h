@@ -132,7 +132,7 @@ typedef struct Mrvl8686Card {
 } Mrvl8686Card;
 
 #ifndef MRVL8686_CORE_ONLY
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "net/net.h"
 
 #define TYPE_MRVL8686 "mrvl8686"

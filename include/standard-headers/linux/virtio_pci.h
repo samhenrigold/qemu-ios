@@ -40,7 +40,7 @@
 #define _LINUX_VIRTIO_PCI_H
 
 #include "standard-headers/linux/types.h"
-#include "standard-headers/linux/kernel.h"
+#include "standard-headers/linux/const.h"
 
 #ifndef VIRTIO_PCI_NO_LEGACY
 
@@ -246,6 +246,7 @@ struct virtio_pci_cfg_cap {
 #define VIRTIO_ADMIN_CMD_LIST_USE	0x1
 
 /* Admin command group type. */
+#define VIRTIO_ADMIN_GROUP_TYPE_SELF	0x0
 #define VIRTIO_ADMIN_GROUP_TYPE_SRIOV	0x1
 
 /* Transitional device admin command. */

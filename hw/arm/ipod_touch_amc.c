@@ -118,10 +118,10 @@
  */
 
 #include "hw/arm/ipod_touch_amc.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "qemu/error-report.h"
 #include "cpu.h"
 #include "qemu/timer.h"
@@ -1568,7 +1568,7 @@ static void ipod_touch_amc_realize(DeviceState *dev, Error **errp)
 #endif
 }
 
-static void ipod_touch_amc_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_amc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

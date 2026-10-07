@@ -122,7 +122,7 @@ static void cadence_sdhci_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps cadence_sdhci_ops = {
     .read = cadence_sdhci_read,
     .write = cadence_sdhci_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -165,7 +165,7 @@ static const VMStateDescription vmstate_cadence_sdhci = {
     },
 };
 
-static void cadence_sdhci_class_init(ObjectClass *classp, void *data)
+static void cadence_sdhci_class_init(ObjectClass *classp, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(classp);
 

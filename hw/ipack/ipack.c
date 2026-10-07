@@ -12,8 +12,8 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/ipack/ipack.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 IPackDevice *ipack_device_find(IPackBus *bus, int32_t slot)
@@ -74,7 +74,7 @@ static const Property ipack_device_props[] = {
     DEFINE_PROP_INT32("slot", IPackDevice, slot, -1),
 };
 
-static void ipack_device_class_init(ObjectClass *klass, void *data)
+static void ipack_device_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
 

@@ -22,8 +22,8 @@
 #include "hw/s390x/sclp.h"
 #include "migration/vmstate.h"
 #include "hw/s390x/event-facility.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/s390x/ebcdic.h"
 #include "qom/object.h"
 
@@ -41,7 +41,7 @@ typedef struct OprtnsCommand {
 
 struct SCLPConsoleLM {
     SCLPEvent event;
-    CharBackend chr;
+    CharFrontend chr;
     bool echo;                  /* immediate echo of input if true        */
     uint32_t write_errors;      /* errors writing to char layer           */
     uint32_t length;            /* length of byte stream in buffer        */
@@ -214,7 +214,7 @@ static int process_mdb(SCLPEvent *event, MDBO *mdbo)
 {
     int rc;
     int len;
-    uint8_t buffer[SIZE_BUFFER];
+    QEMU_UNINITIALIZED uint8_t buffer[SIZE_BUFFER];
 
     len = be16_to_cpu(mdbo->length);
     len -= sizeof(mdbo->length) + sizeof(mdbo->type)
@@ -339,7 +339,7 @@ static const Property console_properties[] = {
     DEFINE_PROP_BOOL("echo", SCLPConsoleLM, echo, true),
 };
 
-static void console_class_init(ObjectClass *klass, void *data)
+static void console_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCLPEventClass *ec = SCLP_EVENT_CLASS(klass);

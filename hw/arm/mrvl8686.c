@@ -25,8 +25,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "hw/arm/mrvl8686.h"
@@ -698,7 +698,7 @@ static const VMStateDescription vmstate_mrvl8686 = {
     },
 };
 
-static void mrvl8686_class_init(ObjectClass *klass, void *data)
+static void mrvl8686_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &vmstate_mrvl8686;

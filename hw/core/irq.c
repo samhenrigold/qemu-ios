@@ -23,7 +23,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
 
 void qemu_set_irq(qemu_irq irq, int level)
@@ -46,6 +46,14 @@ void qemu_init_irq(IRQState *irq, qemu_irq_handler handler, void *opaque,
                    int n)
 {
     object_initialize(irq, sizeof(*irq), TYPE_IRQ);
+    init_irq_fields(irq, handler, opaque, n);
+}
+
+void qemu_init_irq_child(Object *parent, const char *propname,
+                         IRQState *irq, qemu_irq_handler handler,
+                         void *opaque, int n)
+{
+    object_initialize_child(parent, propname, irq, TYPE_IRQ);
     init_irq_fields(irq, handler, opaque, n);
 }
 

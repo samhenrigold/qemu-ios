@@ -1,8 +1,8 @@
 #ifndef SHPC_H
 #define SHPC_H
 
-#include "exec/memory.h"
-#include "hw/hotplug.h"
+#include "system/memory.h"
+#include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 

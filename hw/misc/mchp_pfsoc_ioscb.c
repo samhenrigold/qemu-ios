@@ -24,8 +24,8 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/mchp_pfsoc_ioscb.h"
 
 /*
@@ -292,7 +292,7 @@ static void mchp_pfsoc_ioscb_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 }
 
-static void mchp_pfsoc_ioscb_class_init(ObjectClass *klass, void *data)
+static void mchp_pfsoc_ioscb_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

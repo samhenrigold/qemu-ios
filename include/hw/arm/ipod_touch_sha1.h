@@ -2,12 +2,12 @@
 #define HW_ARM_IPOD_TOUCH_SHA1_H
 
 #include "qemu/osdep.h"
-#include "hw/platform-bus.h"
-#include "hw/hw.h"
+#include "hw/core/platform-bus.h"
+#include "hw/core/hw-error.h"
 #include "exec/hwaddr.h"
-#include "exec/memory.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "system/memory.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 
 #define TYPE_IPOD_TOUCH_SHA1                "ipodtouch.sha1"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchSHA1State, IPOD_TOUCH_SHA1)

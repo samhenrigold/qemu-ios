@@ -17,8 +17,8 @@
 #include "hw/acpi/aml-build.h"
 #include "hw/acpi/vmclock.h"
 #include "hw/nvram/fw_cfg.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "system/reset.h"
 
@@ -154,7 +154,7 @@ static void vmclock_realize(DeviceState *dev, Error **errp)
     vmclock_update_guest(vms);
 }
 
-static void vmclock_device_class_init(ObjectClass *klass, void *data)
+static void vmclock_device_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

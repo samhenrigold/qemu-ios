@@ -15,8 +15,8 @@
 #include "qemu/osdep.h"
 #include "hw/net/lan9118_phy.h"
 #include "hw/net/mii.h"
-#include "hw/irq.h"
-#include "hw/resettable.h"
+#include "hw/core/irq.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "trace.h"
@@ -200,7 +200,7 @@ static const VMStateDescription vmstate_lan9118_phy = {
     }
 };
 
-static void lan9118_phy_class_init(ObjectClass *klass, void *data)
+static void lan9118_phy_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

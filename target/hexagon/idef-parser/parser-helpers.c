@@ -1315,7 +1315,7 @@ void gen_write_reg(Context *c, YYLTYPE *locp, HexValue *reg, HexValue *value)
     value_m = rvalue_materialize(c, locp, &value_m);
     OUT(c,
         locp,
-        "gen_log_reg_write(ctx, ", &reg->reg.id, ", ",
+        "tcg_gen_mov_tl(get_result_gpr(ctx, ", &reg->reg.id, "), ",
         &value_m, ");\n");
 }
 
@@ -1713,7 +1713,7 @@ void gen_pred_assign(Context *c, YYLTYPE *locp, HexValue *left_pred,
     /* Extract first 8 bits, and store new predicate value */
     OUT(c, locp, "tcg_gen_andi_i32(", left_pred, ", ", &r, ", 0xff);\n");
     if (is_direct) {
-        OUT(c, locp, "gen_log_pred_write(ctx, ", pred_id, ", ", left_pred,
+        OUT(c, locp, "gen_pred_write(ctx, ", pred_id, ", ", left_pred,
             ");\n");
     }
 }
@@ -1725,7 +1725,7 @@ void gen_cancel(Context *c, YYLTYPE *locp)
 
 void gen_load_cancel(Context *c, YYLTYPE *locp)
 {
-    OUT(c, locp, "if (insn->slot == 0 && pkt->pkt_has_store_s1) {\n");
+    OUT(c, locp, "if (insn->slot == 0 && pkt->pkt_has_scalar_store_s1) {\n");
     OUT(c, locp, "ctx->s1_store_processed = false;\n");
     OUT(c, locp, "process_store(ctx, 1);\n");
     OUT(c, locp, "}\n");
@@ -1750,7 +1750,7 @@ void gen_load(Context *c, YYLTYPE *locp, HexValue *width,
 
     /* Lookup the effective address EA */
     find_variable(c, locp, ea, ea);
-    OUT(c, locp, "if (insn->slot == 0 && pkt->pkt_has_store_s1) {\n");
+    OUT(c, locp, "if (insn->slot == 0 && pkt->pkt_has_scalar_store_s1) {\n");
     OUT(c, locp, "probe_noshuf_load(", ea, ", ", width, ", ctx->mem_idx);\n");
     OUT(c, locp, "process_store(ctx, 1);\n");
     OUT(c, locp, "}\n");
@@ -1761,7 +1761,7 @@ void gen_load(Context *c, YYLTYPE *locp, HexValue *width,
     if (signedness == SIGNED) {
         OUT(c, locp, " | MO_SIGN");
     }
-    OUT(c, locp, " | MO_TE);\n");
+    OUT(c, locp, " | MO_LE);\n");
 }
 
 void gen_store(Context *c, YYLTYPE *locp, HexValue *width, HexValue *ea,

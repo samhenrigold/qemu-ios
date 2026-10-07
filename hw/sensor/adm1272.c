@@ -9,7 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/pmbus_device.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -511,7 +511,7 @@ static void adm1272_init(Object *obj)
 
 }
 
-static void adm1272_class_init(ObjectClass *klass, void *data)
+static void adm1272_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

@@ -11,8 +11,8 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/intc/realview_gic.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 
 static void realview_gic_set_irq(void *opaque, int irq, int level)
 {
@@ -63,7 +63,7 @@ static void realview_gic_init(Object *obj)
     qdev_prop_set_uint32(DEVICE(&s->gic), "num-cpu", 1);
 }
 
-static void realview_gic_class_init(ObjectClass *oc, void *data)
+static void realview_gic_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

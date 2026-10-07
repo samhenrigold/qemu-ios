@@ -32,9 +32,9 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "net/can_emu.h"
 
@@ -282,7 +282,7 @@ static void kvaser_pci_instance_init(Object *obj)
                              0);
 }
 
-static void kvaser_pci_class_init(ObjectClass *klass, void *data)
+static void kvaser_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -305,7 +305,7 @@ static const TypeInfo kvaser_pci_info = {
     .instance_size = sizeof(KvaserPCIState),
     .class_init    = kvaser_pci_class_init,
     .instance_init = kvaser_pci_instance_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

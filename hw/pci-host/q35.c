@@ -32,7 +32,7 @@
 #include "qemu/log.h"
 #include "hw/i386/pc.h"
 #include "hw/pci-host/q35.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -184,7 +184,7 @@ static const Property q35_host_props[] = {
     DEFINE_PROP_BOOL("x-pci-hole64-fix", Q35PCIHost, pci_hole64_fix, true),
 };
 
-static void q35_host_class_init(ObjectClass *klass, void *data)
+static void q35_host_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(klass);
@@ -194,7 +194,6 @@ static void q35_host_class_init(ObjectClass *klass, void *data)
     device_class_set_props(dc, q35_host_props);
     /* Reason: needs to be wired up by pc_q35_init */
     dc->user_creatable = false;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "pci";
 }
 
@@ -432,30 +431,27 @@ static void mch_update_smbase_smram(MCHPCIState *mch)
     }
 
     if (*reg == MCH_HOST_BRIDGE_F_SMBASE_QUERY) {
-        pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] =
-            MCH_HOST_BRIDGE_F_SMBASE_LCK;
+        pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] = MCH_HOST_BRIDGE_F_SMBASE_LCK;
         *reg = MCH_HOST_BRIDGE_F_SMBASE_IN_RAM;
         return;
     }
 
     /*
-     * default/reset state, discard written value
-     * which will disable SMRAM balackhole at SMBASE
+     * reg value can come from register write/reset/migration source,
+     * update wmask to be in sync with it regardless of source
      */
-    if (pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] == 0xff) {
-        *reg = 0x00;
+    if (*reg == MCH_HOST_BRIDGE_F_SMBASE_IN_RAM) {
+        pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] = MCH_HOST_BRIDGE_F_SMBASE_LCK;
+        return;
+    }
+    if (*reg & MCH_HOST_BRIDGE_F_SMBASE_LCK) {
+        /* lock register at 0x2 and disable all writes */
+        pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] = 0;
+        *reg = MCH_HOST_BRIDGE_F_SMBASE_LCK;
     }
 
+    lck = *reg & MCH_HOST_BRIDGE_F_SMBASE_LCK;
     memory_region_transaction_begin();
-    if (*reg & MCH_HOST_BRIDGE_F_SMBASE_LCK) {
-        /* disable all writes */
-        pd->wmask[MCH_HOST_BRIDGE_F_SMBASE] &=
-            ~MCH_HOST_BRIDGE_F_SMBASE_LCK;
-        *reg = MCH_HOST_BRIDGE_F_SMBASE_LCK;
-        lck = true;
-    } else {
-        lck = false;
-    }
     memory_region_set_enabled(&mch->smbase_blackhole, lck);
     memory_region_set_enabled(&mch->smbase_window, lck);
     memory_region_transaction_commit();
@@ -663,11 +659,11 @@ static void mch_realize(PCIDevice *d, Error **errp)
 
 static const Property mch_props[] = {
     DEFINE_PROP_UINT16("extended-tseg-mbytes", MCHPCIState, ext_tseg_mbytes,
-                       16),
+                       64),
     DEFINE_PROP_BOOL("smbase-smram", MCHPCIState, has_smram_at_smbase, true),
 };
 
-static void mch_class_init(ObjectClass *klass, void *data)
+static void mch_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -703,7 +699,7 @@ static const TypeInfo mch_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(MCHPCIState),
     .class_init = mch_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

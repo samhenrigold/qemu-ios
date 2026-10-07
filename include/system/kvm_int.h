@@ -9,12 +9,13 @@
 #ifndef QEMU_KVM_INT_H
 #define QEMU_KVM_INT_H
 
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qapi/qapi-types-common.h"
 #include "qemu/accel.h"
 #include "qemu/queue.h"
 #include "system/kvm.h"
-#include "hw/boards.h"
+#include "accel/accel-ops.h"
+#include "hw/core/boards.h"
 #include "hw/i386/topology.h"
 #include "io/channel-socket.h"
 
@@ -166,6 +167,7 @@ struct KVMState
     uint16_t xen_gnttab_max_frames;
     uint16_t xen_evtchn_max_pirq;
     char *device;
+    OnOffAuto honor_guest_pat;
 };
 
 void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,

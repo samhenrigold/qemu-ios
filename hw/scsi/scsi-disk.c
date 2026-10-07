@@ -27,17 +27,18 @@
 #include "qemu/module.h"
 #include "qemu/hw-version.h"
 #include "qemu/memalign.h"
+#include "qemu/target-info.h"
 #include "hw/scsi/scsi.h"
+#include "migration/misc.h"
 #include "migration/qemu-file-types.h"
 #include "migration/vmstate.h"
 #include "hw/scsi/emulation.h"
 #include "scsi/constants.h"
-#include "system/arch_init.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "hw/block/block.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "system/dma.h"
 #include "system/system.h"
 #include "qemu/cutils.h"
@@ -74,7 +75,7 @@ struct SCSIDiskClass {
      */
     DMAIOFunc       *dma_readv;
     DMAIOFunc       *dma_writev;
-    bool            (*need_fua_emulation)(SCSICommand *cmd);
+    bool            (*need_fua)(SCSICommand *cmd);
     void            (*update_sense)(SCSIRequest *r);
 };
 
@@ -85,7 +86,7 @@ typedef struct SCSIDiskReq {
     uint32_t sector_count;
     uint32_t buflen;
     bool started;
-    bool need_fua_emulation;
+    bool need_fua;
     struct iovec iov;
     QEMUIOVector qiov;
     BlockAcctCookie acct;
@@ -117,11 +118,12 @@ struct SCSIDiskState {
      * 0x0000        - rotation rate not reported
      * 0x0001        - non-rotating medium (SSD)
      * 0x0002-0x0400 - reserved
-     * 0x0401-0xffe  - rotations per minute
+     * 0x0401-0xfffe - rotations per minute
      * 0xffff        - reserved
      */
     uint16_t rotation_rate;
     bool migrate_emulated_scsi_request;
+    NotifierWithReturn migration_notifier;
 };
 
 static void scsi_free_request(SCSIRequest *req)
@@ -389,24 +391,6 @@ static bool scsi_is_cmd_fua(SCSICommand *cmd)
     }
 }
 
-static void scsi_write_do_fua(SCSIDiskReq *r)
-{
-    SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, r->req.dev);
-
-    assert(r->req.aiocb == NULL);
-    assert(!r->req.io_canceled);
-
-    if (r->need_fua_emulation) {
-        block_acct_start(blk_get_stats(s->qdev.conf.blk), &r->acct, 0,
-                         BLOCK_ACCT_FLUSH);
-        r->req.aiocb = blk_aio_flush(s->qdev.conf.blk, scsi_aio_complete, r);
-        return;
-    }
-
-    scsi_req_complete(&r->req, GOOD);
-    scsi_req_unref(&r->req);
-}
-
 static void scsi_dma_complete_noio(SCSIDiskReq *r, int ret)
 {
     assert(r->req.aiocb == NULL);
@@ -416,12 +400,7 @@ static void scsi_dma_complete_noio(SCSIDiskReq *r, int ret)
 
     r->sector += r->sector_count;
     r->sector_count = 0;
-    if (r->req.cmd.mode == SCSI_XFER_TO_DEV) {
-        scsi_write_do_fua(r);
-        return;
-    } else {
-        scsi_req_complete(&r->req, GOOD);
-    }
+    scsi_req_complete(&r->req, GOOD);
 
 done:
     scsi_req_unref(&r->req);
@@ -564,7 +543,7 @@ static void scsi_read_data(SCSIRequest *req)
 
     first = !r->started;
     r->started = true;
-    if (first && r->need_fua_emulation) {
+    if (first && r->need_fua) {
         block_acct_start(blk_get_stats(s->qdev.conf.blk), &r->acct, 0,
                          BLOCK_ACCT_FLUSH);
         r->req.aiocb = blk_aio_flush(s->qdev.conf.blk, scsi_do_read_cb, r);
@@ -589,8 +568,7 @@ static void scsi_write_complete_noio(SCSIDiskReq *r, int ret)
     r->sector += n;
     r->sector_count -= n;
     if (r->sector_count == 0) {
-        scsi_write_do_fua(r);
-        return;
+        scsi_req_complete(&r->req, GOOD);
     } else {
         scsi_init_iovec(r, SCSI_DMA_BUF_SIZE);
         trace_scsi_disk_write_complete_noio(r->req.tag, r->qiov.size);
@@ -623,6 +601,7 @@ static void scsi_write_data(SCSIRequest *req)
     SCSIDiskReq *r = DO_UPCAST(SCSIDiskReq, req, req);
     SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, r->req.dev);
     SCSIDiskClass *sdc = (SCSIDiskClass *) object_get_class(OBJECT(s));
+    BlockCompletionFunc *cb;
 
     /* No data transfer may already be in progress */
     assert(r->req.aiocb == NULL);
@@ -648,11 +627,10 @@ static void scsi_write_data(SCSIRequest *req)
 
     if (r->req.cmd.buf[0] == VERIFY_10 || r->req.cmd.buf[0] == VERIFY_12 ||
         r->req.cmd.buf[0] == VERIFY_16) {
-        if (r->req.sg) {
-            scsi_dma_complete_noio(r, 0);
-        } else {
-            scsi_write_complete_noio(r, 0);
-        }
+        block_acct_start(blk_get_stats(s->qdev.conf.blk), &r->acct, 0,
+                         BLOCK_ACCT_FLUSH);
+        cb = r->req.sg ? scsi_dma_complete : scsi_write_complete;
+        r->req.aiocb = blk_aio_flush(s->qdev.conf.blk, cb, r);
         return;
     }
 
@@ -2391,7 +2369,7 @@ static int32_t scsi_disk_dma_command(SCSIRequest *req, uint8_t *buf)
         scsi_check_condition(r, SENSE_CODE(LBA_OUT_OF_RANGE));
         return 0;
     }
-    r->need_fua_emulation = sdc->need_fua_emulation(&r->req.cmd);
+    r->need_fua = sdc->need_fua(&r->req.cmd);
     if (r->sector_count == 0) {
         scsi_req_complete(&r->req, GOOD);
     }
@@ -2565,7 +2543,7 @@ static void scsi_realize(SCSIDevice *dev, Error **errp)
     }
 
     if (!s->version) {
-        s->version = g_strdup(qemu_hw_version());
+        s->version = g_strdup(QEMU_HW_VERSION);
     }
     if (!s->vendor) {
         s->vendor = g_strdup("QEMU");
@@ -2761,6 +2739,29 @@ static SCSIRequest *scsi_new_request(SCSIDevice *d, uint32_t tag, uint32_t lun,
 }
 
 #ifdef __linux__
+/*
+ * Preempt on the SCSI Persistent Reservation on the source when migration
+ * fails because the destination may have already preempted and we need to get
+ * the reservation back.
+ */
+static int scsi_block_migration_notifier(NotifierWithReturn *notifier,
+                                         MigrationEvent *e, Error **errp)
+{
+    if (e->type == MIG_EVENT_FAILED) {
+        SCSIDiskState *s =
+            container_of(notifier, SCSIDiskState, migration_notifier);
+        SCSIDevice *d = &s->qdev;
+        Error *local_err = NULL;
+
+        if (!scsi_generic_pr_state_preempt(d, &local_err)) {
+            /* MIG_EVENT_FAILED cannot fail, so just warn */
+            error_prepend(&local_err, "scsi-block migration rollback: ");
+            warn_report_err(local_err);
+        }
+    }
+    return 0;
+}
+
 static int get_device_type(SCSIDiskState *s)
 {
     uint8_t cmd[16];
@@ -2772,8 +2773,8 @@ static int get_device_type(SCSIDiskState *s)
     cmd[0] = INQUIRY;
     cmd[4] = sizeof(buf);
 
-    ret = scsi_SG_IO_FROM_DEV(s->qdev.conf.blk, cmd, sizeof(cmd),
-                              buf, sizeof(buf), s->qdev.io_timeout);
+    ret = scsi_SG_IO(s->qdev.conf.blk, SG_DXFER_FROM_DEV, cmd, sizeof(cmd),
+                     buf, sizeof(buf), s->qdev.io_timeout, NULL);
     if (ret < 0) {
         return -1;
     }
@@ -2839,6 +2840,16 @@ static void scsi_block_realize(SCSIDevice *dev, Error **errp)
 
     scsi_realize(&s->qdev, errp);
     scsi_generic_read_device_inquiry(&s->qdev);
+
+    migration_add_notifier(&s->migration_notifier,
+                           scsi_block_migration_notifier);
+}
+
+static void scsi_block_unrealize(SCSIDevice *dev)
+{
+    SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, dev);
+
+    migration_remove_notifier(&s->migration_notifier);
 }
 
 typedef struct SCSIBlockReq {
@@ -3137,7 +3148,8 @@ BlockAIOCB *scsi_dma_writev(int64_t offset, QEMUIOVector *iov,
 {
     SCSIDiskReq *r = opaque;
     SCSIDiskState *s = DO_UPCAST(SCSIDiskState, qdev, r->req.dev);
-    return blk_aio_pwritev(s->qdev.conf.blk, offset, iov, 0, cb, cb_opaque);
+    int flags = r->need_fua ? BDRV_REQ_FUA : 0;
+    return blk_aio_pwritev(s->qdev.conf.blk, offset, iov, flags, cb, cb_opaque);
 }
 
 static char *scsi_property_get_loadparm(Object *obj, Error **errp)
@@ -3168,7 +3180,7 @@ static void scsi_property_add_specifics(DeviceClass *dc)
     ObjectClass *oc = OBJECT_CLASS(dc);
 
     /* The loadparm property is only supported on s390x */
-    if (qemu_arch_available(QEMU_ARCH_S390X)) {
+    if (target_s390x()) {
         object_class_property_add_str(oc, "loadparm",
                                       scsi_property_get_loadparm,
                                       scsi_property_set_loadparm);
@@ -3177,7 +3189,7 @@ static void scsi_property_add_specifics(DeviceClass *dc)
     }
 }
 
-static void scsi_disk_base_class_initfn(ObjectClass *klass, void *data)
+static void scsi_disk_base_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCSIDiskClass *sdc = SCSI_DISK_BASE_CLASS(klass);
@@ -3186,7 +3198,7 @@ static void scsi_disk_base_class_initfn(ObjectClass *klass, void *data)
     device_class_set_legacy_reset(dc, scsi_disk_reset);
     sdc->dma_readv = scsi_dma_readv;
     sdc->dma_writev = scsi_dma_writev;
-    sdc->need_fua_emulation = scsi_is_cmd_fua;
+    sdc->need_fua  = scsi_is_cmd_fua;
 }
 
 static const TypeInfo scsi_disk_base_info = {
@@ -3215,7 +3227,7 @@ static const Property scsi_hd_properties[] = {
     DEFINE_PROP_BIT("removable", SCSIDiskState, features,
                     SCSI_DISK_F_REMOVABLE, false),
     DEFINE_PROP_BIT("dpofua", SCSIDiskState, features,
-                    SCSI_DISK_F_DPOFUA, false),
+                    SCSI_DISK_F_DPOFUA, true),
     DEFINE_PROP_UINT64("wwn", SCSIDiskState, qdev.wwn, 0),
     DEFINE_PROP_UINT64("port_wwn", SCSIDiskState, qdev.port_wwn, 0),
     DEFINE_PROP_UINT16("port_index", SCSIDiskState, port_index, 0),
@@ -3232,6 +3244,47 @@ static const Property scsi_hd_properties[] = {
     DEFINE_BLOCK_CHS_PROPERTIES(SCSIDiskState, qdev.conf),
 };
 
+#ifdef __linux__
+static bool scsi_disk_pr_state_post_load_errp(void *opaque, int version_id,
+                                              Error **errp)
+{
+    SCSIDiskState *s = opaque;
+    SCSIDevice *dev = &s->qdev;
+
+    return scsi_generic_pr_state_preempt(dev, errp);
+}
+
+static bool scsi_disk_pr_state_needed(void *opaque)
+{
+    SCSIDiskState *s = opaque;
+    SCSIPRState *pr_state = &s->qdev.pr_state;
+    bool ret;
+
+    if (!s->qdev.migrate_pr) {
+        return false;
+    }
+
+    /* A reservation requires a key, so checking this field is enough */
+    WITH_QEMU_LOCK_GUARD(&pr_state->mutex) {
+        ret = pr_state->key;
+    }
+    return ret;
+}
+
+static const VMStateDescription vmstate_scsi_disk_pr_state = {
+    .name = "scsi-disk/pr",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load_errp = scsi_disk_pr_state_post_load_errp,
+    .needed = scsi_disk_pr_state_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(qdev.pr_state.key, SCSIDiskState),
+        VMSTATE_UINT8(qdev.pr_state.resv_type, SCSIDiskState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+#endif /* __linux__ */
+
 static const VMStateDescription vmstate_scsi_disk_state = {
     .name = "scsi-disk",
     .version_id = 1,
@@ -3244,10 +3297,16 @@ static const VMStateDescription vmstate_scsi_disk_state = {
         VMSTATE_BOOL(tray_open, SCSIDiskState),
         VMSTATE_BOOL(tray_locked, SCSIDiskState),
         VMSTATE_END_OF_LIST()
-    }
+    },
+    .subsections = (const VMStateDescription * const []) {
+#ifdef __linux__
+        &vmstate_scsi_disk_pr_state,
+#endif
+        NULL
+    },
 };
 
-static void scsi_hd_class_initfn(ObjectClass *klass, void *data)
+static void scsi_hd_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCSIDeviceClass *sc = SCSI_DEVICE_CLASS(klass);
@@ -3289,7 +3348,7 @@ static const Property scsi_cd_properties[] = {
                     SCSI_DISK_QUIRK_MODE_PAGE_TRUNCATED, 0),
 };
 
-static void scsi_cd_class_initfn(ObjectClass *klass, void *data)
+static void scsi_cd_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCSIDeviceClass *sc = SCSI_DEVICE_CLASS(klass);
@@ -3324,21 +3383,23 @@ static const Property scsi_block_properties[] = {
                       -1),
     DEFINE_PROP_UINT32("io_timeout", SCSIDiskState, qdev.io_timeout,
                        DEFAULT_IO_TIMEOUT),
+    DEFINE_PROP_BOOL("migrate-pr", SCSIDiskState, qdev.migrate_pr, true),
 };
 
-static void scsi_block_class_initfn(ObjectClass *klass, void *data)
+static void scsi_block_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCSIDeviceClass *sc = SCSI_DEVICE_CLASS(klass);
     SCSIDiskClass *sdc = SCSI_DISK_BASE_CLASS(klass);
 
     sc->realize      = scsi_block_realize;
+    sc->unrealize    = scsi_block_unrealize;
     sc->alloc_req    = scsi_block_new_request;
     sc->parse_cdb    = scsi_block_parse_cdb;
     sdc->dma_readv   = scsi_block_dma_readv;
     sdc->dma_writev  = scsi_block_dma_writev;
     sdc->update_sense = scsi_block_update_sense;
-    sdc->need_fua_emulation = scsi_block_no_fua;
+    sdc->need_fua    = scsi_block_no_fua;
     dc->desc = "SCSI block device passthrough";
     device_class_set_props(dc, scsi_block_properties);
     dc->vmsd  = &vmstate_scsi_disk_state;

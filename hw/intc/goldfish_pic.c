@@ -8,9 +8,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "trace.h"
@@ -185,7 +185,7 @@ static const Property goldfish_pic_properties[] = {
     DEFINE_PROP_UINT8("index", GoldfishPICState, idx, 0),
 };
 
-static void goldfish_pic_class_init(ObjectClass *oc, void *data)
+static void goldfish_pic_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(oc);
@@ -204,7 +204,7 @@ static const TypeInfo goldfish_pic_info = {
     .class_init = goldfish_pic_class_init,
     .instance_init = goldfish_pic_instance_init,
     .instance_size = sizeof(GoldfishPICState),
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
          { TYPE_INTERRUPT_STATS_PROVIDER },
          { }
     },

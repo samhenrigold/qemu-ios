@@ -20,6 +20,7 @@
 #include "fsdev/qemu-fsdev.h"
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
+#include "qemu/error-report.h"
 #include "coth.h"
 #include "9p-xattr.h"
 #include "9p-util.h"
@@ -219,13 +220,16 @@ int coroutine_fn v9fs_co_readdir_many(V9fsPDU *pdu, V9fsFidState *fidp,
                                       bool dostat)
 {
     int err = 0;
+    V9fsState *s = pdu->s;
 
     if (v9fs_request_cancelled(pdu)) {
         return -EINTR;
     }
+    v9fs_path_read_lock(s);
     v9fs_co_run_in_worker({
         err = do_readdir_many(pdu, fidp, entries, offset, maxsize, dostat);
     });
+    v9fs_path_unlock(s);
     return err;
 }
 
@@ -353,7 +357,11 @@ int coroutine_fn v9fs_co_closedir(V9fsPDU *pdu, V9fsFidOpenState *fs)
                 err = -errno;
             }
         });
-    if (!err) {
+    /* 'man 2 close' suggests to ignore close() errors except of EBADF */
+    if (unlikely(err && errno == EBADF)) {
+        /* unexpected case as we should have checked for a valid file handle */
+        error_report("9pfs: WARNING: v9fs_co_closedir() failed with EBADF");
+    } else {
         total_open_fd--;
     }
     return err;

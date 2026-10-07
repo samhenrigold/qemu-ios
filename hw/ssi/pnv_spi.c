@@ -8,13 +8,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/ppc/pnv_xscom.h"
 #include "hw/ssi/pnv_spi.h"
 #include "hw/ssi/pnv_spi_regs.h"
 #include "hw/ssi/ssi.h"
+#include "migration/vmstate.h"
 #include <libfdt.h>
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "trace.h"
 
 #define PNV_SPI_OPCODE_LO_NIBBLE(x) (x & 0x0F)
@@ -996,7 +997,6 @@ static void operation_sequencer(PnvSpi *s)
     } /* end of while */
     /* Update sequencer index field in status.*/
     s->status = SETFIELD(SPI_STS_SEQ_INDEX, s->status, seq_index);
-    return;
 } /* end of operation_sequencer() */
 
 /*
@@ -1142,7 +1142,6 @@ static void pnv_spi_xscom_write(void *opaque, hwaddr addr,
         qemu_log_mask(LOG_GUEST_ERROR, "pnv_spi_regs: Invalid xscom "
                  "write at 0x%" PRIx32 "\n", reg);
     }
-    return;
 }
 
 static const MemoryRegionOps pnv_spi_xscom_ops = {
@@ -1201,7 +1200,32 @@ static int pnv_spi_dt_xscom(PnvXScomInterface *dev, void *fdt,
     return 0;
 }
 
-static void pnv_spi_class_init(ObjectClass *klass, void *data)
+static const VMStateDescription pnv_spi_vmstate = {
+    .name = TYPE_PNV_SPI,
+    .version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(fail_count, PnvSpi),
+        VMSTATE_UINT8(transfer_len, PnvSpi),
+        VMSTATE_UINT8(responder_select, PnvSpi),
+        VMSTATE_BOOL(shift_n1_done, PnvSpi),
+        VMSTATE_UINT8(loop_counter_1, PnvSpi),
+        VMSTATE_UINT8(loop_counter_2, PnvSpi),
+        VMSTATE_UINT8(N1_bits, PnvSpi),
+        VMSTATE_UINT8(N2_bits, PnvSpi),
+        VMSTATE_UINT8(N1_bytes, PnvSpi),
+        VMSTATE_UINT8(N2_bytes, PnvSpi),
+        VMSTATE_UINT8(N1_tx, PnvSpi),
+        VMSTATE_UINT8(N2_tx, PnvSpi),
+        VMSTATE_UINT8(N1_rx, PnvSpi),
+        VMSTATE_UINT8(N2_rx, PnvSpi),
+        VMSTATE_UINT64_ARRAY(regs, PnvSpi, PNV_SPI_REGS),
+        VMSTATE_UINT8_ARRAY(seq_op, PnvSpi, PNV_SPI_REG_SIZE),
+        VMSTATE_UINT64(status, PnvSpi),
+        VMSTATE_END_OF_LIST(),
+    },
+};
+
+static void pnv_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PnvXScomInterfaceClass *xscomc = PNV_XSCOM_INTERFACE_CLASS(klass);
@@ -1211,6 +1235,7 @@ static void pnv_spi_class_init(ObjectClass *klass, void *data)
     dc->desc = "PowerNV SPI";
     dc->realize = pnv_spi_realize;
     device_class_set_legacy_reset(dc, do_reset);
+    dc->vmsd = &pnv_spi_vmstate;
     device_class_set_props(dc, pnv_spi_properties);
 }
 
@@ -1219,7 +1244,7 @@ static const TypeInfo pnv_spi_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PnvSpi),
     .class_init    = pnv_spi_class_init,
-    .interfaces    = (InterfaceInfo[]) {
+    .interfaces    = (const InterfaceInfo[]) {
         { TYPE_PNV_XSCOM_INTERFACE },
         { }
     }

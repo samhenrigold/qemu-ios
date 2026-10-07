@@ -232,8 +232,8 @@ void s5l8930_hdq_set_capacity(Chardev *chr, int mah)
     hdq_reset(g);
 }
 
-static void hdq_chr_open(Chardev *chr, ChardevBackend *backend,
-                         bool *be_opened, Error **errp)
+static bool hdq_chr_open(Chardev *chr, ChardevBackend *backend,
+                         Error **errp)
 {
     HdqGaugeChardev *g = HDQ_GAUGE_CHARDEV(chr);
 
@@ -241,7 +241,8 @@ static void hdq_chr_open(Chardev *chr, ChardevBackend *backend,
     g->level = 80;
     qemu_register_reset(hdq_reset, g);
     hdq_reset(g);
-    *be_opened = true;
+    qemu_chr_be_event(chr, CHR_EVENT_OPENED);
+    return true;
 }
 
 static void hdq_chr_finalize(Object *obj)
@@ -254,11 +255,11 @@ static void hdq_chr_finalize(Object *obj)
     }
 }
 
-static void hdq_chr_class_init(ObjectClass *oc, void *data)
+static void hdq_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
-    cc->open = hdq_chr_open;
+    cc->chr_open = hdq_chr_open;
     cc->chr_write = hdq_chr_write;
     cc->chr_accept_input = hdq_chr_accept_input;
 }

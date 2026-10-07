@@ -1,7 +1,7 @@
 #include "hw/arm/ipod_touch_gpio.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 
 /*
@@ -167,7 +167,7 @@ static const Property s5l8900_gpio_properties[] = {
     DEFINE_PROP_UINT32("rest-high-mask", IPodTouchGPIOState, rest_high_mask, 0),
 };
 
-static void s5l8900_gpio_class_init(ObjectClass *klass, void *data)
+static void s5l8900_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -16,8 +16,8 @@
 
 #include "qemu/osdep.h"
 
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/ssi/npcm7xx_fiu.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -557,7 +557,7 @@ static const Property npcm7xx_fiu_properties[] = {
     DEFINE_PROP_SIZE("flash-size", NPCM7xxFIUState, flash_size, 0),
 };
 
-static void npcm7xx_fiu_class_init(ObjectClass *klass, void *data)
+static void npcm7xx_fiu_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

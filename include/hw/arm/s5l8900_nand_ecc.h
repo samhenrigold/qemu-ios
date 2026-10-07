@@ -2,7 +2,7 @@
 #define HW_ARM_S5L8900_NAND_ECC_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 #define NANDECC_DATA 0x4
 #define NANDECC_ECC 0x8

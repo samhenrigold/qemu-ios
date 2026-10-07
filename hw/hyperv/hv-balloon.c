@@ -10,17 +10,17 @@
 #include "qemu/osdep.h"
 #include "hv-balloon-internal.h"
 
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "exec/cpu-common.h"
-#include "exec/ramblock.h"
-#include "hw/boards.h"
+#include "system/ramblock.h"
+#include "hw/core/boards.h"
 #include "hw/hyperv/dynmem-proto.h"
 #include "hw/hyperv/hv-balloon.h"
 #include "hw/hyperv/vmbus.h"
 #include "hw/mem/memory-device.h"
 #include "hw/mem/pc-dimm.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "monitor/qdev.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-machine.h"
@@ -66,10 +66,6 @@
  * If the number requested is too high Windows will no longer honor
  * these requests
  */
-
-struct HvBalloonClass {
-    VMBusDeviceClass parent_class;
-} HvBalloonClass;
 
 typedef enum State {
     /* not a real state */
@@ -162,8 +158,9 @@ typedef struct HvBalloon {
     MemoryRegion *mr;
 } HvBalloon;
 
-OBJECT_DEFINE_TYPE_WITH_INTERFACES(HvBalloon, hv_balloon, HV_BALLOON, VMBUS_DEVICE, \
-                                   { TYPE_MEMORY_DEVICE }, { })
+OBJECT_DEFINE_SIMPLE_TYPE_WITH_INTERFACES(HvBalloon, hv_balloon, \
+                                          HV_BALLOON, VMBUS_DEVICE, \
+                                          { TYPE_MEMORY_DEVICE }, { })
 
 #define HV_BALLOON_SET_STATE(hvb, news)             \
     do {                                            \
@@ -1478,16 +1475,6 @@ static void hv_balloon_ensure_mr(HvBalloon *balloon)
     balloon->mr->align = memory_region_get_alignment(hostmem_mr);
 }
 
-static void hv_balloon_free_mr(HvBalloon *balloon)
-{
-    if (!balloon->mr) {
-        return;
-    }
-
-    object_unparent(OBJECT(balloon->mr));
-    g_clear_pointer(&balloon->mr, g_free);
-}
-
 static void hv_balloon_vmdev_realize(VMBusDevice *vdev, Error **errp)
 {
     ERRP_GUARD();
@@ -1583,7 +1570,7 @@ static void hv_balloon_vmdev_reset(VMBusDevice *vdev)
  */
 static void hv_balloon_unrealize_finalize_common(HvBalloon *balloon)
 {
-    hv_balloon_free_mr(balloon);
+    g_clear_pointer(&balloon->mr, g_free);
     balloon->addr = 0;
 
     balloon->memslot_count = 0;
@@ -1743,7 +1730,7 @@ static const Property hv_balloon_properties[] = {
     DEFINE_PROP_UINT64(HV_BALLOON_ADDR_PROP, HvBalloon, addr, 0),
 };
 
-static void hv_balloon_class_init(ObjectClass *klass, void *data)
+static void hv_balloon_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);

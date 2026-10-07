@@ -1,6 +1,6 @@
 #include "hw/arm/ipod_touch_chipid.h"
 #include "qemu/log.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 static uint64_t ipod_touch_chipid_read(void *opaque, hwaddr addr, unsigned size)
@@ -110,7 +110,7 @@ static const VMStateDescription vmstate_ipod_touch_chipid = {
     }
 };
 
-static void ipod_touch_chipid_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_chipid_class_init(ObjectClass *klass, const void *data)
 {
     DEVICE_CLASS(klass)->vmsd = &vmstate_ipod_touch_chipid;
     device_class_set_props(DEVICE_CLASS(klass), ipod_touch_chipid_properties);

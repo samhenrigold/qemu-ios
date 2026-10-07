@@ -26,10 +26,10 @@
 #include "qemu/log.h"
 #include "qapi/error.h"
 #include "hw/char/xilinx_uartlite.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/sysbus.h"
 #include "qemu/module.h"
 #include "chardev/char-fe.h"
 #include "qom/object.h"
@@ -60,7 +60,7 @@ struct XilinxUARTLite {
 
     EndianMode model_endianness;
     MemoryRegion mmio;
-    CharBackend chr;
+    CharFrontend chr;
     qemu_irq irq;
 
     uint8_t rx_fifo[8];
@@ -241,7 +241,7 @@ static void xilinx_uartlite_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
 }
 
-static void xilinx_uartlite_class_init(ObjectClass *klass, void *data)
+static void xilinx_uartlite_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -1,7 +1,8 @@
 #include "hw/arm/ipod_touch_aes.h"
-#include "hw/qdev-properties.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "exec/cpu-common.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 
@@ -947,7 +948,7 @@ static const Property ipod_touch_aes_properties[] = {
     DEFINE_PROP_BOOL("s5l8900-compat", IPodTouchAESState, s5l8900_compat, false),
 };
 
-static void ipod_touch_aes_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_aes_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

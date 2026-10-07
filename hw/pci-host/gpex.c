@@ -31,10 +31,10 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci-host/gpex.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 
@@ -192,7 +192,7 @@ static const Property gpex_host_properties[] = {
     DEFINE_PROP_UINT8("num-irqs", GPEXHost, num_irqs, PCI_NUM_PINS),
 };
 
-static void gpex_host_class_init(ObjectClass *klass, void *data)
+static void gpex_host_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(klass);
@@ -200,7 +200,6 @@ static void gpex_host_class_init(ObjectClass *klass, void *data)
     hc->root_bus_path = gpex_host_root_bus_path;
     dc->realize = gpex_host_realize;
     dc->unrealize = gpex_host_unrealize;
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "pci";
     device_class_set_props(dc, gpex_host_properties);
 }
@@ -237,12 +236,11 @@ static const VMStateDescription vmstate_gpex_root = {
     }
 };
 
-static void gpex_root_class_init(ObjectClass *klass, void *data)
+static void gpex_root_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->desc = "QEMU generic PCIe host bridge";
     dc->vmsd = &vmstate_gpex_root;
     k->vendor_id = PCI_VENDOR_ID_REDHAT;
@@ -261,7 +259,7 @@ static const TypeInfo gpex_root_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(GPEXRootState),
     .class_init = gpex_root_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

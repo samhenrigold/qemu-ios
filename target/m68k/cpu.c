@@ -19,10 +19,15 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
-#include "cpu.h"
-#include "migration/vmstate.h"
+#include "accel/tcg/cpu-ops.h"
 #include "fpu/softfloat.h"
+#include "qapi/error.h"
+
+#ifndef CONFIG_USER_ONLY
+#include "migration/vmstate.h"
+#endif
+
+#include "cpu.h"
 
 static void m68k_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -36,6 +41,24 @@ static vaddr m68k_cpu_get_pc(CPUState *cs)
     M68kCPU *cpu = M68K_CPU(cs);
 
     return cpu->env.pc;
+}
+
+static TCGTBCPUState m68k_get_tb_cpu_state(CPUState *cs)
+{
+    CPUM68KState *env = cpu_env(cs);
+    uint32_t flags;
+
+    flags = (env->macsr >> 4) & TB_FLAGS_MACSR;
+    if (env->sr & SR_S) {
+        flags |= TB_FLAGS_MSR_S;
+        flags |= (env->sfc << (TB_FLAGS_SFC_S_BIT - 2)) & TB_FLAGS_SFC_S;
+        flags |= (env->dfc << (TB_FLAGS_DFC_S_BIT - 2)) & TB_FLAGS_DFC_S;
+    }
+    if (M68K_SR_TRACE(env->sr) == M68K_SR_TRACE_ANY_INS) {
+        flags |= TB_FLAGS_TRACE;
+    }
+
+    return (TCGTBCPUState){ .pc = env->pc, .flags = flags };
 }
 
 static void m68k_restore_state_to_opc(CPUState *cs,
@@ -54,7 +77,7 @@ static void m68k_restore_state_to_opc(CPUState *cs,
 #ifndef CONFIG_USER_ONLY
 static bool m68k_cpu_has_work(CPUState *cs)
 {
-    return cs->interrupt_request & CPU_INTERRUPT_HARD;
+    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 #endif /* !CONFIG_USER_ONLY */
 
@@ -156,7 +179,7 @@ static void m68k_cpu_reset_hold(Object *obj, ResetType type)
     env->pc = 0;
 }
 
-static void m68k_cpu_disas_set_info(CPUState *s, disassemble_info *info)
+static void m68k_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
 {
     info->print_insn = print_insn_m68k;
     info->endian = BFD_ENDIAN_BIG;
@@ -215,7 +238,7 @@ static void m68010_cpu_initfn(Object *obj)
 
 /*
  * Adds BFCHG, BFCLR, BFEXTS, BFEXTU, BFFFO, BFINS, BFSET, BFTST, CAS, CAS2,
- *      CHK2, CMP2, DIVSL, DIVUL, EXTB, PACK, TRAPcc, UNPK.
+ *      CHK2, CMP2, DIVSL, DIVUL, EXTB, LINKL, PACK, TRAPcc, UNPK.
  *
  * 68020/30 only:
  *      CALLM, cpBcc, cpDBcc, cpGEN, cpRESTORE, cpSAVE, cpScc, cpTRAPcc
@@ -240,6 +263,7 @@ static void m68020_cpu_initfn(Object *obj)
     m68k_set_feature(env, M68K_FEATURE_MSP);
     m68k_set_feature(env, M68K_FEATURE_UNALIGNED_DATA);
     m68k_set_feature(env, M68K_FEATURE_TRAPCC);
+    m68k_set_feature(env, M68K_FEATURE_LINKL);
 }
 
 /*
@@ -586,23 +610,29 @@ static const struct SysemuCPUOps m68k_sysemu_ops = {
 };
 #endif /* !CONFIG_USER_ONLY */
 
-#include "accel/tcg/cpu-ops.h"
-
 static const TCGCPUOps m68k_tcg_ops = {
+    /* MTTCG not yet supported: require strict ordering */
+    .guest_default_memory_order = TCG_MO_ALL,
+    .mttcg_supported = false,
+
     .initialize = m68k_tcg_init,
     .translate_code = m68k_translate_code,
+    .get_tb_cpu_state = m68k_get_tb_cpu_state,
     .restore_state_to_opc = m68k_restore_state_to_opc,
+    .mmu_index = m68k_cpu_mmu_index,
 
 #ifndef CONFIG_USER_ONLY
     .tlb_fill = m68k_cpu_tlb_fill,
+    .pointer_wrap = cpu_pointer_wrap_uint32,
     .cpu_exec_interrupt = m68k_cpu_exec_interrupt,
     .cpu_exec_halt = m68k_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
     .do_interrupt = m68k_cpu_do_interrupt,
     .do_transaction_failed = m68k_cpu_transaction_failed,
 #endif /* !CONFIG_USER_ONLY */
 };
 
-static void m68k_cpu_class_init(ObjectClass *c, void *data)
+static void m68k_cpu_class_init(ObjectClass *c, const void *data)
 {
     M68kCPUClass *mcc = M68K_CPU_CLASS(c);
     CPUClass *cc = CPU_CLASS(c);
@@ -615,7 +645,6 @@ static void m68k_cpu_class_init(ObjectClass *c, void *data)
                                        &mcc->parent_phases);
 
     cc->class_by_name = m68k_cpu_class_by_name;
-    cc->mmu_index = m68k_cpu_mmu_index;
     cc->dump_state = m68k_cpu_dump_state;
     cc->set_pc = m68k_cpu_set_pc;
     cc->get_pc = m68k_cpu_get_pc;
@@ -630,7 +659,7 @@ static void m68k_cpu_class_init(ObjectClass *c, void *data)
     cc->tcg_ops = &m68k_tcg_ops;
 }
 
-static void m68k_cpu_class_init_cf_core(ObjectClass *c, void *data)
+static void m68k_cpu_class_init_cf_core(ObjectClass *c, const void *data)
 {
     CPUClass *cc = CPU_CLASS(c);
 
@@ -645,7 +674,7 @@ static void m68k_cpu_class_init_cf_core(ObjectClass *c, void *data)
         .class_init = m68k_cpu_class_init_cf_core    \
     }
 
-static void m68k_cpu_class_init_m68k_core(ObjectClass *c, void *data)
+static void m68k_cpu_class_init_m68k_core(ObjectClass *c, const void *data)
 {
     CPUClass *cc = CPU_CLASS(c);
 

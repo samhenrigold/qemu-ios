@@ -339,7 +339,7 @@ static void z1_reset(DeviceState *dev)
     s->stage = 0;
 }
 
-static void z1_class_init(ObjectClass *klass, void *data)
+static void z1_class_init(ObjectClass *klass, const void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

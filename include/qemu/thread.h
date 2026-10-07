@@ -3,12 +3,31 @@
 
 #include "qemu/processor.h"
 #include "qemu/atomic.h"
+#include "qemu/futex.h"
 
 typedef struct QemuCond QemuCond;
 typedef struct QemuSemaphore QemuSemaphore;
-typedef struct QemuEvent QemuEvent;
 typedef struct QemuLockCnt QemuLockCnt;
 typedef struct QemuThread QemuThread;
+
+/*
+ * QemuEvent
+ * =========
+ *
+ * QemuEvent is an implementation of Win32 manual-reset event object.
+ * For details, refer to:
+ * https://learn.microsoft.com/en-us/windows/win32/sync/using-event-objects
+ *
+ * QemuEvent is more lightweight than QemuSemaphore when HAVE_FUTEX is defined.
+ */
+typedef struct QemuEvent {
+#ifndef HAVE_FUTEX
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+#endif
+    unsigned value;
+    bool initialized;
+} QemuEvent;
 
 #ifdef _WIN32
 #include "qemu/thread-win32.h"
@@ -196,7 +215,8 @@ void *qemu_thread_join(QemuThread *thread);
 void qemu_thread_get_self(QemuThread *thread);
 bool qemu_thread_is_self(QemuThread *thread);
 G_NORETURN void qemu_thread_exit(void *retval);
-void qemu_thread_naming(bool enable);
+void qemu_thread_set_name(const char *name);
+const char *qemu_thread_get_name(void);
 
 struct Notifier;
 /**

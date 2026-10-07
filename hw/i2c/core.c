@@ -9,7 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -401,7 +401,7 @@ static bool i2c_slave_match(I2CSlave *candidate, uint8_t address,
     return false;
 }
 
-static void i2c_slave_class_init(ObjectClass *klass, void *data)
+static void i2c_slave_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);

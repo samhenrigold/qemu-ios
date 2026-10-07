@@ -41,7 +41,7 @@
 #include "system/runstate.h"
 #include "system/device_tree.h"
 #include "gdbstub/enums.h"
-#include "exec/ram_addr.h"
+#include "system/ramblock.h"
 #include "trace.h"
 #include "hw/s390x/s390-pci-inst.h"
 #include "hw/s390x/s390-pci-bus.h"
@@ -298,12 +298,6 @@ void kvm_s390_set_max_pagesize(uint64_t pagesize, Error **errp)
         return;
     }
 
-    if (!hpage_1m_allowed()) {
-        error_setg(errp, "This QEMU machine does not support huge page "
-                   "mappings");
-        return;
-    }
-
     if (pagesize != 1 * MiB) {
         error_setg(errp, "Memory backing with 2G pages was specified, "
                    "but KVM does not support this memory backing");
@@ -404,6 +398,11 @@ unsigned long kvm_arch_vcpu_id(CPUState *cpu)
     return cpu->cpu_index;
 }
 
+int kvm_arch_pre_create_vcpu(CPUState *cpu, Error **errp)
+{
+    return 0;
+}
+
 int kvm_arch_init_vcpu(CPUState *cs)
 {
     unsigned int max_cpus = MACHINE(qdev_get_machine())->smp.max_cpus;
@@ -469,7 +468,7 @@ static int can_sync_regs(CPUState *cs, int regs)
 #define KVM_SYNC_REQUIRED_REGS (KVM_SYNC_GPRS | KVM_SYNC_ACRS | \
                                 KVM_SYNC_CRS | KVM_SYNC_PREFIX)
 
-int kvm_arch_put_registers(CPUState *cs, int level, Error **errp)
+int kvm_arch_put_registers(CPUState *cs, KvmPutState level, Error **errp)
 {
     CPUS390XState *env = cpu_env(cs);
     struct kvm_fpu fpu = {};
@@ -890,7 +889,7 @@ int kvm_arch_remove_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
     return 0;
 }
 
-static struct kvm_hw_breakpoint *find_hw_breakpoint(target_ulong addr,
+static struct kvm_hw_breakpoint *find_hw_breakpoint(vaddr addr,
                                                     int len, int type)
 {
     int n;
@@ -905,7 +904,7 @@ static struct kvm_hw_breakpoint *find_hw_breakpoint(target_ulong addr,
     return NULL;
 }
 
-static int insert_hw_breakpoint(target_ulong addr, int len, int type)
+static int insert_hw_breakpoint(vaddr addr, int len, int type)
 {
     int size;
 
@@ -1668,10 +1667,10 @@ static int handle_oper_loop(S390CPU *cpu, struct kvm_run *run)
     CPUState *cs = CPU(cpu);
     PSW oldpsw, newpsw;
 
-    newpsw.mask = ldq_phys(cs->as, cpu->env.psa +
-                           offsetof(LowCore, program_new_psw));
-    newpsw.addr = ldq_phys(cs->as, cpu->env.psa +
-                           offsetof(LowCore, program_new_psw) + 8);
+    newpsw.mask = ldq_be_phys(cs->as, cpu->env.psa +
+                              offsetof(LowCore, program_new_psw));
+    newpsw.addr = ldq_be_phys(cs->as, cpu->env.psa +
+                              offsetof(LowCore, program_new_psw) + 8);
     oldpsw.mask  = run->psw_mask;
     oldpsw.addr  = run->psw_addr;
     /*
@@ -1792,6 +1791,15 @@ static void insert_stsi_3_2_2(S390CPU *cpu, __u64 addr, uint8_t ar)
     } else if (s390_cpu_virt_mem_read(cpu, addr, ar, &sysib, sizeof(sysib))) {
         return;
     }
+
+    /*
+     * The memory was filled by the kernel but mapped into the guest.
+     * If something is fishy, do not touch the buffer.
+     */
+    if (sysib.count == 0 || sysib.count > ARRAY_SIZE(sysib.ext_names)) {
+        return;
+    }
+
     /* Shift the stack of Extended Names to prepare for our own data */
     memmove(&sysib.ext_names[1], &sysib.ext_names[0],
             sizeof(sysib.ext_names[0]) * (sysib.count - 1));
@@ -2082,6 +2090,8 @@ int kvm_s390_vcpu_interrupt_post_load(S390CPU *cpu)
     }
     return r;
 }
+
+QEMU_BUILD_BUG_ON(S390_ADAPTER_SUPPRESSIBLE != KVM_S390_ADAPTER_SUPPRESSIBLE);
 
 int kvm_arch_fixup_msi_route(struct kvm_irq_routing_entry *route,
                              uint64_t address, uint32_t data, PCIDevice *dev)

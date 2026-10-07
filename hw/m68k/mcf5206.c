@@ -10,14 +10,14 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "cpu.h"
-#include "hw/qdev-properties.h"
-#include "hw/boards.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/irq.h"
 #include "hw/m68k/mcf.h"
 #include "qemu/timer.h"
-#include "hw/ptimer.h"
+#include "hw/core/ptimer.h"
 #include "system/system.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 /* General purpose timer module.  */
 typedef struct {
@@ -605,7 +605,7 @@ static const Property mcf5206_mbar_properties[] = {
                      TYPE_M68K_CPU, M68kCPU *),
 };
 
-static void mcf5206_mbar_class_init(ObjectClass *oc, void *data)
+static void mcf5206_mbar_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

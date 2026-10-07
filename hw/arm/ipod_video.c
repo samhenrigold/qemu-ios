@@ -1,7 +1,7 @@
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_video.h"
-#include "exec/address-spaces.h"
-#include "exec/memory.h"
+#include "system/address-spaces.h"
+#include "system/memory.h"
 #include "qemu/error-report.h"
 #ifdef __APPLE__
 #include <VideoToolbox/VideoToolbox.h>

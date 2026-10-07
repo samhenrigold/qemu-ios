@@ -9,23 +9,15 @@
 #define ARM_CPU_PARAM_H
 
 #ifdef TARGET_AARCH64
-# define TARGET_PHYS_ADDR_SPACE_BITS  52
 # define TARGET_VIRT_ADDR_SPACE_BITS  52
 #else
-# define TARGET_PHYS_ADDR_SPACE_BITS  40
 # define TARGET_VIRT_ADDR_SPACE_BITS  32
 #endif
 
 #ifdef CONFIG_USER_ONLY
-# ifdef TARGET_AARCH64
-#  define TARGET_TAGGED_ADDRESSES
-# ifdef __FreeBSD__
-#  define TARGET_PAGE_BITS 12
-# else
+# if defined(TARGET_AARCH64) && defined(CONFIG_LINUX)
 /* Allow user-only to vary page size from 4k */
 #  define TARGET_PAGE_BITS_VARY
-#  define TARGET_PAGE_BITS_MIN  12
-# endif
 # else
 #  define TARGET_PAGE_BITS 12
 # endif
@@ -35,10 +27,7 @@
  * have to support 1K tiny pages.
  */
 # define TARGET_PAGE_BITS_VARY
-# define TARGET_PAGE_BITS_MIN  10
+# define TARGET_PAGE_BITS_LEGACY 10
 #endif /* !CONFIG_USER_ONLY */
-
-/* ARM processors have a weak memory model */
-#define TCG_GUEST_DEFAULT_MO      (0)
 
 #endif

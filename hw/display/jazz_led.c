@@ -27,7 +27,7 @@
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
 #include "trace.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
@@ -294,7 +294,7 @@ static void jazz_led_reset(DeviceState *d)
     qemu_console_resize(s->con, 60, 80);
 }
 
-static void jazz_led_class_init(ObjectClass *klass, void *data)
+static void jazz_led_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

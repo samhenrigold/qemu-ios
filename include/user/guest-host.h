@@ -8,9 +8,9 @@
 #ifndef USER_GUEST_HOST_H
 #define USER_GUEST_HOST_H
 
-#include "user/abitypes.h"
+#include "exec/vaddr.h"
 #include "user/guest-base.h"
-#include "cpu.h"
+#include "accel/tcg/cpu-ops.h"
 
 /*
  * If non-zero, the guest virtual address space is a contiguous subset
@@ -23,59 +23,53 @@
 extern unsigned long reserved_va;
 
 /*
- * Limit the guest addresses as best we can.
- *
- * When not using -R reserved_va, we cannot really limit the guest
- * to less address space than the host.  For 32-bit guests, this
- * acts as a sanity check that we're not giving the guest an address
- * that it cannot even represent.  For 64-bit guests... the address
- * might not be what the real kernel would give, but it is at least
- * representable in the guest.
- *
- * TODO: Improve address allocation to avoid this problem, and to
- * avoid setting bits at the top of guest addresses that might need
- * to be used for tags.
+ * The last byte of the guest address space.
+ * If reserved_va is non-zero, guest_addr_max matches.
+ * If reserved_va is zero, guest_addr_max equals the full guest space.
  */
-#define GUEST_ADDR_MAX_                                                 \
-    ((MIN_CONST(TARGET_VIRT_ADDR_SPACE_BITS, TARGET_ABI_BITS) <= 32) ?  \
-     UINT32_MAX : ~0ul)
-#define GUEST_ADDR_MAX    (reserved_va ? : GUEST_ADDR_MAX_)
+extern unsigned long guest_addr_max;
 
-#ifndef TARGET_TAGGED_ADDRESSES
-static inline abi_ptr cpu_untagged_addr(CPUState *cs, abi_ptr x)
+/*
+ * These functions take the guest virtual address as a vaddr,
+ * and are suitable for use from target-independent code.
+ */
+
+static inline vaddr cpu_untagged_addr_vaddr(CPUState *cs, vaddr x)
 {
+    const TCGCPUOps *tcg_ops = cs->cc->tcg_ops;
+    if (tcg_ops->untagged_addr) {
+        return tcg_ops->untagged_addr(cs, x);
+    }
     return x;
 }
-#endif
 
 /* All direct uses of g2h and h2g need to go away for usermode softmmu.  */
-static inline void *g2h_untagged(abi_ptr x)
+static inline void *g2h_untagged_vaddr(vaddr x)
 {
     return (void *)((uintptr_t)(x) + guest_base);
 }
 
-static inline void *g2h(CPUState *cs, abi_ptr x)
+static inline void *g2h_vaddr(CPUState *cs, vaddr x)
 {
-    return g2h_untagged(cpu_untagged_addr(cs, x));
+    return g2h_untagged_vaddr(cpu_untagged_addr_vaddr(cs, x));
 }
 
-static inline bool guest_addr_valid_untagged(abi_ulong x)
+static inline bool guest_addr_valid_untagged_vaddr(vaddr x)
 {
-    return x <= GUEST_ADDR_MAX;
+    return x <= guest_addr_max;
 }
 
-static inline bool guest_range_valid_untagged(abi_ulong start, abi_ulong len)
+static inline bool guest_range_valid_untagged_vaddr(vaddr start, vaddr len)
 {
-    return len - 1 <= GUEST_ADDR_MAX && start <= GUEST_ADDR_MAX - len + 1;
+    return len - 1 <= guest_addr_max && start <= guest_addr_max - len + 1;
 }
 
 #define h2g_valid(x) \
-    (HOST_LONG_BITS <= TARGET_VIRT_ADDR_SPACE_BITS || \
-     (uintptr_t)(x) - guest_base <= GUEST_ADDR_MAX)
+    ((uintptr_t)(x) - guest_base <= guest_addr_max)
 
 #define h2g_nocheck(x) ({ \
     uintptr_t __ret = (uintptr_t)(x) - guest_base; \
-    (abi_ptr)__ret; \
+    (vaddr)__ret; \
 })
 
 #define h2g(x) ({ \
@@ -83,5 +77,50 @@ static inline bool guest_range_valid_untagged(abi_ulong start, abi_ulong len)
     assert(h2g_valid(x)); \
     h2g_nocheck(x); \
 })
+
+#ifdef COMPILING_PER_TARGET
+
+/*
+ * These functions take the guest virtual address as an abi_ptr.  This
+ * is an important difference from a vaddr for the common case where
+ * the address is a syscall argument in a variable of type abi_long,
+ * which may be smaller than the vaddr type. If you pass an address in
+ * an abi_long to these functions then the value will be converted to
+ * an unsigned type and then zero extended to give the vaddr. If you
+ * use the g2h_vaddr() and similar functions which take an argument of
+ * type vaddr, then the value will be sign-extended, giving the wrong
+ * answer for addresses above the 2GB mark on 32-bit guests.
+ *
+ * Providing these functions with their traditional QEMU semantics is
+ * less bug-prone than requiring many callsites to remember to cast
+ * their abi_long variable to an abi_ptr before calling.
+ */
+
+static inline void *g2h(CPUState *cs, abi_ptr x)
+{
+    return g2h_vaddr(cs, x);
+}
+
+static inline void *g2h_untagged(abi_ptr x)
+{
+    return g2h_untagged_vaddr(x);
+}
+
+static inline bool guest_addr_valid_untagged(abi_ptr x)
+{
+    return guest_addr_valid_untagged_vaddr(x);
+}
+
+static inline bool guest_range_valid_untagged(abi_ptr start, abi_ptr len)
+{
+    return guest_range_valid_untagged_vaddr(start, len);
+}
+
+static inline abi_ptr cpu_untagged_addr(CPUState *cs, abi_ptr x)
+{
+    return cpu_untagged_addr_vaddr(cs, x);
+}
+
+#endif
 
 #endif

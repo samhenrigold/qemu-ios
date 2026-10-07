@@ -9,9 +9,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/aspeed_peci.h"
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 #include "trace.h"
 
 #define ASPEED_PECI_CC_RSP_SUCCESS (0x40U)
@@ -130,7 +130,7 @@ static void aspeed_peci_reset(DeviceState *dev)
     memset(s->regs, 0, sizeof(s->regs));
 }
 
-static void aspeed_peci_class_init(ObjectClass *klass, void *data)
+static void aspeed_peci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

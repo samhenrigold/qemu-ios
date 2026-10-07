@@ -15,7 +15,7 @@
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
 #include "qemu/module.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
 #include "block/block.h"
 #include "system/event-loop-base.h"
 #include "system/iothread.h"
@@ -292,7 +292,7 @@ static void iothread_set_poll_param(Object *obj, Visitor *v,
     }
 }
 
-static void iothread_class_init(ObjectClass *klass, void *class_data)
+static void iothread_class_init(ObjectClass *klass, const void *class_data)
 {
     EventLoopBaseClass *bc = EVENT_LOOP_BASE_CLASS(klass);
 

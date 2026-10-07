@@ -9,7 +9,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 
 #define TYPE_S5L8930_DMC "s5l8930.dmc"
@@ -71,7 +71,7 @@ static const VMStateDescription vmstate_dmc = {
     }
 };
 
-static void dmc_class_init(ObjectClass *klass, void *data)
+static void dmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->vmsd = &vmstate_dmc;

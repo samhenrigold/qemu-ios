@@ -328,7 +328,7 @@ static void ipod_touch_tvout_finalize(Object *obj)
     timer_free(s->vblank_timer);
 }
 
-static void ipod_touch_tvout_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_tvout_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

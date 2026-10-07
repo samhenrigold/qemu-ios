@@ -25,7 +25,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/nvram/eeprom93xx.h"
 #include "hw/scsi/esp.h"
 #include "migration/vmstate.h"
@@ -427,7 +427,7 @@ static void esp_pci_init(Object *obj)
     object_initialize_child(obj, "esp", &pci->esp, TYPE_ESP);
 }
 
-static void esp_pci_class_init(ObjectClass *klass, void *data)
+static void esp_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -450,7 +450,7 @@ static const TypeInfo esp_pci_info = {
     .instance_init = esp_pci_init,
     .instance_size = sizeof(PCIESPState),
     .class_init = esp_pci_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -557,7 +557,7 @@ static void dc390_scsi_realize(PCIDevice *dev, Error **errp)
     contents[EE_CHKSUM2] = chksum >> 8;
 }
 
-static void dc390_class_init(ObjectClass *klass, void *data)
+static void dc390_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);

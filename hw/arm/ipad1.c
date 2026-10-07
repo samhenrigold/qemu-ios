@@ -20,22 +20,23 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/arm/machines-qom.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/config-file.h"
 #include "qemu/option.h"
 #include "net/net.h"
 #include "net/util.h"
-#include "exec/address-spaces.h"
-#include "hw/boards.h"
-#include "hw/irq.h"
+#include "system/address-spaces.h"
+#include "hw/core/boards.h"
+#include "hw/core/irq.h"
 #include "hw/core/split-irq.h"
 #include "hw/misc/unimp.h"
 #include "hw/misc/ios_baseband.h"
 #include "system/runstate.h"
 #include "hw/usb/hcd-ehci.h"
 #include "hw/usb/hcd-ohci.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/ipod_touch_buttons.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
@@ -51,7 +52,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/intc/pl192.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/reset.h"
 #include "system/system.h"
 #include "target/arm/cpu.h"
@@ -2224,7 +2225,7 @@ static void ipad1_set_button_home(Object *obj, bool value, Error **errp)
     ipad1_set_button(s, S5L8930_GPIO_BTN_MENU, value);
 }
 
-static void ipad1_class_init(ObjectClass *klass, void *data)
+static void ipad1_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
@@ -2340,7 +2341,7 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
 }
 
 /* Another A4 board: ipad1's properties and init, the board's data. */
-static void a4_board_class_init(ObjectClass *klass, void *data)
+static void a4_board_class_init(ObjectClass *klass, const void *data)
 {
     const A4Board *board = data;
 
@@ -2367,6 +2368,7 @@ static const TypeInfo a4_board_types[] = {
 static const TypeInfo ipad1_machine_info = {
     .name = TYPE_IPAD1_MACHINE,
     .parent = TYPE_MACHINE,
+    .interfaces = arm_machine_interfaces,
     .instance_size = sizeof(IPad1MachineState),
     .class_size = sizeof(IPad1MachineClass),
     .instance_init = ipad1_instance_init,

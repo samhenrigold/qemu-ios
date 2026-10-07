@@ -8,14 +8,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 #include "qemu/log.h"
 #include "trace.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "system/dma.h"
 #include "hw/char/goldfish_tty.h"
 
@@ -256,7 +256,7 @@ static void goldfish_tty_instance_init(Object *obj)
     sysbus_init_irq(dev, &s->irq);
 }
 
-static void goldfish_tty_class_init(ObjectClass *oc, void *data)
+static void goldfish_tty_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

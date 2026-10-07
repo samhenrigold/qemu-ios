@@ -14,9 +14,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "block/aio-wait.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "qemu/aio-wait.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "apple-gfx.h"
 #include "trace.h"
 
@@ -261,7 +261,7 @@ static const Property apple_gfx_mmio_properties[] = {
                       qdev_prop_apple_gfx_display_mode, AppleGFXDisplayMode),
 };
 
-static void apple_gfx_mmio_class_init(ObjectClass *klass, void *data)
+static void apple_gfx_mmio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

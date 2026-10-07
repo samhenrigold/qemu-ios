@@ -4,9 +4,9 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
 #include "net/net.h"
 
 #define TYPE_IPOD_TOUCH_SDIO                "ipodtouch.sdio"

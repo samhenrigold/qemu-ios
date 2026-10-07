@@ -44,7 +44,7 @@ def struct(src, name):
 
 defines = '\n'.join(re.findall(r'^#define TIMER_\w+\s+[^\n]*$', header, re.M))
 piezo_state = re.search(r'struct IPodTouchPiezoState \{.*?\};', piezo, re.S).group()
-piezo_state = re.sub(r'^\s*(DeviceState|QEMUSoundCard|SWVoiceOut)[^\n]*\n', '', piezo_state, flags=re.M)
+piezo_state = re.sub(r'^\s*(DeviceState|AudioBackend|SWVoiceOut)[^\n]*\n', '', piezo_state, flags=re.M)
 
 prelude = r'''
 #include <assert.h>

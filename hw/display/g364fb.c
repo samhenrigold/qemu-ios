@@ -19,16 +19,16 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
 #include "trace.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
@@ -526,7 +526,7 @@ static const VMStateDescription vmstate_g364fb_sysbus = {
     }
 };
 
-static void g364fb_sysbus_class_init(ObjectClass *klass, void *data)
+static void g364fb_sysbus_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

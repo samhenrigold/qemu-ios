@@ -49,9 +49,9 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "crypto/cipher.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
@@ -1197,7 +1197,7 @@ static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_UINT32("paced-ports", S5L8930CDMAState, paced_ports, 3),
 };
 
-static void s5l8930_cdma_class_init(ObjectClass *klass, void *data)
+static void s5l8930_cdma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

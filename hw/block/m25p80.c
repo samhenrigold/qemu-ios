@@ -26,8 +26,8 @@
 #include "system/block-backend.h"
 #include "hw/block/block.h"
 #include "hw/block/flash.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/ssi/ssi.h"
 #include "migration/vmstate.h"
 #include "qemu/bitops.h"
@@ -364,6 +364,8 @@ static const FlashPartInfo known_devices[] = {
       .sfdp_read = m25p80_sfdp_w25q512jv },
     { INFO("w25q01jvq",   0xef4021,      0,  64 << 10, 2048, ER_4K),
       .sfdp_read = m25p80_sfdp_w25q01jvq },
+    { INFO("w25q02jvm",   0xef7022,      0,  64 << 10, 4096, ER_4K),
+      .sfdp_read = m25p80_sfdp_w25q02jvm },
 
     /* Microchip */
     { INFO("25csm04",      0x29cc00,      0x100,  64 << 10,  8, 0) },
@@ -528,7 +530,7 @@ struct Flash {
 
 struct M25P80Class {
     SSIPeripheralClass parent_class;
-    FlashPartInfo *pi;
+    const FlashPartInfo *pi;
 };
 
 OBJECT_DECLARE_TYPE(Flash, M25P80Class, M25P80)
@@ -1857,7 +1859,7 @@ static const VMStateDescription vmstate_m25p80 = {
     }
 };
 
-static void m25p80_class_init(ObjectClass *klass, void *data)
+static void m25p80_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
@@ -1893,7 +1895,7 @@ static void m25p80_register_types(void)
             .name       = known_devices[i].part_name,
             .parent     = TYPE_M25P80,
             .class_init = m25p80_class_init,
-            .class_data = (void *)&known_devices[i],
+            .class_data = &known_devices[i],
         };
         type_register_static(&ti);
     }

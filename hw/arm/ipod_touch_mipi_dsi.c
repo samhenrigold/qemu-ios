@@ -1,7 +1,7 @@
 #include "hw/arm/ipod_touch_mipi_dsi.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /* Cache opt-in tracing; direct-boot compatibility is per-device startup state. */
 static bool dsi_trace(void)
@@ -253,7 +253,7 @@ static const Property ipod_touch_mipi_dsi_properties[] = {
     DEFINE_PROP_UINT32("panel-id-len", IPodTouchMIPIDSIState, panel_id_len, 3),
 };
 
-static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_mipi_dsi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

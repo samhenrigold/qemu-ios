@@ -36,6 +36,7 @@
 #include "hw/mem/nvdimm.h"
 #include "qemu/nvdimm-utils.h"
 #include "trace.h"
+#include "exec/cpu-common.h"
 
 /*
  * define Byte Addressable Persistent Memory (PM) Region according to
@@ -535,7 +536,7 @@ nvdimm_dsm_no_payload(uint32_t func_ret_status, hwaddr dsm_mem_addr)
 
 #define NVDIMM_QEMU_RSVD_HANDLE_ROOT         0x10000
 
-/* Read FIT data, defined in docs/specs/acpi_nvdimm.txt. */
+/* Read FIT data, defined in docs/specs/acpi_nvdimm.rst. */
 static void nvdimm_dsm_func_read_fit(NVDIMMState *state, NvdimmDsmIn *in,
                                      hwaddr dsm_mem_addr)
 {

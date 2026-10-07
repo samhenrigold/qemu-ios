@@ -23,9 +23,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ne2000.h"
 #include "system/system.h"
@@ -100,7 +100,7 @@ static const Property ne2000_properties[] = {
     DEFINE_NIC_PROPERTIES(PCINE2000State, ne2000.c),
 };
 
-static void ne2000_class_init(ObjectClass *klass, void *data)
+static void ne2000_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -122,7 +122,7 @@ static const TypeInfo ne2000_info = {
     .instance_size = sizeof(PCINE2000State),
     .class_init    = ne2000_class_init,
     .instance_init = ne2000_instance_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

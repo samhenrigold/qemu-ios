@@ -15,14 +15,14 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/arm/frame-timeline.h"
 #include "system/runstate.h"
 #include "ui/input.h"
 #include "qemu/cutils.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
 
@@ -890,7 +890,7 @@ static const Property s5l8930_display_properties[] = {
     DEFINE_PROP_UINT32("panel-height", S5L8930DisplayState, ph, 0),
 };
 
-static void s5l8930_display_class_init(ObjectClass *klass, void *data)
+static void s5l8930_display_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

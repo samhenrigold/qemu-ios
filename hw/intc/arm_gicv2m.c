@@ -27,10 +27,10 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/pci/msi.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/kvm.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -175,7 +175,7 @@ static const Property gicv2m_properties[] = {
     DEFINE_PROP_UINT32("num-spi", ARMGICv2mState, num_spi, 64),
 };
 
-static void gicv2m_class_init(ObjectClass *klass, void *data)
+static void gicv2m_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

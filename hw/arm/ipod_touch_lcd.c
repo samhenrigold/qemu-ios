@@ -1,5 +1,5 @@
 #include "hw/arm/ipod_touch_lcd.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
@@ -1441,7 +1441,7 @@ static const Property lcd_properties[] = {
     DEFINE_PROP_UINT32("panel-height", IPodTouchLCDState, ph, LCD_FB_HEIGHT),
 };
 
-static void ipod_touch_lcd_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_lcd_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

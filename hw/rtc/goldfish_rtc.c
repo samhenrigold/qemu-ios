@@ -22,9 +22,9 @@
 #include "qemu/osdep.h"
 #include "hw/rtc/goldfish_rtc.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "qemu/bitops.h"
 #include "qemu/timer.h"
 #include "system/system.h"
@@ -273,7 +273,7 @@ static const Property goldfish_rtc_properties[] = {
                       false),
 };
 
-static void goldfish_rtc_class_init(ObjectClass *klass, void *data)
+static void goldfish_rtc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -417,7 +417,7 @@ static const MemoryRegionOps gic_ops[] = {
     {
         .read_with_attrs = gicv3_dist_read,
         .write_with_attrs = gicv3_dist_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
         .valid.min_access_size = 1,
         .valid.max_access_size = 8,
         .impl.min_access_size = 1,
@@ -426,7 +426,7 @@ static const MemoryRegionOps gic_ops[] = {
     {
         .read_with_attrs = gicv3_redist_read,
         .write_with_attrs = gicv3_redist_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
         .valid.min_access_size = 1,
         .valid.max_access_size = 8,
         .impl.min_access_size = 1,
@@ -452,7 +452,7 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
     gicv3_init_cpuif(s);
 }
 
-static void arm_gicv3_class_init(ObjectClass *klass, void *data)
+static void arm_gicv3_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ARMGICv3CommonClass *agcc = ARM_GICV3_COMMON_CLASS(klass);

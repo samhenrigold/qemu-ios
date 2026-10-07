@@ -36,7 +36,7 @@ static void s5l8900_lcd_panel_realize(SSIPeripheral *d, Error **errp)
 {
 }
 
-static void s5l8900_lcd_panel_class_init(ObjectClass *klass, void *data)
+static void s5l8900_lcd_panel_class_init(ObjectClass *klass, const void *data)
 {
     SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
     k->realize = s5l8900_lcd_panel_realize;

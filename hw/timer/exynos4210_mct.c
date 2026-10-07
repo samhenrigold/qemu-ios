@@ -54,14 +54,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qemu/module.h"
-#include "hw/ptimer.h"
+#include "hw/core/ptimer.h"
 
 #include "hw/arm/exynos4210.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
 
 //#define DEBUG_MCT
@@ -1546,7 +1546,7 @@ static void exynos4210_mct_finalize(Object *obj)
     }
 }
 
-static void exynos4210_mct_class_init(ObjectClass *klass, void *data)
+static void exynos4210_mct_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -11,8 +11,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/arm/boot.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/misc/unimp.h"
 #include "qemu/log.h"
 
@@ -216,7 +216,7 @@ static const Property nrf51_soc_properties[] = {
                        NRF51822_FLASH_SIZE),
 };
 
-static void nrf51_soc_class_init(ObjectClass *klass, void *data)
+static void nrf51_soc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

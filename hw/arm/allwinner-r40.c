@@ -20,16 +20,15 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/boards.h"
-#include "hw/qdev-core.h"
-#include "hw/sysbus.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev.h"
+#include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/usb/hcd-ehci.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "system/system.h"
 #include "hw/arm/allwinner-r40.h"
 #include "hw/misc/allwinner-r40-dramc.h"
@@ -539,7 +538,7 @@ static void allwinner_r40_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void allwinner_r40_class_init(ObjectClass *oc, void *data)
+static void allwinner_r40_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

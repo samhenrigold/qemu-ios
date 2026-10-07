@@ -24,10 +24,10 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "trace.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
-#include "hw/clock.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/clock.h"
+#include "hw/core/qdev-clock.h"
 #include "qapi/error.h"
 #include "hw/misc/stm32l4x5_syscfg.h"
 #include "hw/gpio/stm32l4x5_gpio.h"
@@ -259,7 +259,7 @@ static const VMStateDescription vmstate_stm32l4x5_syscfg = {
     }
 };
 
-static void stm32l4x5_syscfg_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_syscfg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

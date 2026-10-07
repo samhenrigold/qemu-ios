@@ -21,7 +21,7 @@
 #ifndef QEMU_ARM_GICV3_ITS_COMMON_H
 #define QEMU_ARM_GICV3_ITS_COMMON_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/intc/arm_gicv3_common.h"
 #include "qom/object.h"
 
@@ -128,7 +128,7 @@ struct GICv3ITSCommonClass {
  * Return the ITS class name to use depending on whether KVM acceleration
  * and KVM CAP_SIGNAL_MSI are supported
  *
- * Returns: class name to use or NULL
+ * Returns: class name to use
  */
 const char *its_class_name(void);
 

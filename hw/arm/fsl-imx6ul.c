@@ -21,7 +21,7 @@
 #include "hw/arm/fsl-imx6ul.h"
 #include "hw/misc/unimp.h"
 #include "hw/usb/imx-usb-phy.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "system/system.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -715,7 +715,7 @@ static const Property fsl_imx6ul_properties[] = {
                      true),
 };
 
-static void fsl_imx6ul_class_init(ObjectClass *oc, void *data)
+static void fsl_imx6ul_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

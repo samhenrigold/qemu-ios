@@ -26,7 +26,7 @@
 #include "hw/intc/intc.h"
 #include "hw/intc/ioapic.h"
 #include "hw/intc/ioapic_internal.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 /* ioapic_no count start from 0 to MAX_IOAPICS,
  * remove as static variable from ioapic_common_init.
@@ -197,7 +197,7 @@ static const VMStateDescription vmstate_ioapic_common = {
     }
 };
 
-static void ioapic_common_class_init(ObjectClass *klass, void *data)
+static void ioapic_common_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
@@ -215,7 +215,7 @@ static const TypeInfo ioapic_common_type = {
     .class_size = sizeof(IOAPICCommonClass),
     .class_init = ioapic_common_class_init,
     .abstract = true,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_INTERRUPT_STATS_PROVIDER },
         { }
     },

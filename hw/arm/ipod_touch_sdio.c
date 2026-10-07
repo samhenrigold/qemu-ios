@@ -1,10 +1,11 @@
 #include "qemu/osdep.h"
+#include "system/address-spaces.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
 #include "hw/arm/ipod_touch_sdio.h"
 #include "hw/arm/mrvl8686.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "net/checksum.h"
 
@@ -1056,12 +1057,14 @@ static void sdio_dma(IPodTouchSDIOState *s, uint8_t *buf, uint32_t len,
         return;
     }
     if (!s->sg) {
-        cpu_physical_memory_rw(s->baddr, buf, len, to_guest);
+        address_space_rw(&address_space_memory, s->baddr, MEMTXATTRS_UNSPECIFIED,
+                         buf, len, to_guest);
         return;
     }
     for (unsigned i = 0; i < s->sg_count && len; i++) {
         uint32_t n = MIN(len, s->sg[2 * i + 1]);
-        cpu_physical_memory_rw(s->sg[2 * i], buf, n, to_guest);
+        address_space_rw(&address_space_memory, s->sg[2 * i], MEMTXATTRS_UNSPECIFIED,
+                         buf, n, to_guest);
         buf += n;
         len -= n;
     }
@@ -1720,7 +1723,7 @@ static const Property ipod_touch_sdio_props[] = {
     DEFINE_PROP_LINK("mrvl", IPodTouchSDIOState, mrvl, TYPE_MRVL8686, Mrvl8686State *),
 };
 
-static void ipod_touch_sdio_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_sdio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     device_class_set_props(dc, ipod_touch_sdio_props);

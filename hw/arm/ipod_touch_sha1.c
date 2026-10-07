@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "exec/cpu-common.h"
 #include "migration/vmstate.h"
 
 /* Bound host scratch storage, not the full-width DMA length register. */
@@ -348,7 +349,7 @@ static const VMStateDescription vmstate_ipod_touch_sha1 = {
     }
 };
 
-static void ipod_touch_sha1_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_sha1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

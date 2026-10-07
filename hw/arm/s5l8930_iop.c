@@ -31,9 +31,9 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/bswap.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qobject/qjson.h"
@@ -236,12 +236,12 @@ struct S5L8930IOPState {
 
 static inline uint32_t iop_ldl(hwaddr addr)
 {
-    return ldl_le_phys(&address_space_memory, s5l8930_iop_pa(addr));
+    return address_space_ldl_le(&address_space_memory, s5l8930_iop_pa(addr), MEMTXATTRS_UNSPECIFIED, NULL);
 }
 
 static inline void iop_stl(hwaddr addr, uint32_t val)
 {
-    stl_le_phys(&address_space_memory, s5l8930_iop_pa(addr), val);
+    address_space_stl_le(&address_space_memory, s5l8930_iop_pa(addr), val, MEMTXATTRS_UNSPECIFIED, NULL);
 }
 
 static inline void iop_read(hwaddr addr, void *buf, hwaddr len)
@@ -709,7 +709,7 @@ static uint32_t fmi_multi(S5L8930IOPState *s, int bus, uint8_t *cmd, bool write,
 
     for (i = 0; i < n; i++) {
         /* v2 CE arrays are u16 (fw 8C148 0x4444: ldrh [ce_array, i << 1]) */
-        uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i))
+        uint32_t ce = s->fmi_arg ? address_space_lduw_le(&address_space_memory, s5l8930_iop_pa(ces + 2 * i), MEMTXATTRS_UNSPECIFIED, NULL)
                                  : iop_ldl(ces + 4 * i);
         uint32_t pg = iop_ldl(pages + 4 * i);
 
@@ -923,7 +923,7 @@ static void iop_trace_fmi(S5L8930IOPState *s, int bus, hwaddr item)
         seg_cursor_init(&data, ARG(0x1c), ARG(0x20));
         seg_cursor_init(&metas, ARG(0x24), ARG(0x28));
         for (i = 0; i < n; i++) {
-            uint32_t ce = s->fmi_arg ? lduw_le_phys(&address_space_memory, s5l8930_iop_pa(ces + 2 * i))
+            uint32_t ce = s->fmi_arg ? address_space_lduw_le(&address_space_memory, s5l8930_iop_pa(ces + 2 * i), MEMTXATTRS_UNSPECIFIED, NULL)
                                      : iop_ldl(ces + 4 * i);    /* u16 CEs from v2 on, as fmi_multi */
             uint32_t pg = iop_ldl(pages + 4 * i);
             int cs = (ce & 7) * NAND_BUSES + bus;   /* as s5l8930_h2fmi.c maps a chip */
@@ -993,8 +993,8 @@ void s5l8930_iop_trace_rings(DeviceState *dev)
             if (back && pending0[i] != op) {
                 fprintf(stderr, "%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x back; AP VIC0 en 0x%08x soft 0x%08x\n",
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, i, op, iop_ldl(RING_ITEM(w0) + 4),
-                         ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x10),
-                         ldl_le_phys(&address_space_memory, S5L8930_VIC_BASE(0) + 0x18));
+                         address_space_ldl_le(&address_space_memory, S5L8930_VIC_BASE(0) + 0x10, MEMTXATTRS_UNSPECIFIED, NULL),
+                         address_space_ldl_le(&address_space_memory, S5L8930_VIC_BASE(0) + 0x18, MEMTXATTRS_UNSPECIFIED, NULL));
             }
             if ((w0 & 1) != RING_OWNER_AP && RING_ITEM(w0) && pending0[i] != 1) {
                 fprintf(stderr, "%.3f ring ctrl[%u]: msg 0x%08x status 0x%08x sent\n",
@@ -1817,7 +1817,7 @@ static const Property s5l8930_iop_properties[] = {
     DEFINE_PROP_BOOL("fw-size-mask", S5L8930IOPState, fw_size_mask, false),
 };
 
-static void s5l8930_iop_class_init(ObjectClass *klass, void *data)
+static void s5l8930_iop_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

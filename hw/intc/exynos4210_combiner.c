@@ -28,14 +28,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "hw/intc/exynos4210_combiner.h"
 #include "hw/arm/exynos4210.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
 
 //#define DEBUG_COMBINER
@@ -329,7 +329,7 @@ static const Property exynos4210_combiner_properties[] = {
     DEFINE_PROP_UINT32("external", Exynos4210CombinerState, external, 0),
 };
 
-static void exynos4210_combiner_class_init(ObjectClass *klass, void *data)
+static void exynos4210_combiner_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

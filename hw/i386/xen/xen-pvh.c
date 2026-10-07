@@ -9,7 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "system/system.h"
 #include "hw/xen/arch_hvm.h"
 #include <xen/hvm/hvm_info_table.h>
@@ -76,7 +76,7 @@ static void xen_pvh_set_pci_intx_irq(void *opaque, int irq, int level)
     }
 }
 
-static void xen_pvh_machine_class_init(ObjectClass *oc, void *data)
+static void xen_pvh_machine_class_init(ObjectClass *oc, const void *data)
 {
     XenPVHMachineClass *xpc = XEN_PVH_MACHINE_CLASS(oc);
     MachineClass *mc = MACHINE_CLASS(oc);

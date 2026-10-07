@@ -27,11 +27,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/net/mii.h"
-#include "hw/ptimer.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/ptimer.h"
+#include "hw/core/qdev-properties.h"
 #include "etsec.h"
 #include "registers.h"
 #include "qapi/error.h"
@@ -389,6 +389,7 @@ static void etsec_realize(DeviceState *dev, Error **errp)
 {
     eTSEC        *etsec = ETSEC_COMMON(dev);
 
+    qemu_macaddr_default_if_unset(&etsec->conf.macaddr);
     etsec->nic = qemu_new_nic(&net_etsec_info, &etsec->conf,
                               object_get_typename(OBJECT(dev)), dev->id,
                               &dev->mem_reentrancy_guard, etsec);
@@ -418,7 +419,7 @@ static const Property etsec_properties[] = {
     DEFINE_NIC_PROPERTIES(eTSEC, conf),
 };
 
-static void etsec_class_init(ObjectClass *klass, void *data)
+static void etsec_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

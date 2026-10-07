@@ -66,7 +66,7 @@ Modifying ``configure``
 ``configure`` is a shell script; it uses ``#!/bin/sh`` and therefore
 should be compatible with any POSIX shell. It is important to avoid
 using bash-isms to avoid breaking development platforms where bash is
-the primary host.
+not the default shell implementation.
 
 The configure script provides a variety of functions to help writing
 portable shell code and providing consistent behavior across architectures
@@ -88,7 +88,7 @@ and operating systems:
   ``$target_ar``, etc. to non-empty values.
 
 ``write_target_makefile``
-  Write a Makefile fragment to stdout, exposing the result of the most
+  Write a Makefile fragment to stdout, exposing the result of the most recent
   ``probe_target_compiler`` call as the usual Make variables (``CC``,
   ``AR``, ``LD``, etc.).
 
@@ -134,7 +134,7 @@ in how the build process runs Python code.
 
 At this stage, ``configure`` also queries the chosen Python interpreter
 about QEMU's build dependencies.  Note that the build process does  *not*
-look for ``meson``, ``sphinx-build`` or ``avocado`` binaries in the PATH;
+look for ``meson`` or ``sphinx-build`` binaries in the PATH;
 likewise, there are no options such as ``--meson`` or ``--sphinx-build``.
 This avoids a potential mismatch, where Meson and Sphinx binaries on the
 PATH might operate in a different Python environment than the one chosen
@@ -151,7 +151,7 @@ virtual environment with ``pip``, either from wheels in ``python/wheels``
 or by downloading the package with PyPI.  Downloading can be disabled with
 ``--disable-download``; and anyway, it only happens when a ``configure``
 option (currently, only ``--enable-docs``) is explicitly enabled but
-the dependencies are not present\ [#pip]_.
+the dependencies are not present.
 
 .. [#distlib] The scripts are created based on the package's metadata,
               specifically the ``console_script`` entry points.  This is the
@@ -164,15 +164,11 @@ the dependencies are not present\ [#pip]_.
               because the Python Packaging Authority provides a package
               ``distlib.scripts`` to perform this task.
 
-.. [#pip] ``pip`` might also be used when running ``make check-avocado``
-           if downloading is enabled, to ensure that Avocado is
-           available.
-
 The required versions of the packages are stored in a configuration file
 ``pythondeps.toml``.  The format is custom to QEMU, but it is documented
 at the top of the file itself and it should be easy to understand.  The
 requirements should make it possible to use the version that is packaged
-that is provided by supported distros.
+by QEMU's supported distros.
 
 When dependencies are downloaded, instead, ``configure`` uses a "known
 good" version that is also listed in ``pythondeps.toml``.  In this
@@ -454,7 +450,7 @@ are run with ``make bench``.  Meson test suites such as ``unit`` can be ran
 with ``make check-unit``, and ``make check-tcg`` builds and runs "non-Meson"
 tests for all targets.
 
-If desired, it is also possible to use ``ninja`` and ``meson test``,
+If desired, it is also possible to use ``ninja`` and ``pyvenv/bin/meson test``,
 respectively to build emulators and run tests defined in meson.build.
 The main difference is that ``make`` needs the ``-jN`` flag in order to
 enable parallel builds or tests.
@@ -497,8 +493,7 @@ number of dynamically created files listed later.
   ``pyvenv/bin``, and calling ``pip`` to install dependencies.
 
 ``tests/Makefile.include``
-  Rules for external test harnesses. These include the TCG tests
-  and the Avocado-based integration tests.
+  Rules for external test harnesses like the TCG tests.
 
 ``tests/docker/Makefile.include``
   Rules for Docker tests. Like ``tests/Makefile.include``, this file is
@@ -519,6 +514,18 @@ go through any pre-processing as seen with autotools, where configure
 generates ``Makefile`` from ``Makefile.in``.
 
 Built by configure:
+
+``run``
+  Used to run commands / scripts from the git checkout. Sets ``$PATH``
+  to point to locally built binaries, and activates the python venv
+  before running the requested command. Pass the command to run as
+  args, for example::
+
+    $ ./build/run ./script/qmp/qmp-shell-wrap qemu-system-x86_64
+
+  will use the ``python3`` binary and site-packages from the local
+  venv to run ``qmp-shell-wrap`` and spawn the QEMU emulator from
+  the build directory.
 
 ``config-host.mak``
   When configure has determined the characteristics of the build host it

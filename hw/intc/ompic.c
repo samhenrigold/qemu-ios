@@ -9,11 +9,11 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qom/object.h"
 
 #define TYPE_OR1K_OMPIC "or1k-ompic"
@@ -96,7 +96,7 @@ static void ompic_write(void *opaque, hwaddr addr, uint64_t data, unsigned size)
 static const MemoryRegionOps ompic_ops = {
     .read = ompic_read,
     .write = ompic_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
         .max_access_size = 8,
     },
@@ -155,7 +155,7 @@ static const VMStateDescription vmstate_or1k_ompic = {
     }
 };
 
-static void or1k_ompic_class_init(ObjectClass *klass, void *data)
+static void or1k_ompic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

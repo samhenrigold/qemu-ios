@@ -18,19 +18,20 @@
  */
 
 #include "qemu/osdep.h"
-#include "exec/address-spaces.h"
-#include "hw/irq.h"
+#include "system/address-spaces.h"
+#include "hw/core/irq.h"
 #include "target/ppc/cpu.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "system/reset.h"
 #include "qapi/error.h"
+#include "migration/vmstate.h"
 
 
 #include "hw/ppc/fdt.h"
 #include "hw/ppc/pnv.h"
 #include "hw/ppc/pnv_xscom.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/ppc/pnv_psi.h"
 
 #include <libfdt.h>
@@ -130,12 +131,11 @@ static void pnv_psi_set_bar(PnvPsi *psi, uint64_t bar)
 {
     PnvPsiClass *ppc = PNV_PSI_GET_CLASS(psi);
     MemoryRegion *sysmem = get_system_memory();
-    uint64_t old = psi->regs[PSIHB_XSCOM_BAR];
 
     psi->regs[PSIHB_XSCOM_BAR] = bar & (ppc->bar_mask | PSIHB_BAR_EN);
 
     /* Update MR, always remove it first */
-    if (old & PSIHB_BAR_EN) {
+    if (memory_region_is_mapped(&psi->regs_mr)) {
         memory_region_del_subregion(sysmem, &psi->regs_mr);
     }
 
@@ -557,7 +557,7 @@ static const Property pnv_psi_properties[] = {
     DEFINE_PROP_UINT64("fsp-bar", PnvPsi, fsp_bar, 0),
 };
 
-static void pnv_psi_power8_class_init(ObjectClass *klass, void *data)
+static void pnv_psi_power8_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PnvPsiClass *ppc = PNV_PSI_CLASS(klass);
@@ -887,7 +887,7 @@ static void pnv_psi_power9_realize(DeviceState *dev, Error **errp)
     pnv_psi_realize(dev, errp);
 }
 
-static void pnv_psi_power9_class_init(ObjectClass *klass, void *data)
+static void pnv_psi_power9_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PnvPsiClass *ppc = PNV_PSI_CLASS(klass);
@@ -913,19 +913,51 @@ static const TypeInfo pnv_psi_power9_info = {
     .instance_size = sizeof(Pnv9Psi),
     .instance_init = pnv_psi_power9_instance_init,
     .class_init    = pnv_psi_power9_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
             { TYPE_XIVE_NOTIFIER },
             { },
     },
 };
 
-static void pnv_psi_power10_class_init(ObjectClass *klass, void *data)
+static int vmstate_pnv_psi_post_load(void *opaque, int version_id)
+{
+    PnvPsi *psi = PNV_PSI(opaque);
+    Pnv9Psi *psi9 = PNV9_PSI(psi);
+    MemoryRegion   *sysmem = get_system_memory();
+    uint64_t esb_bar;
+    hwaddr esb_addr;
+
+    /* Set the ESB MMIO mapping */
+    esb_bar = psi->regs[PSIHB_REG(PSIHB9_ESB_CI_BASE)];
+
+    if (esb_bar & PSIHB9_ESB_CI_VALID) {
+        esb_addr = esb_bar & PSIHB9_ESB_CI_ADDR_MASK;
+        memory_region_add_subregion(sysmem, esb_addr,
+                                    &psi9->source.esb_mmio);
+    }
+
+    return 0;
+}
+
+static const VMStateDescription vmstate_pnv_psi = {
+    .name = TYPE_PNV_PSI,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = vmstate_pnv_psi_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(regs, PnvPsi, PSIHB_XSCOM_MAX),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void pnv_psi_power10_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PnvPsiClass *ppc = PNV_PSI_CLASS(klass);
     static const char compat[] = "ibm,power10-psihb-x\0ibm,psihb-x";
 
     dc->desc    = "PowerNV PSI Controller POWER10";
+    dc->vmsd = &vmstate_pnv_psi;
 
     ppc->xscom_pcba = PNV10_XSCOM_PSIHB_BASE;
     ppc->xscom_size = PNV10_XSCOM_PSIHB_SIZE;
@@ -939,7 +971,7 @@ static const TypeInfo pnv_psi_power10_info = {
     .class_init    = pnv_psi_power10_class_init,
 };
 
-static void pnv_psi_class_init(ObjectClass *klass, void *data)
+static void pnv_psi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PnvXScomInterfaceClass *xdc = PNV_XSCOM_INTERFACE_CLASS(klass);
@@ -959,7 +991,7 @@ static const TypeInfo pnv_psi_info = {
     .class_init    = pnv_psi_class_init,
     .class_size    = sizeof(PnvPsiClass),
     .abstract      = true,
-    .interfaces    = (InterfaceInfo[]) {
+    .interfaces    = (const InterfaceInfo[]) {
         { TYPE_PNV_XSCOM_INTERFACE },
         { }
     }

@@ -11,9 +11,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/i2c/bitbang_i2c.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qemu/module.h"
 #include "qom/object.h"
 #include "trace.h"
@@ -222,7 +222,7 @@ static void gpio_i2c_init(Object *obj)
     qdev_init_gpio_out(dev, &s->out, 1);
 }
 
-static void gpio_i2c_class_init(ObjectClass *klass, void *data)
+static void gpio_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

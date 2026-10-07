@@ -25,8 +25,7 @@
 #ifndef XLNX_DPDMA_H
 #define XLNX_DPDMA_H
 
-#include "hw/sysbus.h"
-#include "ui/console.h"
+#include "hw/core/sysbus.h"
 #include "system/dma.h"
 #include "qom/object.h"
 

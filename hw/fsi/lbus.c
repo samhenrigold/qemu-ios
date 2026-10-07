@@ -8,7 +8,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/fsi/lbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "trace.h"
 
@@ -91,7 +91,7 @@ static void fsi_scratchpad_reset(DeviceState *dev)
     memset(s->regs, 0, sizeof(s->regs));
 }
 
-static void fsi_scratchpad_class_init(ObjectClass *klass, void *data)
+static void fsi_scratchpad_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

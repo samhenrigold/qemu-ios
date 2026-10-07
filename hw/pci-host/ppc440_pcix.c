@@ -24,7 +24,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/pci-host/ppc4xx.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -519,7 +519,7 @@ static void ppc440_pcix_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-static void ppc440_pcix_class_init(ObjectClass *klass, void *data)
+static void ppc440_pcix_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

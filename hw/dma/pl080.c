@@ -8,15 +8,15 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/dma/pl080.h"
 #include "hw/arm/ipod_touch_guard.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "qemu/timer.h"
@@ -788,7 +788,7 @@ static const Property pl080_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void pl080_class_init(ObjectClass *oc, void *data)
+static void pl080_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

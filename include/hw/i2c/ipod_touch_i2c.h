@@ -4,9 +4,9 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 
 #define TYPE_IPOD_TOUCH_I2C                  "ipodtouch.i2c"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchI2CState, IPOD_TOUCH_I2C)

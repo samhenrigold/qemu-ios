@@ -22,8 +22,8 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/omap.h"
 #include "hw/sd/sd.h"
 
@@ -130,7 +130,8 @@ static void omap_mmc_command(OMAPMMCState *host, int cmd, int dir,
                              sd_rsp_type_t resptype, int init)
 {
     uint32_t rspstatus, mask;
-    int rsplen, timeout;
+    size_t rsplen;
+    int timeout;
     SDRequest request;
     uint8_t response[16];
 
@@ -157,7 +158,7 @@ static void omap_mmc_command(OMAPMMCState *host, int cmd, int dir,
     request.arg = host->arg;
     request.crc = 0; /* FIXME */
 
-    rsplen = sdbus_do_command(&host->sdbus, &request, response);
+    rsplen = sdbus_do_command(&host->sdbus, &request, response, sizeof(response));
 
     /* TODO: validate CRCs */
     switch (resptype) {
@@ -334,7 +335,9 @@ static uint64_t omap_mmc_read(void *opaque, hwaddr offset, unsigned size)
     OMAPMMCState *s = opaque;
 
     if (size != 2) {
-        return omap_badwidth_read16(opaque, offset);
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: read at offset 0x%" HWADDR_PRIx
+                      " with bad width %d\n", __func__, offset, size);
+        return 0;
     }
 
     switch (offset) {
@@ -427,7 +430,8 @@ static void omap_mmc_write(void *opaque, hwaddr offset,
     OMAPMMCState *s = opaque;
 
     if (size != 2) {
-        omap_badwidth_write16(opaque, offset, value);
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: write at offset 0x%" HWADDR_PRIx
+                      " with bad width %d\n", __func__, offset, size);
         return;
     }
 
@@ -612,7 +616,7 @@ static void omap_mmc_initfn(Object *obj)
     qbus_init(&s->sdbus, sizeof(s->sdbus), TYPE_SD_BUS, DEVICE(obj), "sd-bus");
 }
 
-static void omap_mmc_class_init(ObjectClass *oc, void *data)
+static void omap_mmc_class_init(ObjectClass *oc, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 

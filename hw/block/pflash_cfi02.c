@@ -35,8 +35,8 @@
 #include "qemu/osdep.h"
 #include "hw/block/block.h"
 #include "hw/block/flash.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/bitmap.h"
@@ -44,7 +44,7 @@
 #include "system/block-backend.h"
 #include "qemu/host-utils.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -968,7 +968,7 @@ static void pflash_cfi02_unrealize(DeviceState *dev)
     g_free(pfl->sector_erase_map);
 }
 
-static void pflash_cfi02_class_init(ObjectClass *klass, void *data)
+static void pflash_cfi02_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

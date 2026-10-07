@@ -18,19 +18,19 @@
 #include "exec/page-protection.h"
 #include "net/net.h"
 #include "hw/pci/pci.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "system/kvm.h"
 #include "system/device_tree.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "elf.h"
 #include "hw/char/serial-mm.h"
 #include "hw/ppc/ppc.h"
 #include "hw/pci-host/ppc4xx.h"
 #include "system/system.h"
 #include "system/reset.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/intc/ppc-uic.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 
 #include <libfdt.h>
@@ -64,7 +64,7 @@ static int bamboo_load_device_tree(MachineState *machine,
     uint32_t tb_freq = 400000000;
     uint32_t clock_freq = 400000000;
 
-    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, BINARY_DEVICE_TREE_FILE);
+    filename = qemu_find_file(QEMU_FILE_TYPE_DTB, BINARY_DEVICE_TREE_FILE);
     if (!filename) {
         return -1;
     }
@@ -242,13 +242,8 @@ static void bamboo_init(MachineState *machine)
     /* Load initrd. */
     if (initrd_filename) {
         initrd_size = load_image_targphys(initrd_filename, RAMDISK_ADDR,
-                                          machine->ram_size - RAMDISK_ADDR);
-
-        if (initrd_size < 0) {
-            error_report("could not load ram disk '%s' at %x",
-                         initrd_filename, RAMDISK_ADDR);
-            exit(1);
-        }
+                                          machine->ram_size - RAMDISK_ADDR,
+                                          &error_fatal);
     }
 
     /* If we're loading a kernel directly, we must load the device tree too. */

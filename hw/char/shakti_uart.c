@@ -24,8 +24,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/char/shakti_uart.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qemu/log.h"
 
 static uint64_t shakti_uart_read(void *opaque, hwaddr addr, unsigned size)
@@ -103,7 +103,7 @@ static void shakti_uart_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps shakti_uart_ops = {
     .read = shakti_uart_read,
     .write = shakti_uart_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {.min_access_size = 1, .max_access_size = 4},
     .valid = {.min_access_size = 1, .max_access_size = 4},
 };
@@ -161,7 +161,7 @@ static const Property shakti_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", ShaktiUartState, chr),
 };
 
-static void shakti_uart_class_init(ObjectClass *klass, void *data)
+static void shakti_uart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     device_class_set_legacy_reset(dc, shakti_uart_reset);

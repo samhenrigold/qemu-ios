@@ -8,12 +8,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
-#include "hw/irq.h"
-#include "hw/ptimer.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/module.h"
 #include "qemu/log.h"
 #include "qom/object.h"
@@ -392,7 +392,7 @@ static const Property sp804_properties[] = {
     DEFINE_PROP_UINT32("freq1", SP804State, freq1, 1000000),
 };
 
-static void sp804_class_init(ObjectClass *klass, void *data)
+static void sp804_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
 

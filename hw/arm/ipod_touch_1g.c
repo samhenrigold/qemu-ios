@@ -22,15 +22,16 @@
  * kept here (8900 engine hook, TV-out workaround); the MBX is the 2G's ipodtouch.mbx.
  */
 #include "qemu/osdep.h"
+#include "hw/arm/machines-qom.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/units.h"
 #include "hw/arm/boot.h"
-#include "exec/address-spaces.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "system/address-spaces.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/block/flash.h"
 #include "hw/dma/pl080.h"
 #include "hw/arm/exynos4210.h"
@@ -1331,7 +1332,7 @@ static void n45_set_wifi(Object *obj, bool value, Error **errp)
     IPOD_TOUCH_1G_MACHINE(obj)->wifi = value;
 }
 
-static void n45_machine_class_init(ObjectClass *klass, void *data)
+static void n45_machine_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
@@ -1437,7 +1438,7 @@ static void m68_instance_init(Object *obj)
     IPOD_TOUCH_1G_MACHINE(obj)->baseband = true;
 }
 
-static void m68_machine_class_init(ObjectClass *klass, void *data)
+static void m68_machine_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
 
@@ -1464,6 +1465,7 @@ static const TypeInfo m68_machine_info = {
 static const TypeInfo n45_machine_info = {
     .name          = TYPE_IPOD_TOUCH_1G_MACHINE,
     .parent        = TYPE_MACHINE,
+    .interfaces    = arm_machine_interfaces,
     .instance_size = sizeof(IPodTouch1GMachineState),
     .instance_init = n45_instance_init,
     .class_init    = n45_machine_class_init,

@@ -18,9 +18,9 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "exec/address-spaces.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "system/address-spaces.h"
 #include "migration/vmstate.h"
 
 #define TYPE_S5L8920_DART "s5l8920.dart"
@@ -132,7 +132,7 @@ static const VMStateDescription vmstate_s5l8920_dart = {
     }
 };
 
-static void s5l8920_dart_class_init(ObjectClass *klass, void *data)
+static void s5l8920_dart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

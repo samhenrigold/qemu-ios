@@ -1,7 +1,7 @@
 #ifndef PM_SMBUS_H
 #define PM_SMBUS_H
 
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/i2c/smbus_master.h"
 
 #define PM_SMBUS_MAX_MSG_SIZE 32
@@ -43,13 +43,6 @@ typedef struct PMSMBus {
 } PMSMBus;
 
 void pm_smbus_init(DeviceState *parent, PMSMBus *smb, bool force_aux_blk);
-
-/*
- * For backwards compatibility on migration, older versions don't have
- * working migration for pm_smbus, this lets us ignore the migrations
- * for older machine versions.
- */
-bool pm_smbus_vmstate_needed(void);
 
 extern const VMStateDescription pmsmb_vmstate;
 

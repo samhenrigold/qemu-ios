@@ -20,16 +20,25 @@
 #ifndef EXEC_PAGE_VARY_H
 #define EXEC_PAGE_VARY_H
 
+/*
+ * For system mode, the minimum comes from the number of bits
+ * required for maximum alignment (6) and the number of bits
+ * required for TLB_FLAGS_MASK (3).
+ *
+ * For user mode, TARGET_PAGE_BITS_VARY is a hack to allow the target
+ * page size to match the host page size.  Mostly, this reduces the
+ * ordinary target page size to run on a host with 4KiB pages (i.e. x86).
+ * There is no true minimum required by the implementation, but keep the
+ * same minimum as for system mode for sanity.
+ * See linux-user/mmap.c, mmap_h_lt_g and mmap_h_gt_g.
+ */
+#define TARGET_PAGE_BITS_MIN 9
+
 typedef struct {
     bool decided;
     int bits;
     uint64_t mask;
 } TargetPageBits;
-
-#ifdef IN_PAGE_VARY
-bool set_preferred_target_page_bits_common(int bits);
-void finalize_target_page_bits_common(int min);
-#endif
 
 /**
  * set_preferred_target_page_bits:
@@ -48,5 +57,14 @@ bool set_preferred_target_page_bits(int bits);
  * Commit the final value set by set_preferred_target_page_bits.
  */
 void finalize_target_page_bits(void);
+
+/**
+ * migration_legacy_page_bits
+ *
+ * For migration compatibility with qemu v2.9, prior to the introduction
+ * of the configuration/target-page-bits section, return the value of
+ * TARGET_PAGE_BITS that the target had then.
+ */
+int migration_legacy_page_bits(void);
 
 #endif /* EXEC_PAGE_VARY_H */

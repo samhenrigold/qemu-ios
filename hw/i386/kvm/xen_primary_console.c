@@ -13,7 +13,7 @@
 
 #include "qapi/error.h"
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/xen/xen.h"
 #include "hw/xen/xen_backend_ops.h"
 #include "xen_evtchn.h"
@@ -67,7 +67,7 @@ static void xen_primary_console_realize(DeviceState *dev, Error **errp)
     xen_primary_console_singleton = s;
 }
 
-static void xen_primary_console_class_init(ObjectClass *klass, void *data)
+static void xen_primary_console_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

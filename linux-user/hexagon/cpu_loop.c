@@ -36,7 +36,7 @@ void cpu_loop(CPUHexagonState *env)
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
         cpu_exec_end(cs);
-        process_queued_cpu_work(cs);
+        qemu_process_cpu_events(cs);
 
         switch (trapnr) {
         case EXCP_INTERRUPT:
@@ -56,13 +56,18 @@ void cpu_loop(CPUHexagonState *env)
                              0, 0);
             if (ret == -QEMU_ERESTARTSYS) {
                 env->gpr[HEX_REG_PC] -= 4;
-            } else if (ret != -QEMU_ESIGRETURN) {
+            } else if (ret != -QEMU_ESIGRETURN && ret != -QEMU_ESETPC) {
                 env->gpr[0] = ret;
             }
             break;
         case HEX_CAUSE_PC_NOT_ALIGNED:
             force_sig_fault(TARGET_SIGBUS, TARGET_BUS_ADRALN,
                             env->gpr[HEX_REG_R31]);
+            break;
+        case HEX_CAUSE_INVALID_PACKET:
+        case HEX_CAUSE_REG_WRITE_CONFLICT:
+            force_sig_fault(TARGET_SIGILL, TARGET_ILL_ILLOPC,
+                            env->gpr[HEX_REG_PC]);
             break;
         case EXCP_ATOMIC:
             cpu_exec_step_atomic(cs);
@@ -79,9 +84,11 @@ void cpu_loop(CPUHexagonState *env)
     }
 }
 
-void target_cpu_copy_regs(CPUArchState *env, target_pt_regs *regs)
+void init_main_thread(CPUState *cs, struct image_info *info)
 {
-    env->gpr[HEX_REG_PC] = regs->sepc;
-    env->gpr[HEX_REG_SP] = regs->sp;
+    CPUArchState *env = cpu_env(cs);
+
+    env->gpr[HEX_REG_PC] = info->entry;
+    env->gpr[HEX_REG_SP] = info->start_stack;
     env->gpr[HEX_REG_USR] = 0x56000;
 }

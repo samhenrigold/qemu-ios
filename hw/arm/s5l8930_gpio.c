@@ -17,9 +17,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/arm/s5l8930.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 
 /*
@@ -371,7 +371,7 @@ static const Property s5l8930_gpio_props[] = {
     DEFINE_PROP_BOOL("pin-int-enable", S5L8930GPIOState, pin_int_enable, false),
 };
 
-static void s5l8930_gpio_class_init(ObjectClass *klass, void *data)
+static void s5l8930_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

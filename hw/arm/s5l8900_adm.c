@@ -9,7 +9,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/arm/s5l8900_adm.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
 
@@ -307,7 +307,7 @@ static void s5l8900_adm_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
-static void s5l8900_adm_class_init(ObjectClass *klass, void *data)
+static void s5l8900_adm_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = s5l8900_adm_realize;

@@ -1,6 +1,6 @@
 #include "hw/arm/ipod_touch_sysic.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 /*
  * Cached: consulted on every GPIO interrupt-status access, and the guest polls
@@ -356,7 +356,7 @@ static const Property ipod_touch_sysic_properties[] = {
     DEFINE_PROP_BOOL("s5l8900", IPodTouchSYSICState, s5l8900, false),
 };
 
-static void ipod_touch_sysic_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_sysic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

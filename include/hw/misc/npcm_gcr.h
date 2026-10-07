@@ -16,8 +16,8 @@
 #ifndef NPCM_GCR_H
 #define NPCM_GCR_H
 
-#include "exec/memory.h"
-#include "hw/sysbus.h"
+#include "system/memory.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 /*

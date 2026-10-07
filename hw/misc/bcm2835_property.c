@@ -8,9 +8,9 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/misc/bcm2835_property.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/arm/raspberrypi-fw-defs.h"
 #include "system/dma.h"
@@ -556,7 +556,7 @@ static const Property bcm2835_property_props[] = {
     DEFINE_PROP_STRING("command-line", BCM2835PropertyState, command_line),
 };
 
-static void bcm2835_property_class_init(ObjectClass *klass, void *data)
+static void bcm2835_property_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

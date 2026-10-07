@@ -3,14 +3,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
-#include "hw/hw.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "audio/audio.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "qemu/audio.h"
 #include "qemu/timer.h"
 #include "hw/arm/ipod_touch_sysic.h"
 #include "hw/dma/pl080.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/arm/ipod_touch_lm48821.h"
 
 /*
@@ -168,7 +168,7 @@ typedef struct IPodTouchI2SState {
     uint32_t txfctl;
     uint32_t clkdiv;
 
-    QEMUSoundCard card;
+    AudioBackend *audio_be;
     SWVoiceOut *voice;
     struct audsettings as;
     Clock *lrclk;
@@ -184,7 +184,7 @@ typedef struct IPodTouchI2SState {
     uint32_t ring_tail;   /* read cursor  */
     uint32_t ring_level;  /* bytes queued */
 
-    bool card_ok;         /* AUD_register_card succeeded */
+    bool card_ok;         /* audio_be_check succeeded */
     bool active;          /* SWVoiceOut is active */
     bool running;         /* TX command == run */
 

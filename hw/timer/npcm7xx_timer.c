@@ -16,9 +16,9 @@
 
 #include "qemu/osdep.h"
 
-#include "hw/irq.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/timer/npcm7xx_timer.h"
 #include "migration/vmstate.h"
 #include "qemu/bitops.h"
@@ -689,7 +689,7 @@ static const VMStateDescription vmstate_npcm7xx_timer_ctrl = {
     },
 };
 
-static void npcm7xx_timer_class_init(ObjectClass *klass, void *data)
+static void npcm7xx_timer_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

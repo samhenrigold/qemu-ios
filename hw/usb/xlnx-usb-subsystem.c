@@ -23,12 +23,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/register.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
 #include "qemu/bitops.h"
 #include "qom/object.h"
 #include "qapi/error.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/usb/xlnx-usb-subsystem.h"
 
 static void versal_usb2_realize(DeviceState *dev, Error **errp)
@@ -69,7 +69,7 @@ static void versal_usb2_init(Object *obj)
     object_property_add_alias(obj, "dma", OBJECT(&s->dwc3.sysbus_xhci), "dma");
 }
 
-static void versal_usb2_class_init(ObjectClass *klass, void *data)
+static void versal_usb2_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

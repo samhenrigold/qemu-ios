@@ -2,8 +2,8 @@
 #define HW_ARM_S5L8900_ADM_H
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/arm/s5l8900_fmc.h"
 
 #define TYPE_S5L8900_ADM "s5l8900.adm"

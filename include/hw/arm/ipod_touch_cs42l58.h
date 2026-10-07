@@ -4,10 +4,10 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-clock.h"
 
 #define TYPE_CS42L58                 "cs42l58"
 #define TYPE_CS42L59                 "cs42l59"   /* + power-down status */

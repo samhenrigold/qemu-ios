@@ -26,8 +26,8 @@
 #define PPC4XX_H
 
 #include "hw/ppc/ppc.h"
-#include "exec/memory.h"
-#include "hw/sysbus.h"
+#include "system/memory.h"
+#include "hw/core/sysbus.h"
 
 /*
  * Generic DCR device

@@ -12,8 +12,8 @@
 
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/usb.h"
-#include "hw/qdev-properties.h"
+#include "hw/usb/usb.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "desc.h"
 #include "canokey.h"
@@ -300,7 +300,7 @@ static const Property canokey_properties[] = {
     DEFINE_PROP_STRING("file", CanoKeyState, file),
 };
 
-static void canokey_class_init(ObjectClass *klass, void *data)
+static void canokey_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

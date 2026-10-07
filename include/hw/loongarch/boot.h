@@ -102,10 +102,9 @@ struct loongarch_boot_info {
     const char *kernel_cmdline;
     const char *initrd_filename;
     uint64_t a0, a1, a2;
+    uint64_t initrd_addr;
+    uint64_t initrd_size;
 };
-
-extern struct memmap_entry *memmap_table;
-extern unsigned memmap_entries;
 
 struct memmap_entry {
     uint64_t address;
@@ -114,6 +113,7 @@ struct memmap_entry {
     uint32_t reserved;
 };
 
-void loongarch_load_kernel(MachineState *ms, struct loongarch_boot_info *info);
+void loongarch_load_kernel(MachineState *ms, struct loongarch_boot_info *info,
+                           uint64_t phys_addr_mask);
 
 #endif /* HW_LOONGARCH_BOOT_H */

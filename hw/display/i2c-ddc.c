@@ -20,7 +20,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/display/i2c-ddc.h"
 
@@ -99,7 +99,7 @@ static const Property i2c_ddc_properties[] = {
     DEFINE_EDID_PROPERTIES(I2CDDCState, edid_info),
 };
 
-static void i2c_ddc_class_init(ObjectClass *oc, void *data)
+static void i2c_ddc_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     I2CSlaveClass *isc = I2C_SLAVE_CLASS(oc);

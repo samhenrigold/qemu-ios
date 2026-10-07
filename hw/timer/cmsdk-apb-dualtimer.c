@@ -21,11 +21,11 @@
 #include "trace.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/registerfields.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/registerfields.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/timer/cmsdk-apb-dualtimer.h"
 #include "migration/vmstate.h"
 
@@ -534,7 +534,7 @@ static const VMStateDescription cmsdk_apb_dualtimer_vmstate = {
     }
 };
 
-static void cmsdk_apb_dualtimer_class_init(ObjectClass *klass, void *data)
+static void cmsdk_apb_dualtimer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

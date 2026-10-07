@@ -93,6 +93,10 @@ static const MemoryRegionOps bcm2835_rng_ops = {
     .read = bcm2835_rng_read,
     .write = bcm2835_rng_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
 };
 
 static const VMStateDescription vmstate_bcm2835_rng = {
@@ -123,7 +127,7 @@ static void bcm2835_rng_reset(DeviceState *dev)
     s->rng_status = 0;
 }
 
-static void bcm2835_rng_class_init(ObjectClass *klass, void *data)
+static void bcm2835_rng_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

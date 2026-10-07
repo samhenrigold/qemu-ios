@@ -26,8 +26,8 @@
 #include "qapi/error.h"
 #include "qemu/timer.h"
 #include "trace.h"
-#include "hw/qdev-properties.h"
-#include "hw/usb.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/usb/usb.h"
 #include "migration/vmstate.h"
 #include "desc.h"
 #include "qemu/error-report.h"
@@ -670,7 +670,7 @@ static const Property usb_hub_properties[] = {
     DEFINE_PROP_BOOL("port-power", USBHubState, port_power, false),
 };
 
-static void usb_hub_class_initfn(ObjectClass *klass, void *data)
+static void usb_hub_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

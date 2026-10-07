@@ -23,18 +23,18 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
-#include "hw/ptimer.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 
 #include "system/dma.h"
-#include "hw/stream.h"
+#include "hw/core/stream.h"
 #include "qom/object.h"
 #include "trace.h"
 
@@ -621,7 +621,7 @@ static const Property axidma_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void axidma_class_init(ObjectClass *klass, void *data)
+static void axidma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -639,7 +639,8 @@ static StreamSinkClass xilinx_axidma_control_stream_class = {
     .push = xilinx_axidma_control_stream_push,
 };
 
-static void xilinx_axidma_stream_class_init(ObjectClass *klass, void *data)
+static void xilinx_axidma_stream_class_init(ObjectClass *klass,
+                                            const void *data)
 {
     StreamSinkClass *ssc = STREAM_SINK_CLASS(klass);
 
@@ -661,7 +662,7 @@ static const TypeInfo xilinx_axidma_data_stream_info = {
     .instance_size = sizeof(XilinxAXIDMAStreamSink),
     .class_init    = xilinx_axidma_stream_class_init,
     .class_data    = &xilinx_axidma_data_stream_class,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_STREAM_SINK },
         { }
     }
@@ -673,7 +674,7 @@ static const TypeInfo xilinx_axidma_control_stream_info = {
     .instance_size = sizeof(XilinxAXIDMAStreamSink),
     .class_init    = xilinx_axidma_stream_class_init,
     .class_data    = &xilinx_axidma_control_stream_class,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_STREAM_SINK },
         { }
     }

@@ -287,9 +287,13 @@ STDAPI COMRegister(void)
 
     chk(QGAProviderFind(QGAProviderCount, (void *)&count));
     if (count) {
-        errmsg(E_ABORT, "QGA VSS Provider is already installed");
-        qga_debug_end;
-        return E_ABORT;
+        qga_debug("QGA VSS Provider is already installed. Attempting to unregister first.");
+        hr = COMUnregister();
+        if (FAILED(hr)) {
+            errmsg(hr, "Failed to unregister existing QGA VSS Provider. Aborting installation.");
+            qga_debug_end;
+            return E_ABORT;
+        }
     }
 
     chk(CoCreateInstance(CLSID_COMAdminCatalog, NULL, CLSCTX_INPROC_SERVER,
@@ -385,7 +389,10 @@ out:
 STDAPI_(void) CALLBACK DLLCOMRegister(HWND, HINSTANCE, LPSTR, int);
 STDAPI_(void) CALLBACK DLLCOMRegister(HWND, HINSTANCE, LPSTR, int)
 {
-    COMRegister();
+    HRESULT hr = COMRegister();
+    if (FAILED(hr)) {
+        exit(hr);
+    }
 }
 
 STDAPI_(void) CALLBACK DLLCOMUnregister(HWND, HINSTANCE, LPSTR, int);
@@ -542,6 +549,7 @@ STDAPI DllUnregisterServer(void)
 
 
 /* Support function to convert ASCII string into BSTR (used in _bstr_t) */
+#ifndef CONFIG_CONVERT_STRING_TO_BSTR
 namespace _com_util
 {
     BSTR WINAPI ConvertStringToBSTR(const char *ascii) {
@@ -559,6 +567,7 @@ namespace _com_util
         return bstr;
     }
 }
+#endif
 
 /* Stop QGA VSS provider service using Winsvc API  */
 STDAPI StopService(void)

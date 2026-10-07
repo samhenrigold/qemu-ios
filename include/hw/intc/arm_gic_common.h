@@ -21,7 +21,7 @@
 #ifndef HW_ARM_GIC_COMMON_H
 #define HW_ARM_GIC_COMMON_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 /* Maximum number of possible interrupts, determined by the GIC architecture */
@@ -129,6 +129,8 @@ struct GICState {
     uint32_t num_lrs;
 
     uint32_t num_cpu;
+    /* cpu_index of the first CPU, attached to this GIC.  */
+    uint32_t first_cpu_index;
 
     MemoryRegion iomem; /* Distributor */
     /* This is just so we can have an opaque pointer which identifies

@@ -13,7 +13,7 @@
 #include <scsi/sg.h>
 
 #include "qapi/error.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
 #include "block/thread-pool.h"
 #include "scsi/pr-manager.h"
 #include "trace.h"
@@ -77,7 +77,7 @@ static const TypeInfo pr_manager_info = {
     .name = TYPE_PR_MANAGER,
     .class_size = sizeof(PRManagerClass),
     .abstract = true,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

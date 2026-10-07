@@ -26,14 +26,14 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "vga_int.h"
 #include "ui/pixel_ops.h"
 #include "ui/console.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/display/edid.h"
 #include "qom/object.h"
 #include "hw/acpi/acpi_aml_interface.h"
@@ -338,7 +338,6 @@ static const Property vga_pci_properties[] = {
     DEFINE_PROP_BIT("edid",
                     PCIVGAState, flags, PCI_VGA_FLAG_ENABLE_EDID, true),
     DEFINE_EDID_PROPERTIES(PCIVGAState, edid_info),
-    DEFINE_PROP_BOOL("global-vmstate", PCIVGAState, vga.global_vmstate, false),
 };
 
 static const Property secondary_pci_properties[] = {
@@ -350,7 +349,7 @@ static const Property secondary_pci_properties[] = {
     DEFINE_EDID_PROPERTIES(PCIVGAState, edid_info),
 };
 
-static void vga_pci_class_init(ObjectClass *klass, void *data)
+static void vga_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -369,14 +368,14 @@ static const TypeInfo vga_pci_type_info = {
     .instance_size = sizeof(PCIVGAState),
     .abstract = true,
     .class_init = vga_pci_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { TYPE_ACPI_DEV_AML_IF },
         { },
     },
 };
 
-static void vga_class_init(ObjectClass *klass, void *data)
+static void vga_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -392,7 +391,7 @@ static void vga_class_init(ObjectClass *klass, void *data)
                                    vga_get_big_endian_fb, vga_set_big_endian_fb);
 }
 
-static void secondary_class_init(ObjectClass *klass, void *data)
+static void secondary_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);

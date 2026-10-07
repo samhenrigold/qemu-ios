@@ -20,10 +20,10 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/omap.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
@@ -76,29 +76,31 @@ static uint64_t omap_gpio_read(void *opaque, hwaddr addr,
     int offset = addr & OMAP_MPUI_REG_MASK;
 
     if (size != 2) {
-        return omap_badwidth_read16(opaque, addr);
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: read at offset 0x%" HWADDR_PRIx
+                      " with bad width %d\n", __func__, addr, size);
+        return 0;
     }
 
     switch (offset) {
-    case 0x00:	/* DATA_INPUT */
+    case 0x00:  /* DATA_INPUT */
         return s->inputs & s->pins;
 
-    case 0x04:	/* DATA_OUTPUT */
+    case 0x04:  /* DATA_OUTPUT */
         return s->outputs;
 
-    case 0x08:	/* DIRECTION_CONTROL */
+    case 0x08:  /* DIRECTION_CONTROL */
         return s->dir;
 
-    case 0x0c:	/* INTERRUPT_CONTROL */
+    case 0x0c:  /* INTERRUPT_CONTROL */
         return s->edge;
 
-    case 0x10:	/* INTERRUPT_MASK */
+    case 0x10:  /* INTERRUPT_MASK */
         return s->mask;
 
-    case 0x14:	/* INTERRUPT_STATUS */
+    case 0x14:  /* INTERRUPT_STATUS */
         return s->ints;
 
-    case 0x18:	/* PIN_CONTROL (not in OMAP310) */
+    case 0x18:  /* PIN_CONTROL (not in OMAP310) */
         OMAP_BAD_REG(addr);
         return s->pins;
     }
@@ -116,16 +118,17 @@ static void omap_gpio_write(void *opaque, hwaddr addr,
     int ln;
 
     if (size != 2) {
-        omap_badwidth_write16(opaque, addr, value);
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: write at offset 0x%" HWADDR_PRIx
+                      " with bad width %d\n", __func__, addr, size);
         return;
     }
 
     switch (offset) {
-    case 0x00:	/* DATA_INPUT */
+    case 0x00:  /* DATA_INPUT */
         OMAP_RO_REG(addr);
         return;
 
-    case 0x04:	/* DATA_OUTPUT */
+    case 0x04:  /* DATA_OUTPUT */
         diff = (s->outputs ^ value) & ~s->dir;
         s->outputs = value;
         while ((ln = ctz32(diff)) != 32) {
@@ -135,7 +138,7 @@ static void omap_gpio_write(void *opaque, hwaddr addr,
         }
         break;
 
-    case 0x08:	/* DIRECTION_CONTROL */
+    case 0x08:  /* DIRECTION_CONTROL */
         diff = s->outputs & (s->dir ^ value);
         s->dir = value;
 
@@ -147,21 +150,21 @@ static void omap_gpio_write(void *opaque, hwaddr addr,
         }
         break;
 
-    case 0x0c:	/* INTERRUPT_CONTROL */
+    case 0x0c:  /* INTERRUPT_CONTROL */
         s->edge = value;
         break;
 
-    case 0x10:	/* INTERRUPT_MASK */
+    case 0x10:  /* INTERRUPT_MASK */
         s->mask = value;
         break;
 
-    case 0x14:	/* INTERRUPT_STATUS */
+    case 0x14:  /* INTERRUPT_STATUS */
         s->ints &= ~value;
         if (!s->ints)
             qemu_irq_lower(s->irq);
         break;
 
-    case 0x18:	/* PIN_CONTROL (not in OMAP310 TRM) */
+    case 0x18:  /* PIN_CONTROL (not in OMAP310 TRM) */
         OMAP_BAD_REG(addr);
         s->pins = value;
         break;
@@ -229,7 +232,7 @@ static const Property omap_gpio_properties[] = {
     DEFINE_PROP_INT32("mpu_model", Omap1GpioState, mpu_model, 0),
 };
 
-static void omap_gpio_class_init(ObjectClass *klass, void *data)
+static void omap_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

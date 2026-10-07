@@ -1,13 +1,17 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "cpregs.h"
+#include "trace.h"
 #include "qemu/error-report.h"
 #include "system/kvm.h"
 #include "system/tcg.h"
 #include "kvm_arm.h"
 #include "internals.h"
 #include "cpu-features.h"
-#include "migration/cpu.h"
+#include "migration/qemu-file-types.h"
+#include "migration/vmstate.h"
 #include "target/arm/gtimer.h"
+#include "hw/arm/machines-qom.h"
 
 static bool vfp_needed(void *opaque)
 {
@@ -220,27 +224,6 @@ static const VMStateDescription vmstate_vfp = {
     }
 };
 
-static bool iwmmxt_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-    CPUARMState *env = &cpu->env;
-
-    return arm_feature(env, ARM_FEATURE_IWMMXT);
-}
-
-static const VMStateDescription vmstate_iwmmxt = {
-    .name = "cpu/iwmmxt",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = iwmmxt_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT64_ARRAY(env.iwmmxt.regs, ARMCPU, 16),
-        VMSTATE_UINT32_ARRAY(env.iwmmxt.cregs, ARMCPU, 16),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-#ifdef TARGET_AARCH64
 /* The expression ARM_MAX_VQ - 2 is 0 for pure AArch32 build,
  * and ARMPredicateReg is actively empty.  This triggers errors
  * in the expansion of the VMSTATE macros.
@@ -250,7 +233,7 @@ static bool sve_needed(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    return cpu_isar_feature(aa64_sve, cpu);
+    return cpu_isar_feature(aa64_sve, cpu) || cpu_isar_feature(aa64_sme, cpu);
 }
 
 /* The first two words of each Zreg is stored in VFP state.  */
@@ -315,12 +298,30 @@ static const VMStateDescription vmstate_za = {
     .minimum_version_id = 1,
     .needed = za_needed,
     .fields = (const VMStateField[]) {
-        VMSTATE_STRUCT_ARRAY(env.zarray, ARMCPU, ARM_MAX_VQ * 16, 0,
+        VMSTATE_STRUCT_ARRAY(env.za_state.za, ARMCPU, ARM_MAX_VQ * 16, 0,
                              vmstate_vreg, ARMVectorReg),
         VMSTATE_END_OF_LIST()
     }
 };
-#endif /* AARCH64 */
+
+static bool zt0_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+
+    return za_needed(cpu) && cpu_isar_feature(aa64_sme2, cpu);
+}
+
+static const VMStateDescription vmstate_zt0 = {
+    .name = "cpu/zt0",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = zt0_needed,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(env.za_state.zt0, ARMCPU,
+                             ARRAY_SIZE(((CPUARMState *)0)->za_state.zt0)),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static bool serror_needed(void *opaque)
 {
@@ -507,6 +508,24 @@ static const VMStateDescription vmstate_m_mve = {
         VMSTATE_UINT32(env.v7m.ltpsize, ARMCPU),
         VMSTATE_END_OF_LIST()
     },
+};
+
+static bool event_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+
+    return cpu->env.event_register;
+}
+
+static const VMStateDescription vmstate_event = {
+    .name = "cpu/event",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = event_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(env.event_register, ARMCPU),
+        VMSTATE_END_OF_LIST()
+    }
 };
 
 static const VMStateDescription vmstate_m = {
@@ -818,12 +837,86 @@ static const VMStateInfo vmstate_cpsr = {
     .put = put_cpsr,
 };
 
+static int get_pstate64(QEMUFile *f, void *opaque, size_t size,
+                        const VMStateField *field)
+{
+    ARMCPU *cpu = opaque;
+    CPUARMState *env = &cpu->env;
+    uint64_t val = qemu_get_be64(f);
+
+    env->aarch64 = ((val & PSTATE_nRW) == 0);
+    if (is_a64(env)) {
+        pstate_write(env, val);
+    } else {
+        cpsr_write_from_spsr_elx(env, val);
+    }
+    return 0;
+}
+
+static int put_pstate64(QEMUFile *f, void *opaque, size_t size,
+                        const VMStateField *field, JSONWriter *vmdesc)
+{
+    ARMCPU *cpu = opaque;
+    CPUARMState *env = &cpu->env;
+    uint64_t val;
+
+    if (is_a64(env)) {
+        val = pstate_read(env);
+    } else {
+        val = cpsr_read_for_spsr_elx(env);
+    }
+    qemu_put_be64(f, val);
+    return 0;
+}
+
+static bool pstate64_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+    CPUARMState *env = &cpu->env;
+    uint64_t val;
+
+    if (arm_feature(env, ARM_FEATURE_M)) {
+        return false;
+    }
+    if (is_a64(env)) {
+        val = pstate_read(env);
+    } else {
+        val = cpsr_read_for_spsr_elx(env);
+        if (val & PSTATE_SS) {
+            return true;
+        }
+    }
+    return val > UINT32_MAX;
+}
+
+static const VMStateDescription vmstate_pstate64 = {
+    .name = "cpu/pstate64",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = pstate64_needed,
+    .fields = (const VMStateField[]) {
+        {
+            .name = "pstate64",
+            .version_id = 0,
+            .size = sizeof(uint64_t),
+            .info = &(const VMStateInfo) {
+                .name = "pstate64",
+                .get = get_pstate64,
+                .put = put_pstate64,
+            },
+            .flags = VMS_SINGLE,
+            .offset = 0,
+        },
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int get_power(QEMUFile *f, void *opaque, size_t size,
                     const VMStateField *field)
 {
     ARMCPU *cpu = opaque;
     bool powered_off = qemu_get_byte(f);
-    cpu->power_state = powered_off ? PSCI_OFF : PSCI_ON;
+    arm_set_cpu_power_state(cpu, powered_off ? PSCI_OFF : PSCI_ON);
     return 0;
 }
 
@@ -848,6 +941,23 @@ static const VMStateInfo vmstate_powered_off = {
     .name = "powered_off",
     .get = get_power,
     .put = put_power,
+};
+
+static bool syndrome64_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+    return cpu->env.exception.syndrome > UINT32_MAX;
+}
+
+static const VMStateDescription vmstate_syndrome64 = {
+    .name = "cpu/syndrome64",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = syndrome64_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(env.exception.syndrome, ARMCPU),
+        VMSTATE_END_OF_LIST()
+    },
 };
 
 static int cpu_pre_save(void *opaque)
@@ -876,11 +986,14 @@ static int cpu_pre_save(void *opaque)
         }
     }
 
+    /*
+     * On outbound migration, send the data in our cpreg_{values,indexes}
+     * arrays. The migration code will not allocate anything, but just
+     * reads the data pointed to by the VMSTATE_VARRAY_INT32_ALLOC() fields.
+     */
+    cpu->cpreg_vmstate_indexes = cpu->cpreg_indexes;
+    cpu->cpreg_vmstate_values = cpu->cpreg_values;
     cpu->cpreg_vmstate_array_len = cpu->cpreg_array_len;
-    memcpy(cpu->cpreg_vmstate_indexes, cpu->cpreg_indexes,
-           cpu->cpreg_array_len * sizeof(uint64_t));
-    memcpy(cpu->cpreg_vmstate_values, cpu->cpreg_values,
-           cpu->cpreg_array_len * sizeof(uint64_t));
 
     return 0;
 }
@@ -892,6 +1005,9 @@ static int cpu_post_save(void *opaque)
     if (!kvm_enabled()) {
         pmu_op_finish(&cpu->env);
     }
+
+    cpu->cpreg_vmstate_indexes = NULL;
+    cpu->cpreg_vmstate_values = NULL;
 
     return 0;
 }
@@ -926,14 +1042,59 @@ static int cpu_pre_load(void *opaque)
         pmu_op_start(env);
     }
 
+    g_assert(!cpu->cpreg_vmstate_indexes);
+    g_assert(!cpu->cpreg_vmstate_values);
+
     return 0;
+}
+
+static gchar *print_register_name(uint64_t kvm_regidx)
+{
+    if (kvm_enabled()) {
+        return kvm_print_register_name(kvm_regidx);
+    } else {
+        return g_strdup_printf("system register 0x%x", kvm_to_cpreg_id(kvm_regidx));
+    }
+}
+
+/*
+ * Handle the situation where @kvmidx is on destination but not
+ * in the incoming stream. This never fails the migration.
+ */
+static void handle_cpreg_missing_in_incoming_stream(ARMCPU *cpu, uint64_t kvmidx)
+{
+    g_autofree gchar *name = print_register_name(kvmidx);
+
+    warn_report("%s: %s "
+                "expected by the destination but not in the incoming stream: "
+                 "skip it", __func__, name);
+}
+
+/*
+ * Handle the situation where @kvmidx is in the incoming stream
+ * but not on destination. This currently fails the migration but
+ * we plan to accomodate some exceptions, hence the boolean returned value.
+ */
+static bool handle_cpreg_only_in_incoming_stream(ARMCPU *cpu, uint64_t kvmidx)
+{
+    g_autofree gchar *name = print_register_name(kvmidx);
+    bool fail = true;
+
+    error_report("%s: %s in the incoming stream but unknown on the "
+                 "destination: fail migration", __func__, name);
+
+    return fail;
 }
 
 static int cpu_post_load(void *opaque, int version_id)
 {
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
+    bool fail = false;
     int i, v;
+
+    trace_cpu_post_load(cpu->cpreg_vmstate_array_len,
+                        cpu->cpreg_array_len);
 
     /*
      * Handle migration compatibility from old QEMU which didn't
@@ -962,35 +1123,56 @@ static int cpu_post_load(void *opaque, int version_id)
      */
 
     for (i = 0, v = 0; i < cpu->cpreg_array_len
-             && v < cpu->cpreg_vmstate_array_len; i++) {
+             && v < cpu->cpreg_vmstate_array_len;) {
         if (cpu->cpreg_vmstate_indexes[v] > cpu->cpreg_indexes[i]) {
-            /* register in our list but not incoming : skip it */
+            handle_cpreg_missing_in_incoming_stream(cpu, cpu->cpreg_indexes[i++]);
             continue;
         }
         if (cpu->cpreg_vmstate_indexes[v] < cpu->cpreg_indexes[i]) {
-            /* register in their list but not ours: fail migration */
-            return -1;
+            fail = handle_cpreg_only_in_incoming_stream(cpu,
+                                                        cpu->cpreg_vmstate_indexes[v++]);
+            continue;
         }
         /* matching register, copy the value over */
         cpu->cpreg_values[i] = cpu->cpreg_vmstate_values[v];
+        i++;
         v++;
     }
 
+    /*
+     * if we have reached the end of the incoming array but there are
+     * still regs in cpreg, continue parsing the regs which are missing
+     * in the input stream
+     */
+    for ( ; i < cpu->cpreg_array_len; i++) {
+        handle_cpreg_missing_in_incoming_stream(cpu, cpu->cpreg_indexes[i]);
+    }
+    /*
+     * if we have reached the end of the cpreg array but there are
+     * still regs in the input stream, continue parsing the vmstate array
+     */
+    for ( ; v < cpu->cpreg_vmstate_array_len; v++) {
+        fail = handle_cpreg_only_in_incoming_stream(cpu,
+                                                    cpu->cpreg_vmstate_indexes[v]);
+    }
+    if (fail) {
+        return -1;
+    }
+
     if (kvm_enabled()) {
-        if (!write_list_to_kvmstate(cpu, KVM_PUT_FULL_STATE)) {
+        if (!kvm_arm_cpu_post_load(cpu)) {
             return -1;
         }
-        /* Note that it's OK for the TCG side not to know about
-         * every register in the list; KVM is authoritative if
-         * we're using it.
-         */
-        write_list_to_cpustate(cpu);
-        kvm_arm_cpu_post_load(cpu);
     } else {
         if (!write_list_to_cpustate(cpu)) {
             return -1;
         }
     }
+
+    g_free(cpu->cpreg_vmstate_indexes);
+    g_free(cpu->cpreg_vmstate_values);
+    cpu->cpreg_vmstate_indexes = NULL;
+    cpu->cpreg_vmstate_values = NULL;
 
     /*
      * Misaligned thumb pc is architecturally impossible. Fail the
@@ -1043,6 +1225,12 @@ const VMStateDescription vmstate_arm_cpu = {
         VMSTATE_UINT32_ARRAY(env.regs, ARMCPU, 16),
         VMSTATE_UINT64_ARRAY(env.xregs, ARMCPU, 32),
         VMSTATE_UINT64(env.pc, ARMCPU),
+        /*
+         * If any bits are set in the upper 32 bits of cpsr/pstate,
+         * or if the cpu is in aa32 mode and PSTATE.SS is set, then
+         * the cpu/pstate64 subsection will override this with the
+         * full 64 bit state.
+         */
         {
             .name = "cpsr",
             .version_id = 0,
@@ -1059,21 +1247,34 @@ const VMStateDescription vmstate_arm_cpu = {
         VMSTATE_UINT32_ARRAY(env.fiq_regs, ARMCPU, 5),
         VMSTATE_UINT64_ARRAY(env.elr_el, ARMCPU, 4),
         VMSTATE_UINT64_ARRAY(env.sp_el, ARMCPU, 4),
-        /* The length-check must come before the arrays to avoid
-         * incoming data possibly overflowing the array.
+        /*
+         * The length must come before the arrays so we can
+         * allocate the arrays before their data arrives
          */
-        VMSTATE_INT32_POSITIVE_LE(cpreg_vmstate_array_len, ARMCPU),
-        VMSTATE_VARRAY_INT32(cpreg_vmstate_indexes, ARMCPU,
-                             cpreg_vmstate_array_len,
-                             0, vmstate_info_uint64, uint64_t),
-        VMSTATE_VARRAY_INT32(cpreg_vmstate_values, ARMCPU,
-                             cpreg_vmstate_array_len,
-                             0, vmstate_info_uint64, uint64_t),
+        VMSTATE_INT32(cpreg_vmstate_array_len, ARMCPU),
+        VMSTATE_VARRAY_INT32_ALLOC(cpreg_vmstate_indexes, ARMCPU,
+                                   cpreg_vmstate_array_len,
+                                   0, vmstate_info_uint64, uint64_t),
+        VMSTATE_VARRAY_INT32_ALLOC(cpreg_vmstate_values, ARMCPU,
+                                   cpreg_vmstate_array_len,
+                                   0, vmstate_info_uint64, uint64_t),
         VMSTATE_UINT64(env.exclusive_addr, ARMCPU),
         VMSTATE_UINT64(env.exclusive_val, ARMCPU),
         VMSTATE_UINT64(env.exclusive_high, ARMCPU),
         VMSTATE_UNUSED(sizeof(uint64_t)),
-        VMSTATE_UINT32(env.exception.syndrome, ARMCPU),
+        /*
+         * If any bits are set in the upper 32 bits of syndrome,
+         * then the cpu/syndrome64 subsection will override this
+         * with the full 64 bit state.
+         */
+        {
+            .name = "env.exception.syndrome",
+            .version_id = 0,
+            .size = sizeof(uint32_t),
+            .info = &vmstate_info_uint32,
+            .flags = VMS_SINGLE,
+            .offset = offsetoflow32(ARMCPU, env.exception.syndrome),
+        },
         VMSTATE_UINT32(env.exception.fsr, ARMCPU),
         VMSTATE_UINT64(env.exception.vaddress, ARMCPU),
         VMSTATE_TIMER_PTR(gt_timer[GTIMER_PHYS], ARMCPU),
@@ -1090,7 +1291,6 @@ const VMStateDescription vmstate_arm_cpu = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_vfp,
-        &vmstate_iwmmxt,
         &vmstate_m,
         &vmstate_thumb2ee,
         /* pmsav7_rnr must come before pmsav7 so that we have the
@@ -1101,13 +1301,32 @@ const VMStateDescription vmstate_arm_cpu = {
         &vmstate_pmsav7,
         &vmstate_pmsav8,
         &vmstate_m_security,
-#ifdef TARGET_AARCH64
         &vmstate_sve,
         &vmstate_za,
-#endif
+        &vmstate_zt0,
         &vmstate_serror,
         &vmstate_irq_line_state,
         &vmstate_wfxt_timer,
+        &vmstate_syndrome64,
+        &vmstate_pstate64,
+        &vmstate_event,
         NULL
     }
+};
+
+const InterfaceInfo arm_machine_interfaces[] = {
+    { TYPE_TARGET_ARM_MACHINE },
+    { TYPE_TARGET_AARCH64_MACHINE },
+    { }
+};
+
+const InterfaceInfo arm_aarch64_machine_interfaces[] = {
+    { TYPE_TARGET_ARM_MACHINE },
+    { TYPE_TARGET_AARCH64_MACHINE },
+    { }
+};
+
+const InterfaceInfo aarch64_machine_interfaces[] = {
+    { TYPE_TARGET_AARCH64_MACHINE },
+    { }
 };

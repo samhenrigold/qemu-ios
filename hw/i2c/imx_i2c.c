@@ -20,7 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/imx_i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/i2c/i2c.h"
 #include "qemu/log.h"
@@ -151,8 +151,8 @@ static void imx_i2c_write(void *opaque, hwaddr offset,
 {
     IMXI2CState *s = IMX_I2C(opaque);
 
-    trace_imx_i2c_read(DEVICE(s)->canonical_path, imx_i2c_get_regname(offset),
-                       offset, value);
+    trace_imx_i2c_write(DEVICE(s)->canonical_path, imx_i2c_get_regname(offset),
+                        offset, value);
 
     value &= 0xff;
 
@@ -296,7 +296,7 @@ static void imx_i2c_realize(DeviceState *dev, Error **errp)
     s->bus = i2c_init_bus(dev, NULL);
 }
 
-static void imx_i2c_class_init(ObjectClass *klass, void *data)
+static void imx_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

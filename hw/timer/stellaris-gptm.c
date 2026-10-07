@@ -12,7 +12,7 @@
 #include "qemu/timer.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/timer/stellaris-gptm.h"
 
 static void gptm_update_irq(gptm_state *s)
@@ -308,7 +308,7 @@ static void stellaris_gptm_realize(DeviceState *dev, Error **errp)
     s->timer[1] = timer_new_ns(QEMU_CLOCK_VIRTUAL, gptm_tick, &s->opaque[1]);
 }
 
-static void stellaris_gptm_class_init(ObjectClass *klass, void *data)
+static void stellaris_gptm_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

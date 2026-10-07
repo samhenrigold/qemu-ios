@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitmap.h"
+#include "qemu/bswap.h"
 #include "qemu/uuid.h"
 #include "hw/acpi/acpi-defs.h"
 #include "boot-sector.h"
@@ -61,7 +62,7 @@ static uint32_t acpi_find_vgia(QTestState *qts)
 
             /* The GUID is written at a fixed offset into the fw_cfg file
              * in order to implement the "OVMF SDT Header probe suppressor"
-             * see docs/specs/vmgenid.txt for more details
+             * see docs/specs/vmgenid.rst for more details
              */
             guid_offset = le32_to_cpu(vgia_val) + VMGENID_GUID_OFFSET;
             g_free(table_aml);

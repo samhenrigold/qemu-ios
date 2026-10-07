@@ -25,7 +25,7 @@
 
 #include "qemu/osdep.h"
 #include "ui/console.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "migration/vmstate.h"
 #include "desc.h"
 #include "qapi/error.h"
@@ -33,7 +33,7 @@
 #include "qemu/timer.h"
 #include "hw/input/hid.h"
 #include "hw/usb/hid.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
 
 struct USBHIDState {
@@ -498,14 +498,14 @@ static const uint8_t qemu_tablet_hid_report_descriptor[] = {
     0xa1, 0x00,		/*   Collection (Physical) */
     0x05, 0x09,		/*     Usage Page (Button) */
     0x19, 0x01,		/*     Usage Minimum (1) */
-    0x29, 0x03,		/*     Usage Maximum (3) */
+    0x29, 0x05,		/*     Usage Maximum (5) */
     0x15, 0x00,		/*     Logical Minimum (0) */
     0x25, 0x01,		/*     Logical Maximum (1) */
-    0x95, 0x03,		/*     Report Count (3) */
+    0x95, 0x05,		/*     Report Count (5) */
     0x75, 0x01,		/*     Report Size (1) */
     0x81, 0x02,		/*     Input (Data, Variable, Absolute) */
     0x95, 0x01,		/*     Report Count (1) */
-    0x75, 0x05,		/*     Report Size (5) */
+    0x75, 0x03,		/*     Report Size (3) */
     0x81, 0x01,		/*     Input (Constant) */
     0x05, 0x01,		/*     Usage Page (Generic Desktop) */
     0x09, 0x30,		/*     Usage (X) */
@@ -801,7 +801,7 @@ static const VMStateDescription vmstate_usb_kbd = {
     }
 };
 
-static void usb_hid_class_initfn(ObjectClass *klass, void *data)
+static void usb_hid_class_initfn(ObjectClass *klass, const void *data)
 {
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
 
@@ -826,7 +826,7 @@ static const Property usb_tablet_properties[] = {
         DEFINE_PROP_UINT32("head", USBHIDState, head, 0),
 };
 
-static void usb_tablet_class_initfn(ObjectClass *klass, void *data)
+static void usb_tablet_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
@@ -848,7 +848,7 @@ static const Property usb_mouse_properties[] = {
         DEFINE_PROP_UINT32("usb_version", USBHIDState, usb_version, 2),
 };
 
-static void usb_mouse_class_initfn(ObjectClass *klass, void *data)
+static void usb_mouse_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
@@ -872,7 +872,7 @@ static const Property usb_keyboard_properties[] = {
         DEFINE_PROP_UINT32("max-power", USBHIDState, max_power, 0),
 };
 
-static void usb_keyboard_class_initfn(ObjectClass *klass, void *data)
+static void usb_keyboard_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

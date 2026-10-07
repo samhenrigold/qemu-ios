@@ -35,7 +35,7 @@
 #include "hw/i386/x86.h"
 #include "hw/i386/topology.h"
 
-#include "hw/nmi.h"
+#include "hw/core/nmi.h"
 #include "kvm/kvm_i386.h"
 
 
@@ -372,18 +372,15 @@ static void x86_machine_initfn(Object *obj)
     x86ms->above_4g_mem_start = 4 * GiB;
 }
 
-static void x86_machine_class_init(ObjectClass *oc, void *data)
+static void x86_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
-    X86MachineClass *x86mc = X86_MACHINE_CLASS(oc);
     NMIClass *nc = NMI_CLASS(oc);
 
     mc->cpu_index_to_instance_props = x86_cpu_index_to_props;
     mc->get_default_cpu_node_id = x86_get_default_cpu_node_id;
     mc->possible_cpu_arch_ids = x86_possible_cpu_arch_ids;
     mc->kvm_type = x86_kvm_type;
-    x86mc->save_tsc_khz = true;
-    x86mc->fwcfg_dma_enabled = true;
     nc->nmi_monitor_handler = x86_nmi;
 
     object_class_property_add(oc, X86_MACHINE_SMM, "OnOffAuto",
@@ -450,7 +447,7 @@ static const TypeInfo x86_machine_info = {
     .instance_init = x86_machine_initfn,
     .class_size = sizeof(X86MachineClass),
     .class_init = x86_machine_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
          { TYPE_NMI },
          { }
     },

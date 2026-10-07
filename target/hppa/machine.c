@@ -19,7 +19,8 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "migration/cpu.h"
+#include "migration/qemu-file-types.h"
+#include "migration/vmstate.h"
 
 
 static int get_psw(QEMUFile *f, void *opaque, size_t size,
@@ -216,7 +217,7 @@ static const VMStateDescription vmstate_env = {
 };
 
 static const VMStateField vmstate_cpu_fields[] = {
-    VMSTATE_CPU(),
+    VMSTATE_STRUCT(parent_obj, HPPACPU, 0, vmstate_cpu_common, CPUState),
     VMSTATE_STRUCT(env, HPPACPU, 1, vmstate_env, CPUHPPAState),
     VMSTATE_END_OF_LIST()
 };

@@ -22,9 +22,9 @@
 #ifndef HW_INTC_IOAPIC_INTERNAL_H
 #define HW_INTC_IOAPIC_INTERNAL_H
 
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/intc/ioapic.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qemu/notify.h"
 #include "qom/object.h"
 

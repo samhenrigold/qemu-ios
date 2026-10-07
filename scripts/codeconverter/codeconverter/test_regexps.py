@@ -57,7 +57,7 @@ def test_res() -> None:
 
     print(RE_TYPEINFO_START)
     assert re.search(RE_TYPEINFO_START, r'''
-    cc->open = qmp_chardev_open_file;
+    cc->chr_open = file_chr_open;
 }
 
 static const TypeInfo char_file_type_info = {
@@ -70,15 +70,15 @@ static const TypeInfo char_file_type_info = {
             .name = armsse_variants[i].name,
             .parent = TYPE_ARMSSE,
             .class_init = armsse_class_init,
-            .class_data = (void *)&armsse_variants[i],
+            .class_data = &armsse_variants[i],
         };''', re.MULTILINE)
 
     print(RE_ARRAY_ITEM)
     assert fullmatch(RE_ARRAY_ITEM, '{ TYPE_HOTPLUG_HANDLER },')
     assert fullmatch(RE_ARRAY_ITEM, '{ TYPE_ACPI_DEVICE_IF },')
     assert fullmatch(RE_ARRAY_ITEM, '{ }')
-    assert fullmatch(RE_ARRAY_CAST, '(InterfaceInfo[])')
-    assert fullmatch(RE_ARRAY, '''(InterfaceInfo[]) {
+    assert fullmatch(RE_ARRAY_CAST, '(const InterfaceInfo[])')
+    assert fullmatch(RE_ARRAY, '''(const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },
             { TYPE_ACPI_DEVICE_IF },
             { }
@@ -98,7 +98,7 @@ static const TypeInfo char_file_type_info = {
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(CRBState),
         .class_init  = tpm_crb_class_init,
-        .interfaces = (InterfaceInfo[]) {
+        .interfaces = (const InterfaceInfo[]) {
             { TYPE_TPM_IF },
             { }
         }
@@ -134,7 +134,7 @@ static const TypeInfo char_file_type_info = {
         .instance_size = sizeof(AcpiGedState),
         .instance_init  = acpi_ged_initfn,
         .class_init    = acpi_ged_class_init,
-        .interfaces = (InterfaceInfo[]) {
+        .interfaces = (const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },
             { TYPE_ACPI_DEVICE_IF },
             { }
@@ -164,7 +164,7 @@ static const TypeInfo char_file_type_info = {
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(CRBState),
         .class_init  = tpm_crb_class_init,
-        .interfaces = (InterfaceInfo[]) {
+        .interfaces = (const InterfaceInfo[]) {
             { TYPE_TPM_IF },
             { }
         }
@@ -202,7 +202,6 @@ typedef struct {
     uint64_t dexp[2];
     SWVoiceOut *voice;
     int left, pos, samples;
-    QEMUAudioTimeStamp ats;
     FM_OPL *opl;
     PortioList port_list;
 } AdlibState;
@@ -264,8 +263,8 @@ def test_initial_includes():
 #define SILENT_ES1370
 
 #include "qemu/osdep.h"
-#include "hw/audio/soundhw.h"
-#include "audio/audio.h"
+#include "hw/audio/model.h"
+#include "qemu/audio.h"
 #include "hw/pci/pci.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"

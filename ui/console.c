@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "ui/console.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-ui.h"
 #include "qapi/visitor.h"
@@ -35,7 +35,7 @@
 #include "qemu/option.h"
 #include "chardev/char.h"
 #include "trace.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/memfd.h"
 
@@ -421,7 +421,7 @@ qemu_console_finalize(Object *obj)
 }
 
 static void
-qemu_console_class_init(ObjectClass *oc, void *data)
+qemu_console_class_init(ObjectClass *oc, const void *data)
 {
 }
 
@@ -457,7 +457,7 @@ qemu_graphic_console_prop_get_head(Object *obj, Visitor *v, const char *name,
 }
 
 static void
-qemu_graphic_console_class_init(ObjectClass *oc, void *data)
+qemu_graphic_console_class_init(ObjectClass *oc, const void *data)
 {
     object_class_property_add_link(oc, "device", TYPE_DEVICE,
                                    offsetof(QemuGraphicConsole, device),

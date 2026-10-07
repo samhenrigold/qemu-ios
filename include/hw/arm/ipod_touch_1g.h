@@ -12,7 +12,7 @@
 
 #include "qemu/osdep.h"
 #include "exec/hwaddr.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/ipod_touch_timer.h"
 #include "hw/arm/ipod_touch_clock.h"

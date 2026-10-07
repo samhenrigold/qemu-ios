@@ -24,7 +24,7 @@
 #include "qemu/osdep.h"
 
 #include "exec/hwaddr.h"
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 #include "hw/net/npcm_pcs.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -387,7 +387,7 @@ static const VMStateDescription vmstate_npcm_pcs = {
     },
 };
 
-static void npcm_pcs_class_init(ObjectClass *klass, void *data)
+static void npcm_pcs_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

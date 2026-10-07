@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "virtio-ccw-mem.h"
@@ -160,7 +160,7 @@ static const Property virtio_ccw_mem_properties[] = {
                        VIRTIO_CCW_MAX_REV),
 };
 
-static void virtio_ccw_mem_class_init(ObjectClass *klass, void *data)
+static void virtio_ccw_mem_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtIOCCWDeviceClass *k = VIRTIO_CCW_DEVICE_CLASS(klass);

@@ -55,7 +55,7 @@ static void host_pci_config_read(int pos, int len, uint32_t *val, Error **errp)
 
     config_fd = open(path, O_RDWR);
     if (config_fd < 0) {
-        error_setg_errno(errp, errno, "Failed to open: %s", path);
+        error_setg_file_open(errp, errno, path);
         goto out;
     }
 
@@ -95,7 +95,8 @@ static void igd_pt_i440fx_realize(PCIDevice *pci_dev, Error **errp)
     }
 }
 
-static void igd_passthrough_i440fx_class_init(ObjectClass *klass, void *data)
+static void igd_passthrough_i440fx_class_init(ObjectClass *klass,
+                                              const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);

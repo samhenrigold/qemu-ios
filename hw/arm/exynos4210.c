@@ -26,13 +26,13 @@
 #include "exec/tswap.h"
 #include "cpu.h"
 #include "hw/cpu/a9mpcore.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "system/blockdev.h"
 #include "system/system.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/boot.h"
-#include "hw/loader.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/exynos4210.h"
 #include "hw/sd/sdhci.h"
 #include "hw/usb/hcd-ehci.h"
@@ -462,7 +462,6 @@ static uint64_t exynos4210_chipid_and_omr_read(void *opaque, hwaddr offset,
 static void exynos4210_chipid_and_omr_write(void *opaque, hwaddr offset,
                                             uint64_t value, unsigned size)
 {
-    return;
 }
 
 static const MemoryRegionOps exynos4210_chipid_and_omr_ops = {
@@ -843,7 +842,7 @@ static void exynos4210_init(Object *obj)
                             TYPE_EXYNOS4210_COMBINER);
 }
 
-static void exynos4210_class_init(ObjectClass *klass, void *data)
+static void exynos4210_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -91,10 +91,13 @@ static void insn_check_regs(CPU *cpu)
 {
     for (int n = 0; n < cpu->registers->len; n++) {
         Register *reg = cpu->registers->pdata[n];
-        int sz;
+        bool success = false;
+        int sz = 0;
 
         g_byte_array_set_size(reg->new, 0);
-        sz = qemu_plugin_read_register(reg->handle, reg->new);
+        success = qemu_plugin_read_register(reg->handle, reg->new);
+        g_assert(success);
+        sz = reg->new->len;
         g_assert(sz == reg->last->len);
 
         if (memcmp(reg->last->data, reg->new->data, sz)) {
@@ -232,12 +235,15 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
          */
         if (disas_assist && rmatches) {
             check_regs_next = false;
-            gchar *args = g_strstr_len(insn_disas, -1, " ");
-            for (int n = 0; n < all_reg_names->len; n++) {
-                gchar *reg = g_ptr_array_index(all_reg_names, n);
-                if (g_strrstr(args, reg)) {
-                    check_regs_next = true;
-                    skip = false;
+            g_auto(GStrv) args = g_strsplit_set(insn_disas, " \t", 2);
+            if (args && args[1]) {
+                for (int n = 0; n < all_reg_names->len; n++) {
+                    const gchar *reg = g_ptr_array_index(all_reg_names, n);
+                    if (g_strrstr(args[1], reg)) {
+                        check_regs_next = true;
+                        skip = false;
+                        break;
+                    }
                 }
             }
         }
@@ -299,7 +305,7 @@ static Register *init_vcpu_register(qemu_plugin_reg_descriptor *desc)
 {
     Register *reg = g_new0(Register, 1);
     g_autofree gchar *lower = g_utf8_strdown(desc->name, -1);
-    int r;
+    bool success = false;
 
     reg->handle = desc->handle;
     reg->name = g_intern_string(lower);
@@ -307,8 +313,8 @@ static Register *init_vcpu_register(qemu_plugin_reg_descriptor *desc)
     reg->new = g_byte_array_new();
 
     /* read the initial value */
-    r = qemu_plugin_read_register(reg->handle, reg->last);
-    g_assert(r > 0);
+    success = qemu_plugin_read_register(reg->handle, reg->last);
+    g_assert(success);
     return reg;
 }
 

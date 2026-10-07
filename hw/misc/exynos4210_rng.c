@@ -18,7 +18,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -255,7 +255,7 @@ static const VMStateDescription exynos4210_rng_vmstate = {
     }
 };
 
-static void exynos4210_rng_class_init(ObjectClass *klass, void *data)
+static void exynos4210_rng_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

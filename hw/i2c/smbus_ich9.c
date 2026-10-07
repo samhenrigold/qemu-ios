@@ -41,20 +41,14 @@ struct ICH9SMBState {
     PMSMBus smb;
 };
 
-static bool ich9_vmstate_need_smbus(void *opaque, int version_id)
-{
-    return pm_smbus_vmstate_needed();
-}
-
 static const VMStateDescription vmstate_ich9_smbus = {
     .name = "ich9_smb",
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, ICH9SMBState),
-        VMSTATE_BOOL_TEST(irq_enabled, ICH9SMBState, ich9_vmstate_need_smbus),
-        VMSTATE_STRUCT_TEST(smb, ICH9SMBState, ich9_vmstate_need_smbus, 1,
-                            pmsmb_vmstate, PMSMBus),
+        VMSTATE_BOOL(irq_enabled, ICH9SMBState),
+        VMSTATE_STRUCT(smb, ICH9SMBState, 1, pmsmb_vmstate, PMSMBus),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -118,7 +112,7 @@ static void build_ich9_smb_aml(AcpiDevAmlIf *adev, Aml *scope)
     qbus_build_aml(bus, scope);
 }
 
-static void ich9_smb_class_init(ObjectClass *klass, void *data)
+static void ich9_smb_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -145,7 +139,7 @@ static const TypeInfo ich9_smb_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(ICH9SMBState),
     .class_init = ich9_smb_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { TYPE_ACPI_DEV_AML_IF },
         { },

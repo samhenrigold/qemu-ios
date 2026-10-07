@@ -25,9 +25,9 @@
 #include "qemu/osdep.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/intc/intc.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -135,7 +135,7 @@ static void slavio_intctl_mem_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps slavio_intctl_mem_ops = {
     .read = slavio_intctl_mem_readl,
     .write = slavio_intctl_mem_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -205,7 +205,7 @@ static void slavio_intctlm_mem_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps slavio_intctlm_mem_ops = {
     .read = slavio_intctlm_mem_readl,
     .write = slavio_intctlm_mem_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -441,7 +441,7 @@ static void slavio_intctl_init(Object *obj)
     }
 }
 
-static void slavio_intctl_class_init(ObjectClass *klass, void *data)
+static void slavio_intctl_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
@@ -460,7 +460,7 @@ static const TypeInfo slavio_intctl_info = {
     .instance_size = sizeof(SLAVIO_INTCTLState),
     .instance_init = slavio_intctl_init,
     .class_init    = slavio_intctl_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_INTERRUPT_STATS_PROVIDER },
         { }
     },

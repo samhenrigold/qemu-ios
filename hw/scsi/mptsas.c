@@ -24,7 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/dma.h"
 #include "hw/pci/msi.h"
 #include "qemu/iov.h"
@@ -579,11 +579,11 @@ static void mptsas_process_ioc_init(MPTSASState *s, MPIMsgIOCInit *req)
     }
 
     memset(&reply, 0, sizeof(reply));
-    reply.WhoInit    = s->who_init;
+    reply.WhoInit    = req->WhoInit;
     reply.MsgLength  = sizeof(reply) / 4;
     reply.Function   = req->Function;
-    reply.MaxDevices = s->max_devices;
-    reply.MaxBuses   = s->max_buses;
+    reply.MaxDevices = req->MaxDevices;
+    reply.MaxBuses   = req->MaxBuses;
     reply.MsgContext = req->MsgContext;
 
     mptsas_fix_ioc_init_reply_endianness(&reply);
@@ -810,6 +810,10 @@ static void mptsas_soft_reset(MPTSASState *s)
     bus_cold_reset(BUS(&s->bus));
     s->intr_status = 0;
     s->intr_mask = save_mask;
+
+    s->doorbell_state = DOORBELL_NONE;
+    s->doorbell_reply_idx = 0;
+    s->doorbell_reply_size = 0;
 
     s->reply_free_tail = 0;
     s->reply_free_head = 0;
@@ -1416,7 +1420,7 @@ static const Property mptsas_properties[] = {
     DEFINE_PROP_ON_OFF_AUTO("msi", MPTSASState, msi, ON_OFF_AUTO_AUTO),
 };
 
-static void mptsas1068_class_init(ObjectClass *oc, void *data)
+static void mptsas1068_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
@@ -1441,7 +1445,7 @@ static const TypeInfo mptsas_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(MPTSASState),
     .class_init = mptsas1068_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

@@ -45,7 +45,7 @@ uint32_t it_iboot_find_command_line(const uint8_t *image, size_t size,
 
 #ifndef IT_IBOOT_HOST_TEST
 #include "exec/hwaddr.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 /* it_iboot_find_epoch over the image staged at [base, base + image_size). */
 uint32_t it_iboot_epoch(AddressSpace *as, uint32_t base, size_t image_size);

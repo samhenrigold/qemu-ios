@@ -1,6 +1,6 @@
 #include "hw/arm/ipod_touch_pke.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/ipod_touch_sha1.h"
 #include "qemu/log.h"
 #include <openssl/bn.h>
@@ -229,7 +229,7 @@ static const Property pke_properties[] = {
     DEFINE_PROP_BOOL("forge-sigcheck", IPodTouchPKEState, forge_sigcheck, false),
 };
 
-static void ipod_touch_pke_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_pke_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

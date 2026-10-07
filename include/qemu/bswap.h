@@ -1,6 +1,9 @@
 #ifndef BSWAP_H
 #define BSWAP_H
 
+#include "qemu/target-info.h"
+#include "exec/memop.h"
+
 #undef  bswap16
 #define bswap16(_x) __builtin_bswap16(_x)
 #undef  bswap32
@@ -205,9 +208,6 @@ CPU_CONVERT(le, 64, uint64_t)
  *   te   : target endian
  * (except for byte accesses, which have no endian infix).
  *
- * The target endian accessors are obviously only available to source
- * files which are built per-target; they are defined in cpu-all.h.
- *
  * In all cases these functions take a host pointer.
  * For accessors that take a guest address rather than a
  * host address, see the cpu_{ld,st}_* accessors defined in
@@ -376,15 +376,75 @@ static inline void stq_be_p(void *ptr, uint64_t v)
     stq_he_p(ptr, be_bswap(v, 64));
 }
 
-static inline unsigned long leul_to_cpu(unsigned long v)
+
+/**
+ * ldm_p: Load value from host memory (byteswapping if necessary)
+ *
+ * @ptr: the host pointer to be accessed
+ * @mop: #MemOp mask containing access size and optional byteswapping
+ *
+ * Convert the value stored at @ptr in host memory and byteswap if necessary.
+ *
+ * Returns: the converted value.
+ */
+static inline uint64_t ldm_p(const void *ptr, MemOp mop)
 {
-#if HOST_LONG_BITS == 32
-    return le_bswap(v, 32);
-#elif HOST_LONG_BITS == 64
-    return le_bswap(v, 64);
-#else
-# error Unknown sizeof long
-#endif
+    switch (mop & (MO_SIZE | MO_BSWAP)) {
+    case MO_8:
+        return ldub_p(ptr);
+    case MO_16 | MO_LE:
+        return lduw_le_p(ptr);
+    case MO_16 | MO_BE:
+        return lduw_be_p(ptr);
+    case MO_32 | MO_LE:
+        return ldl_le_p(ptr);
+    case MO_32 | MO_BE:
+        return ldl_be_p(ptr);
+    case MO_64 | MO_LE:
+        return ldq_le_p(ptr);
+    case MO_64 | MO_BE:
+        return ldq_be_p(ptr);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+/**
+ * stm_p: Store value to host memory (byteswapping if necessary)
+ *
+ * @ptr: the host pointer to be accessed
+ * @mop: #MemOp mask containing access size and optional byteswapping
+ * @val: the value to store
+ *
+ * Convert the value (byteswap if necessary) and store at @ptr in host memory.
+ */
+static inline void stm_p(void *ptr, MemOp mop, uint64_t val)
+{
+    switch (mop & (MO_SIZE | MO_BSWAP)) {
+    case MO_8:
+        stb_p(ptr, val);
+        break;
+    case MO_16 | MO_LE:
+        stw_le_p(ptr, val);
+        break;
+    case MO_16 | MO_BE:
+        stw_be_p(ptr, val);
+        break;
+    case MO_32 | MO_LE:
+        stl_le_p(ptr, val);
+        break;
+    case MO_32 | MO_BE:
+        stl_be_p(ptr, val);
+        break;
+    case MO_64 | MO_LE:
+        stq_le_p(ptr, val);
+        break;
+    case MO_64 | MO_BE:
+        stq_be_p(ptr, val);
+        break;
+    default:
+        g_assert_not_reached();
+    }
 }
 
 /* Store v to p as a sz byte value in host order */
@@ -434,5 +494,76 @@ DO_STN_LDN_P(be)
 #undef be_bswap
 #undef le_bswaps
 #undef be_bswaps
+
+
+/* Return ld{word}_{le,be}_p following target endianness. */
+#define LOAD_IMPL(word, args...)                    \
+do {                                                \
+    if (target_big_endian()) {                      \
+        return glue(glue(ld, word), _be_p)(args);   \
+    } else {                                        \
+        return glue(glue(ld, word), _le_p)(args);   \
+    }                                               \
+} while (0)
+
+static inline int lduw_p(const void *ptr)
+{
+    LOAD_IMPL(uw, ptr);
+}
+
+static inline int ldsw_p(const void *ptr)
+{
+    LOAD_IMPL(sw, ptr);
+}
+
+static inline int ldl_p(const void *ptr)
+{
+    LOAD_IMPL(l, ptr);
+}
+
+static inline uint64_t ldq_p(const void *ptr)
+{
+    LOAD_IMPL(q, ptr);
+}
+
+static inline uint64_t ldn_p(const void *ptr, int sz)
+{
+    LOAD_IMPL(n, ptr, sz);
+}
+
+#undef LOAD_IMPL
+
+/* Call st{word}_{le,be}_p following target endianness. */
+#define STORE_IMPL(word, args...)           \
+do {                                        \
+    if (target_big_endian()) {              \
+        glue(glue(st, word), _be_p)(args);  \
+    } else {                                \
+        glue(glue(st, word), _le_p)(args);  \
+    }                                       \
+} while (0)
+
+
+static inline void stw_p(void *ptr, uint16_t v)
+{
+    STORE_IMPL(w, ptr, v);
+}
+
+static inline void stl_p(void *ptr, uint32_t v)
+{
+    STORE_IMPL(l, ptr, v);
+}
+
+static inline void stq_p(void *ptr, uint64_t v)
+{
+    STORE_IMPL(q, ptr, v);
+}
+
+static inline void stn_p(void *ptr, int sz, uint64_t v)
+{
+    STORE_IMPL(n, ptr, sz, v);
+}
+
+#undef STORE_IMPL
 
 #endif /* BSWAP_H */

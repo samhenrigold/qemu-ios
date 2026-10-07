@@ -19,16 +19,19 @@ Tiny Code Generator (TCG) capable of emulating many CPUs.
     - Host Architectures
   * - KVM
     - Linux
-    - Arm (64 bit only), MIPS, PPC, RISC-V, s390x, x86
+    - Arm, MIPS, PPC, RISC-V, s390x, x86
   * - Xen
     - Linux (as dom0)
     - Arm, x86
+  * - MSHV
+    - Linux (as dom0)
+    - x86
   * - Hypervisor Framework (hvf)
     - MacOS
-    - x86 (64 bit only), Arm (64 bit only)
+    - x86, Arm
   * - Windows Hypervisor Platform (whpx)
     - Windows
-    - x86
+    - Arm, x86
   * - NetBSD Virtual Machine Monitor (nvmm)
     - NetBSD
     - x86
@@ -81,7 +84,7 @@ may not be optimal for modern systems.
 
 For a non-x86 system where we emulate a broad range of machine types,
 the command lines are generally more explicit in defining the machine
-and boot behaviour. You will find often find example command lines in
+and boot behaviour. You will often find example command lines in
 the :ref:`system-targets-ref` section of the manual.
 
 While the project doesn't want to discourage users from using the
@@ -162,10 +165,8 @@ names so we can override the defaults later.
     -m 4096 \
 
 We then define the 4 vCPUs using the ``max`` option which gives us all
-the Arm features QEMU is capable of emulating. We enable a more
-emulation friendly implementation of Arm's pointer authentication
-algorithm. We explicitly specify TCG acceleration even though QEMU
-would default to it anyway.
+the Arm features QEMU is capable of emulating. We explicitly specify
+TCG acceleration even though QEMU would default to it anyway.
 
 .. code::
 

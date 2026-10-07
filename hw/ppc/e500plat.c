@@ -15,7 +15,7 @@
 #include "hw/net/fsl_etsec/etsec.h"
 #include "system/device_tree.h"
 #include "system/kvm.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/pci/pci.h"
 #include "hw/ppc/openpic.h"
 #include "kvm_ppc.h"
@@ -68,7 +68,7 @@ HotplugHandler *e500plat_machine_get_hotpug_handler(MachineState *machine,
 
 #define TYPE_E500PLAT_MACHINE  MACHINE_TYPE_NAME("ppce500")
 
-static void e500plat_machine_class_init(ObjectClass *oc, void *data)
+static void e500plat_machine_class_init(ObjectClass *oc, const void *data)
 {
     PPCE500MachineClass *pmc = PPCE500_MACHINE_CLASS(oc);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
@@ -93,6 +93,9 @@ static void e500plat_machine_class_init(ObjectClass *oc, void *data)
     pmc->pci_mmio_base = 0xC00000000ULL;
     pmc->pci_mmio_bus_base = 0xE0000000ULL;
     pmc->spin_base = 0xFEF000000ULL;
+    pmc->clock_freq = PLATFORM_CLK_FREQ_HZ;
+    pmc->bus_freq = PLATFORM_CLK_FREQ_HZ;
+    pmc->tb_freq = PLATFORM_CLK_FREQ_HZ;
 
     mc->desc = "generic paravirt e500 platform";
     mc->init = e500plat_init;
@@ -107,7 +110,7 @@ static const TypeInfo e500plat_info = {
     .name          = TYPE_E500PLAT_MACHINE,
     .parent        = TYPE_PPCE500_MACHINE,
     .class_init    = e500plat_machine_class_init,
-    .interfaces    = (InterfaceInfo[]) {
+    .interfaces    = (const InterfaceInfo[]) {
          { TYPE_HOTPLUG_HANDLER },
          { }
     }

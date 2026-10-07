@@ -14,7 +14,7 @@
 #include "qobject/qlist.h"
 
 struct PlugTestData {
-    char *machine;
+    const char *machine;
     const char *cpu_model;
     char *device_model;
     unsigned sockets;
@@ -73,7 +73,6 @@ static void test_data_free(gpointer data)
 {
     PlugTestData *pc = data;
 
-    g_free(pc->machine);
     g_free(pc->device_model);
     g_free(pc);
 }
@@ -87,7 +86,7 @@ static void add_pc_test_case(const char *mname)
         return;
     }
     data = g_new(PlugTestData, 1);
-    data->machine = g_strdup(mname);
+    data->machine = mname;
     data->cpu_model = "Haswell"; /* 1.3+ theoretically */
     data->device_model = g_strdup_printf("%s-%s-cpu", data->cpu_model,
                                          qtest_get_arch());
@@ -114,7 +113,7 @@ static void add_pseries_test_case(const char *mname)
         return;
     }
     data = g_new(PlugTestData, 1);
-    data->machine = g_strdup(mname);
+    data->machine = mname;
     data->cpu_model = "power8_v2.0";
     data->device_model = g_strdup("power8_v2.0-spapr-cpu-core");
     data->sockets = 2;
@@ -140,9 +139,31 @@ static void add_s390x_test_case(const char *mname)
     }
 
     data = g_new(PlugTestData, 1);
-    data->machine = g_strdup(mname);
+    data->machine = mname;
     data->cpu_model = "qemu";
     data->device_model = g_strdup("qemu-s390x-cpu");
+    data->sockets = 1;
+    data->cores = 3;
+    data->threads = 1;
+    data->maxcpus = data->sockets * data->cores * data->threads;
+
+    path = g_strdup_printf("cpu-plug/%s/device-add/%ux%ux%u&maxcpus=%u",
+                           mname, data->sockets, data->cores,
+                           data->threads, data->maxcpus);
+    qtest_add_data_func_full(path, data, test_plug_with_device_add,
+                             test_data_free);
+    g_free(path);
+}
+
+static void add_loongarch_test_case(const char *mname)
+{
+    char *path;
+    PlugTestData *data;
+
+    data = g_new(PlugTestData, 1);
+    data->machine = mname;
+    data->cpu_model = "la464";
+    data->device_model = g_strdup("la464-loongarch-cpu");
     data->sockets = 1;
     data->cores = 3;
     data->threads = 1;
@@ -168,6 +189,8 @@ int main(int argc, char **argv)
         qtest_cb_for_every_machine(add_pseries_test_case, g_test_quick());
     } else if (g_str_equal(arch, "s390x")) {
         qtest_cb_for_every_machine(add_s390x_test_case, g_test_quick());
+    } else if (g_str_equal(arch, "loongarch64") && qtest_has_machine("virt")) {
+        add_loongarch_test_case("virt");
     }
 
     return g_test_run();

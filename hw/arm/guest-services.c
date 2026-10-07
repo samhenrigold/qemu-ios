@@ -26,11 +26,11 @@
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
 #include "hw/arm/boot.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "hw/misc/unimp.h"
 #include "system/system.h"
 #include "qemu/error-report.h"
-#include "hw/platform-bus.h"
+#include "hw/core/platform-bus.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "cpu.h"
 

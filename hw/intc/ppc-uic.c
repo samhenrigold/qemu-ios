@@ -24,8 +24,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/intc/ppc-uic.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 enum {
@@ -281,7 +281,7 @@ static const VMStateDescription ppc_uic_vmstate = {
     },
 };
 
-static void ppc_uic_class_init(ObjectClass *klass, void *data)
+static void ppc_uic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

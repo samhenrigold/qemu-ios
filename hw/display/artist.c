@@ -12,11 +12,12 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
+#include "qemu/bswap.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/loader.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
 #include "trace.h"
@@ -1487,7 +1488,7 @@ static void artist_reset(DeviceState *qdev)
 {
 }
 
-static void artist_class_init(ObjectClass *klass, void *data)
+static void artist_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

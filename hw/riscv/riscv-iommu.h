@@ -20,7 +20,7 @@
 #define HW_RISCV_IOMMU_STATE_H
 
 #include "qom/object.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "system/dma.h"
 #include "hw/riscv/iommu.h"
 #include "hw/riscv/riscv-iommu-bits.h"
@@ -34,6 +34,7 @@ struct RISCVIOMMUState {
     /*< public >*/
     uint32_t version;     /* Reported interface version number */
     uint32_t pid_bits;    /* process identifier width */
+    uint32_t pas_bits;    /* physical address bits */
     uint32_t bus;         /* PCI bus mapping for non-root endpoints */
 
     uint64_t cap;         /* IOMMU supported capabilities */
@@ -98,6 +99,7 @@ void riscv_iommu_pci_setup_iommu(RISCVIOMMUState *iommu, PCIBus *bus,
 void riscv_iommu_set_cap_igs(RISCVIOMMUState *s, riscv_iommu_igs_mode mode);
 void riscv_iommu_reset(RISCVIOMMUState *s);
 void riscv_iommu_notify(RISCVIOMMUState *s, int vec_type);
+void riscv_iommu_fault(RISCVIOMMUState *s, struct riscv_iommu_fq_record *ev);
 
 typedef struct RISCVIOMMUContext RISCVIOMMUContext;
 /* Device translation context state. */

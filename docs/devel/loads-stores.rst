@@ -52,12 +52,12 @@ files which are built per-target.
 
 There are also functions which take the size as an argument:
 
-load: ``ldn{endian}_p(ptr, sz)``
+load: ``ldn_{endian}_p(ptr, sz)``
 
 which performs an unsigned load of ``sz`` bytes from ``ptr``
 as an ``{endian}`` order value and returns it in a uint64_t.
 
-store: ``stn{endian}_p(ptr, sz, val)``
+store: ``stn_{endian}_p(ptr, sz, val)``
 
 which stores ``val`` to ``ptr`` as an ``{endian}`` order value
 of size ``sz`` bytes.
@@ -67,8 +67,8 @@ Regexes for git grep:
  - ``\<ld[us]\?[bwlq]\(_[hbl]e\)\?_p\>``
  - ``\<st[bwlq]\(_[hbl]e\)\?_p\>``
  - ``\<st24\(_[hbl]e\)\?_p\>``
- - ``\<ldn_\([hbl]e\)\?_p\>``
- - ``\<stn_\([hbl]e\)\?_p\>``
+ - ``\<ldn\(_[hbl]e\)\?_p\>``
+ - ``\<stn\(_[hbl]e\)\?_p\>``
 
 ``cpu_{ld,st}*_mmu``
 ~~~~~~~~~~~~~~~~~~~~
@@ -460,10 +460,8 @@ For new code they are better avoided:
 
 ``cpu_physical_memory_write``
 
-``cpu_physical_memory_rw``
-
 Regexes for git grep:
- - ``\<cpu_physical_memory_\(read\|write\|rw\)\>``
+ - ``\<cpu_physical_memory_\(read\|write\)\>``
 
 ``cpu_memory_rw_debug``
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -474,7 +472,7 @@ This function is intended for use by the GDB stub and similar code.
 It takes a virtual address, converts it to a physical address via
 an MMU lookup using the current settings of the specified CPU,
 and then performs the access (using ``address_space_rw`` for
-reads or ``cpu_physical_memory_write_rom`` for writes).
+reads or ``address_space_write_rom`` for writes).
 This means that if the access is a write to a ROM then this
 function will modify the contents (whereas a normal guest CPU access
 would ignore the write attempt).

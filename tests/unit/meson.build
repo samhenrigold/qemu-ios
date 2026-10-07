@@ -48,6 +48,7 @@ tests = {
   'test-qapi-util': [],
   'test-interval-tree': [],
   'test-fifo': [],
+  'test-envlist': [],
 }
 
 if have_system or have_tools
@@ -110,9 +111,6 @@ if have_block
   if pam.found()
     tests += {'test-authz-pam': [authz]}
   endif
-  if xts == 'private'
-    tests += {'test-crypto-xts': [crypto, io]}
-  endif
   if host_os != 'windows'
     tests += {
       'test-image-locking': [testblock],
@@ -160,6 +158,7 @@ if have_system
       'test-qdev-global-props': [qom, hwcore]
     }
   endif
+  tests += {'test-qdev': [qom, hwcore]}
 endif
 
 if have_ga and host_os == 'linux'

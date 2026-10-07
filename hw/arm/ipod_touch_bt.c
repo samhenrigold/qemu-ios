@@ -26,7 +26,7 @@
 #include "chardev/char.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_2g.h"
@@ -467,8 +467,8 @@ static void bt_chr_finalize(Object *obj)
     }
 }
 
-static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
-                        bool *be_opened, Error **errp)
+static bool bt_chr_open(Chardev *chr, ChardevBackend *backend,
+                        Error **errp)
 {
     IT_BT_CHARDEV(chr)->latency_ns = 2000000;
     IT_BT_CHARDEV(chr)->timer =
@@ -476,14 +476,15 @@ static void bt_chr_open(Chardev *chr, ChardevBackend *backend,
     bt_machine_reset(chr);
     qemu_register_reset(bt_machine_reset, chr);
     vmstate_register(NULL, 0, &vmstate_it_bt, chr);
-    *be_opened = true;
+    qemu_chr_be_event(chr, CHR_EVENT_OPENED);
+    return true;
 }
 
-static void bt_chr_class_init(ObjectClass *oc, void *data)
+static void bt_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
-    cc->open = bt_chr_open;
+    cc->chr_open = bt_chr_open;
     cc->chr_write = bt_chr_write;
     cc->chr_accept_input = bt_chr_accept_input;
 }

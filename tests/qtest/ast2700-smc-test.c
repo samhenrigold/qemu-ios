@@ -7,7 +7,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/bswap.h"
 #include "libqtest-single.h"
 #include "qemu/bitops.h"
 #include "aspeed-smc-utils.h"
@@ -67,5 +66,6 @@ int main(int argc, char **argv)
 
     qtest_quit(ast2700_evb_data.s);
     unlink(ast2700_evb_data.tmp_path);
+    g_free(ast2700_evb_data.tmp_path);
     return ret;
 }

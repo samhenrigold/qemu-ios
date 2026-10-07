@@ -17,10 +17,11 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
-#include "hw/platform-bus.h"
+#include "exec/cpu-common.h"
+#include "hw/core/platform-bus.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/hw.h"
+#include "hw/core/hw-error.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
@@ -1589,7 +1590,7 @@ static const VMStateDescription vmstate_synopsys_usb = {
     }
 };
 
-static void s5l8900_usb_otg_class_init(ObjectClass *klass, void *data)
+static void s5l8900_usb_otg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     device_class_set_legacy_reset(dc, s5l8900_usb_otg_reset);

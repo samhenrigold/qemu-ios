@@ -23,17 +23,17 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "hw/sysbus.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/sysbus.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "net/net.h"
 #include "net/checksum.h"
 
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/stream.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/stream.h"
 #include "qom/object.h"
 
 #define DPHY(x)
@@ -103,6 +103,9 @@ static unsigned int tdk_read(struct PHY *phy, unsigned int req)
         case 17:
             /* Marvell PHY on many xilinx boards.  */
             r = 0x8000; /* 1000Mb  */
+            if (phy->link) {
+                r |= 0x0400; /* Link is up */
+            }
             break;
         case 18:
             {
@@ -141,6 +144,10 @@ tdk_write(struct PHY *phy, unsigned int req, unsigned int data)
     regnum = req & 0x1f;
     DPHY(qemu_log("%s reg[%d] = %x\n", __func__, regnum, data));
     switch (regnum) {
+        case 2:
+        case 3:
+            /* Writes to PHY Identification registers are disallowed */
+            break;
         default:
             phy->regs[regnum] = data;
             break;
@@ -1007,7 +1014,7 @@ static const Property xilinx_enet_properties[] = {
                      tx_control_dev, TYPE_STREAM_SINK, StreamSink *),
 };
 
-static void xilinx_enet_class_init(ObjectClass *klass, void *data)
+static void xilinx_enet_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1017,14 +1024,15 @@ static void xilinx_enet_class_init(ObjectClass *klass, void *data)
 }
 
 static void xilinx_enet_control_stream_class_init(ObjectClass *klass,
-                                                  void *data)
+                                                  const void *data)
 {
     StreamSinkClass *ssc = STREAM_SINK_CLASS(klass);
 
     ssc->push = xilinx_axienet_control_stream_push;
 }
 
-static void xilinx_enet_data_stream_class_init(ObjectClass *klass, void *data)
+static void xilinx_enet_data_stream_class_init(ObjectClass *klass,
+                                               const void *data)
 {
     StreamSinkClass *ssc = STREAM_SINK_CLASS(klass);
 
@@ -1044,7 +1052,7 @@ static const TypeInfo xilinx_enet_data_stream_info = {
     .parent        = TYPE_OBJECT,
     .instance_size = sizeof(XilinxAXIEnetStreamSink),
     .class_init    = xilinx_enet_data_stream_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
             { TYPE_STREAM_SINK },
             { }
     }
@@ -1055,7 +1063,7 @@ static const TypeInfo xilinx_enet_control_stream_info = {
     .parent        = TYPE_OBJECT,
     .instance_size = sizeof(XilinxAXIEnetStreamSink),
     .class_init    = xilinx_enet_control_stream_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
             { TYPE_STREAM_SINK },
             { }
     }

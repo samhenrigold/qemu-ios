@@ -25,7 +25,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "trace.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "hw/misc/stm32l4x5_exti.h"
 
@@ -271,7 +271,7 @@ static const VMStateDescription vmstate_stm32l4x5_exti = {
     }
 };
 
-static void stm32l4x5_exti_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_exti_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

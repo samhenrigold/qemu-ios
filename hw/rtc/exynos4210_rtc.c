@@ -28,13 +28,13 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qemu/bcd.h"
-#include "hw/ptimer.h"
+#include "hw/core/ptimer.h"
 
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 
 #include "hw/arm/exynos4210.h"
 #include "qom/object.h"
@@ -592,7 +592,7 @@ static void exynos4210_rtc_finalize(Object *obj)
     ptimer_free(s->ptimer_1Hz);
 }
 
-static void exynos4210_rtc_class_init(ObjectClass *klass, void *data)
+static void exynos4210_rtc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

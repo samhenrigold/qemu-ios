@@ -23,7 +23,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/bitops.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
 
@@ -198,7 +198,7 @@ static const VMStateDescription vmstate_s5l8930_sha1 = {
     }
 };
 
-static void s5l8930_sha1_class_init(ObjectClass *klass, void *data)
+static void s5l8930_sha1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

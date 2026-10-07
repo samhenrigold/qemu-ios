@@ -21,7 +21,6 @@
 #include "system/reset.h"
 
 /* Supported chipsets: */
-#include "hw/pci-host/ls7a.h"
 #include "hw/loongarch/virt.h"
 
 #include "hw/acpi/utils.h"
@@ -33,7 +32,7 @@
 #include "hw/pci-host/gpex.h"
 #include "system/system.h"
 #include "system/tpm.h"
-#include "hw/platform-bus.h"
+#include "hw/core/platform-bus.h"
 #include "hw/acpi/aml-build.h"
 #include "hw/acpi/hmat.h"
 
@@ -370,7 +369,6 @@ build_la_ged_aml(Aml *dsdt, MachineState *machine)
 
     if (event & ACPI_GED_CPU_HOTPLUG_EVT) {
         opts.acpi_1_compatible = false;
-        opts.has_legacy_cphp = false;
         opts.fw_unplugs_cpu = false;
         opts.smi_path = NULL;
 
@@ -384,18 +382,7 @@ build_la_ged_aml(Aml *dsdt, MachineState *machine)
 
 static void build_pci_device_aml(Aml *scope, LoongArchVirtMachineState *lvms)
 {
-    struct GPEXConfig cfg = {
-        .mmio64.base = VIRT_PCI_MEM_BASE,
-        .mmio64.size = VIRT_PCI_MEM_SIZE,
-        .pio.base    = VIRT_PCI_IO_BASE,
-        .pio.size    = VIRT_PCI_IO_SIZE,
-        .ecam.base   = VIRT_PCI_CFG_BASE,
-        .ecam.size   = VIRT_PCI_CFG_SIZE,
-        .irq         = VIRT_GSI_BASE + VIRT_DEVICE_IRQS,
-        .bus         = lvms->pci_bus,
-    };
-
-    acpi_dsdt_add_gpex(scope, &cfg);
+    acpi_dsdt_add_gpex(scope, &lvms->gpex);
 }
 
 static void build_flash_aml(Aml *scope, LoongArchVirtMachineState *lvms)
@@ -514,7 +501,7 @@ static void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     LoongArchVirtMachineState *lvms = LOONGARCH_VIRT_MACHINE(machine);
     GArray *table_offsets;
     AcpiFadtData fadt_data;
-    unsigned facs, rsdt, dsdt;
+    unsigned facs, xsdt, dsdt;
     uint8_t *u;
     GArray *tables_blob = tables->table_data;
 
@@ -557,7 +544,9 @@ static void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     acpi_add_table(table_offsets, tables_blob);
     build_srat(tables_blob, tables->linker, machine);
     acpi_add_table(table_offsets, tables_blob);
-    spcr_setup(tables_blob, tables->linker, machine);
+
+    if (machine->acpi_spcr_enabled)
+        spcr_setup(tables_blob, tables->linker, machine);
 
     if (machine->numa_state->num_nodes) {
         if (machine->numa_state->have_numa_distance) {
@@ -575,8 +564,8 @@ static void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     acpi_add_table(table_offsets, tables_blob);
     {
         AcpiMcfgInfo mcfg = {
-           .base = cpu_to_le64(VIRT_PCI_CFG_BASE),
-           .size = cpu_to_le64(VIRT_PCI_CFG_SIZE),
+           .base = lvms->gpex.ecam.base,
+           .size = lvms->gpex.ecam.size,
         };
         build_mcfg(tables_blob, tables->linker, &mcfg, lvms->oem_id,
                    lvms->oem_table_id);
@@ -600,17 +589,17 @@ static void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     }
 
     /* RSDT is pointed to by RSDP */
-    rsdt = tables_blob->len;
-    build_rsdt(tables_blob, tables->linker, table_offsets,
+    xsdt = tables_blob->len;
+    build_xsdt(tables_blob, tables->linker, table_offsets,
                lvms->oem_id, lvms->oem_table_id);
 
     /* RSDP is in FSEG memory, so allocate it separately */
     {
         AcpiRsdpData rsdp_data = {
-            .revision = 0,
+            .revision = 2,
             .oem_id = lvms->oem_id,
-            .xsdt_tbl_offset = NULL,
-            .rsdt_tbl_offset = &rsdt,
+            .xsdt_tbl_offset = &xsdt,
+            .rsdt_tbl_offset = NULL,
         };
         build_rsdp(tables->rsdp, tables->linker, &rsdp_data);
     }

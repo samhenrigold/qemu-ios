@@ -20,8 +20,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/platform-bus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/platform-bus.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -209,7 +209,7 @@ static const Property platform_bus_properties[] = {
     DEFINE_PROP_UINT32("mmio_size", PlatformBusDevice, mmio_size, 0),
 };
 
-static void platform_bus_class_init(ObjectClass *klass, void *data)
+static void platform_bus_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

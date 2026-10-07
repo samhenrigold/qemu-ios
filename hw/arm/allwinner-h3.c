@@ -22,12 +22,12 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/qdev-core.h"
-#include "hw/sysbus.h"
+#include "hw/core/qdev.h"
+#include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/usb/hcd-ehci.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "system/system.h"
 #include "hw/arm/allwinner-h3.h"
 #include "target/arm/cpu-qom.h"
@@ -466,7 +466,7 @@ static void allwinner_h3_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void allwinner_h3_class_init(ObjectClass *oc, void *data)
+static void allwinner_h3_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

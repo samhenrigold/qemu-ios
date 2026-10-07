@@ -23,13 +23,13 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/intc/pl192.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 #include "target/arm/cpregs.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "exec/tb-flush.h"
 #include "qemu/bswap.h"
 #include "hw/arm/s5l8930.h"
@@ -179,7 +179,7 @@ static void iop_core_find_idle_loop(S5L8930IOPCoreState *s)
     found = hits == 1 ? found : 0;
     if (s->cpu->idle_loop_pc != found) {
         s->cpu->idle_loop_pc = found;
-        tb_flush(CPU(s->cpu));      /* translations at the old/new address carry the hint or not */
+        queue_tb_flush(CPU(s->cpu)); /* translations at the old/new address carry the hint or not */
     }
 }
 
@@ -217,6 +217,7 @@ void s5l8930_iop_core_run(DeviceState *dev, uint32_t fw_base, uint32_t fw_size)
     /* Powered on, as CTRL=1 does: a core left PSCI_OFF (start-powered-off) reads as having no work, so a
      * halt (the idle loop below) would never end however many interrupts were pending. */
     s->cpu->power_state = PSCI_ON;
+    s->cpu->env.halt_reason = NOT_HALTED;
     cs->halted = 0;
     qemu_cpu_kick(cs);
 }
@@ -344,7 +345,7 @@ static const Property s5l8930_iop_core_properties[] = {
     DEFINE_PROP_UINT32("dram-base", S5L8930IOPCoreState, dram_base, 0xc0000000),
 };
 
-static void s5l8930_iop_core_class_init(ObjectClass *klass, void *data)
+static void s5l8930_iop_core_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

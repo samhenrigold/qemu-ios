@@ -21,14 +21,14 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
-#include "hw/ptimer.h"
-#include "hw/stream.h"
-#include "hw/register.h"
+#include "hw/core/ptimer.h"
+#include "hw/core/stream.h"
+#include "hw/core/register.h"
 #include "hw/dma/xlnx_csu_dma.h"
 
 /*
@@ -287,7 +287,7 @@ static uint32_t xlnx_csu_dma_advance(XlnxCSUDMA *s, uint32_t len)
 static void xlnx_csu_dma_src_notify(void *opaque)
 {
     XlnxCSUDMA *s = XLNX_CSU_DMA(opaque);
-    unsigned char buf[4 * 1024];
+    QEMU_UNINITIALIZED unsigned char buf[4 * 1024];
     size_t rlen = 0;
 
     ptimer_transaction_begin(s->src_timer);
@@ -712,7 +712,7 @@ static const Property xlnx_csu_dma_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
-static void xlnx_csu_dma_class_init(ObjectClass *klass, void *data)
+static void xlnx_csu_dma_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     StreamSinkClass *ssc = STREAM_SINK_CLASS(klass);
@@ -744,7 +744,7 @@ static const TypeInfo xlnx_csu_dma_info = {
     .class_init    = xlnx_csu_dma_class_init,
     .class_size    = sizeof(XlnxCSUDMAClass),
     .instance_init = xlnx_csu_dma_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_STREAM_SINK },
         { }
     }

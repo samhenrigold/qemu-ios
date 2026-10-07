@@ -23,10 +23,10 @@
 #include "qemu/module.h"
 #include "trace.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/registerfields.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/registerfields.h"
 #include "hw/misc/armsse-cpuid.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 
 REG32(CPUID, 0x0)
 REG32(PID4, 0xfd0)
@@ -106,7 +106,7 @@ static void armsse_cpuid_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-static void armsse_cpuid_class_init(ObjectClass *klass, void *data)
+static void armsse_cpuid_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

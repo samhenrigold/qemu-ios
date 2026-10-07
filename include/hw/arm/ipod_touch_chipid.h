@@ -2,8 +2,8 @@
 #define HW_ARM_IPOD_TOUCH_CHIPID_H
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "hw/sysbus.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/sysbus.h"
 
 #define TYPE_IPOD_TOUCH_CHIPID "ipodtouch.chipid"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchChipIDState, IPOD_TOUCH_CHIPID)

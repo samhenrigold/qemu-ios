@@ -13,10 +13,10 @@
 #ifndef MACFB_H
 #define MACFB_H
 
-#include "exec/memory.h"
-#include "hw/irq.h"
+#include "system/memory.h"
+#include "hw/core/irq.h"
 #include "hw/nubus/nubus.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "ui/console.h"
 #include "qemu/timer.h"
 
@@ -66,7 +66,7 @@ typedef struct MacfbState {
     uint8_t type;
 
     uint32_t regs[MACFB_NUM_REGS];
-    MacFbMode *mode;
+    const MacFbMode *mode;
 
     QEMUTimer *vbl_timer;
     qemu_irq irq;

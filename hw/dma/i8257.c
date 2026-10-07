@@ -24,9 +24,10 @@
 
 #include "qemu/osdep.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/dma/i8257.h"
+#include "exec/cpu-common.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -406,6 +407,19 @@ static int i8257_dma_read_memory(IsaDma *obj, int nchan, void *buf, int pos,
     hwaddr addr = ((r->pageh & 0x7f) << 24) | (r->page << 16) | r->now[ADDR];
 
     if (i8257_is_verify_transfer(r)) {
+        /*
+         * If the device is expecting this verify operation then
+         * it won't care about the nonexistent data. But if it
+         * is expecting a real read (i.e. the guest has misprogrammed
+         * the DMA controller and the device) it's going to try to do
+         * something with the buffer contents. Give it zeroes.
+         * (It's not clear whether this is exactly what happens if
+         * you do this on real hardware. In practice no device QEMU
+         * emulates has a use for verify on a memory-read transfer,
+         * so we don't care beyond avoiding the guest being able to
+         * trigger the caller reading uninitialized data.)
+         */
+        memset(buf, 0, len);
         return len;
     }
 
@@ -592,7 +606,7 @@ static const Property i8257_properties[] = {
     DEFINE_PROP_INT32("dshift", I8257State, dshift, 0),
 };
 
-static void i8257_class_init(ObjectClass *klass, void *data)
+static void i8257_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     IsaDmaClass *idc = ISADMA_CLASS(klass);
@@ -618,7 +632,7 @@ static const TypeInfo i8257_info = {
     .parent = TYPE_ISA_DEVICE,
     .instance_size = sizeof(I8257State),
     .class_init = i8257_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_ISADMA },
         { }
     }

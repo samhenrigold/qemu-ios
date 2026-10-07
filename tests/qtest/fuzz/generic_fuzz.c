@@ -20,12 +20,12 @@
 #include "tests/qtest/libqos/pci-pc.h"
 #include "fuzz.h"
 #include "string.h"
-#include "exec/memory.h"
-#include "exec/ramblock.h"
-#include "hw/qdev-core.h"
+#include "system/memory.h"
+#include "system/ram_addr.h"
+#include "hw/core/qdev.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "generic_fuzz_configs.h"
 #include "hw/mem/sparse-mem.h"
 
@@ -572,7 +572,6 @@ static void op_add_dma_pattern(QTestState *s,
     pattern p = {a.index, a.stride, len - sizeof(a), data + sizeof(a)};
     p.index = a.index % p.len;
     g_array_append_val(dma_patterns, p);
-    return;
 }
 
 static void op_clear_dma_patterns(QTestState *s,

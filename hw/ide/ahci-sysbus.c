@@ -22,8 +22,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "exec/address-spaces.h"
-#include "hw/qdev-properties.h"
+#include "system/address-spaces.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 
 #include "hw/ide/ahci-sysbus.h"
@@ -66,7 +66,7 @@ static const Property sysbus_ahci_properties[] = {
     DEFINE_PROP_UINT32("num-ports", SysbusAHCIState, ahci.ports, 1),
 };
 
-static void sysbus_ahci_class_init(ObjectClass *klass, void *data)
+static void sysbus_ahci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

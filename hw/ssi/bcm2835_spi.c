@@ -26,7 +26,7 @@
 #include "qemu/log.h"
 #include "qemu/fifo8.h"
 #include "hw/ssi/bcm2835_spi.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 
 static void bcm2835_spi_update_int(BCM2835SPIState *s)
@@ -264,7 +264,7 @@ static const VMStateDescription vmstate_bcm2835_spi = {
     }
 };
 
-static void bcm2835_spi_class_init(ObjectClass *klass, void *data)
+static void bcm2835_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

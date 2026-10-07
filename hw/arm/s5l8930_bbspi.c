@@ -15,11 +15,11 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "qemu/main-loop.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/misc/ios_baseband.h"
 #include "hw/arm/s5l8930.h"
@@ -332,7 +332,7 @@ static const VMStateDescription bbspi_vmstate = {
     }
 };
 
-static void bbspi_class_init(ObjectClass *oc, void *data)
+static void bbspi_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

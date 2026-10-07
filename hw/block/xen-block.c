@@ -20,7 +20,7 @@
 #include "qobject/qstring.h"
 #include "qom/object_interfaces.h"
 #include "hw/block/xen_blkif.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/xen/xen-block.h"
 #include "hw/xen/xen-backend.h"
 #include "system/blockdev.h"
@@ -679,7 +679,7 @@ static const Property xen_block_props[] = {
                      TYPE_IOTHREAD, IOThread *),
 };
 
-static void xen_block_class_init(ObjectClass *class, void *data)
+static void xen_block_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenDeviceClass *xendev_class = XEN_DEVICE_CLASS(class);
@@ -724,7 +724,7 @@ static void xen_disk_realize(XenBlockDevice *blockdev, Error **errp)
     blockdev->info = blk_supports_write_perm(conf->blk) ? 0 : VDISK_READONLY;
 }
 
-static void xen_disk_class_init(ObjectClass *class, void *data)
+static void xen_disk_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenBlockDeviceClass *blockdev_class = XEN_BLOCK_DEVICE_CLASS(class);
@@ -771,7 +771,7 @@ static void xen_cdrom_realize(XenBlockDevice *blockdev, Error **errp)
     blockdev->info = VDISK_READONLY | VDISK_CDROM;
 }
 
-static void xen_cdrom_class_init(ObjectClass *class, void *data)
+static void xen_cdrom_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenBlockDeviceClass *blockdev_class = XEN_BLOCK_DEVICE_CLASS(class);
@@ -883,32 +883,29 @@ static XenBlockDrive *xen_block_drive_create(const char *id,
     QDict *driver_layer;
     struct stat st;
     int rc;
+    char **v;
 
-    if (params) {
-        char **v = g_strsplit(params, ":", 2);
-
-        if (v[1] == NULL) {
-            filename = g_strdup(v[0]);
-            driver = g_strdup("raw");
-        } else {
-            if (strcmp(v[0], "aio") == 0) {
-                driver = g_strdup("raw");
-            } else if (strcmp(v[0], "vhd") == 0) {
-                driver = g_strdup("vpc");
-            } else {
-                driver = g_strdup(v[0]);
-            }
-            filename = g_strdup(v[1]);
-        }
-
-        g_strfreev(v);
-    } else {
+    if (!params) {
         error_setg(errp, "no params");
-        goto done;
+        return NULL;
     }
 
-    assert(filename);
-    assert(driver);
+    v = g_strsplit(params, ":", 2);
+    if (v[1] == NULL) {
+        filename = g_strdup(v[0]);
+        driver = g_strdup("raw");
+    } else {
+        if (strcmp(v[0], "aio") == 0) {
+            driver = g_strdup("raw");
+        } else if (strcmp(v[0], "vhd") == 0) {
+            driver = g_strdup("vpc");
+        } else {
+            driver = g_strdup(v[0]);
+        }
+        filename = g_strdup(v[1]);
+    }
+
+    g_strfreev(v);
 
     drive = g_new0(XenBlockDrive, 1);
     drive->id = g_strdup(id);

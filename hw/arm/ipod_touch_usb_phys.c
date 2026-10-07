@@ -1,5 +1,5 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 
 /* Temporary diagnostic for the 3.1.3 USB bring-up; gated by IT_USB_TRACE. */
@@ -124,7 +124,7 @@ static const VMStateDescription vmstate_ipod_touch_usb_phys = {
     }
 };
 
-static void ipod_touch_usb_phys_class_init(ObjectClass *klass, void *data)
+static void ipod_touch_usb_phys_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

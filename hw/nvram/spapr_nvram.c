@@ -36,8 +36,9 @@
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "exec/cpu-common.h"
 #include "qom/object.h"
 
 struct SpaprNvram {
@@ -257,7 +258,7 @@ static const Property spapr_nvram_properties[] = {
     DEFINE_PROP_DRIVE("drive", SpaprNvram, blk),
 };
 
-static void spapr_nvram_class_init(ObjectClass *klass, void *data)
+static void spapr_nvram_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SpaprVioDeviceClass *k = VIO_SPAPR_DEVICE_CLASS(klass);

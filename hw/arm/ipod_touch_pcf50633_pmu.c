@@ -1,7 +1,7 @@
 #include "qemu/osdep.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
@@ -589,7 +589,7 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_UINT8("rtc-reg", Pcf50633State, rtc_reg, PMU_RTC_COUNTER),
 };
 
-static void pcf50633_class_init(ObjectClass *klass, void *data)
+static void pcf50633_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

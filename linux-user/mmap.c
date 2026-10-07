@@ -21,8 +21,7 @@
 #include "trace.h"
 #include "exec/log.h"
 #include "exec/page-protection.h"
-#include "exec/tb-flush.h"
-#include "exec/translation-block.h"
+#include "exec/mmap-lock.h"
 #include "qemu.h"
 #include "user/page-protection.h"
 #include "user-internals.h"
@@ -166,6 +165,13 @@ static int target_to_host_prot(int prot)
            (prot & PROT_EXEC ? PROT_READ : 0);
 }
 
+/* Target bits to be cleared by mprotect if not present in target_prot. */
+#ifdef TARGET_AARCH64
+#define TARGET_PAGE_NOTSTICKY  PAGE_BTI
+#else
+#define TARGET_PAGE_NOTSTICKY  0
+#endif
+
 /* NOTE: all the constants are the HOST ones, but addresses are target. */
 int target_mprotect(abi_ulong start, abi_ulong len, int target_prot)
 {
@@ -263,7 +269,7 @@ int target_mprotect(abi_ulong start, abi_ulong len, int target_prot)
         }
     }
 
-    page_set_flags(start, last, page_flags);
+    page_set_flags(start, last, page_flags, PAGE_RWX | TARGET_PAGE_NOTSTICKY);
     ret = 0;
 
  error:
@@ -417,12 +423,15 @@ abi_ulong mmap_next_start;
 static abi_ulong mmap_find_vma_reserved(abi_ulong start, abi_ulong size,
                                         abi_ulong align)
 {
-    target_ulong ret;
+    target_ulong ret = -1;
 
-    ret = page_find_range_empty(start, reserved_va, size, align);
+    if (start <= reserved_va) {
+        ret = page_find_range_empty(start, reserved_va, size, align);
+    }
     if (ret == -1 && start > mmap_min_addr) {
         /* Restart at the beginning of the address space. */
-        ret = page_find_range_empty(mmap_min_addr, start - 1, size, align);
+        ret = page_find_range_empty(mmap_min_addr, MIN(start - 1, reserved_va),
+                                    size, align);
     }
 
     return ret;
@@ -562,17 +571,17 @@ static abi_long mmap_end(abi_ulong start, abi_ulong last,
     if (flags & MAP_ANONYMOUS) {
         page_flags |= PAGE_ANON;
     }
-    page_flags |= PAGE_RESET;
     if (passthrough_start > passthrough_last) {
-        page_set_flags(start, last, page_flags);
+        page_set_flags(start, last, page_flags, PAGE_VALID);
     } else {
         if (start < passthrough_start) {
-            page_set_flags(start, passthrough_start - 1, page_flags);
+            page_set_flags(start, passthrough_start - 1,
+                           page_flags, PAGE_VALID);
         }
         page_set_flags(passthrough_start, passthrough_last,
-                       page_flags | PAGE_PASSTHROUGH);
+                       page_flags | PAGE_PASSTHROUGH, PAGE_VALID);
         if (passthrough_last < last) {
-            page_set_flags(passthrough_last + 1, last, page_flags);
+            page_set_flags(passthrough_last + 1, last, page_flags, PAGE_VALID);
         }
     }
     shm_region_rm_complete(start, last);
@@ -644,7 +653,7 @@ static abi_long mmap_h_eq_g(abi_ulong start, abi_ulong len,
  *
  * However, this case is rather common with executable images,
  * so the workaround is important for even trivial tests, whereas
- * the mmap of of a file being extended is less common.
+ * the mmap of a file being extended is less common.
  */
 static abi_long mmap_h_lt_g(abi_ulong start, abi_ulong len, int host_prot,
                             int mmap_flags, int page_flags, int fd,
@@ -1006,11 +1015,7 @@ abi_long target_mmap(abi_ulong start, abi_ulong len, int target_prot,
      * be atomic with respect to an external process.
      */
     if (ret != -1 && (flags & MAP_TYPE) != MAP_PRIVATE) {
-        CPUState *cpu = thread_cpu;
-        if (!tcg_cflags_has(cpu, CF_PARALLEL)) {
-            tcg_cflags_set(cpu, CF_PARALLEL);
-            tb_flush(cpu);
-        }
+        begin_parallel_context(thread_cpu);
     }
 
     return ret;
@@ -1027,9 +1032,9 @@ static int mmap_reserve_or_unmap(abi_ulong start, abi_ulong len)
     void *host_start;
     int prot;
 
-    last = start + len - 1;
+    last = ROUND_UP(start + len, TARGET_PAGE_SIZE) - 1;
     real_start = start & -host_page_size;
-    real_last = ROUND_UP(last, host_page_size) - 1;
+    real_last = ROUND_UP(last + 1, host_page_size) - 1;
 
     /*
      * If guest pages remain on the first or last host pages,
@@ -1093,7 +1098,7 @@ int target_munmap(abi_ulong start, abi_ulong len)
     mmap_lock();
     ret = mmap_reserve_or_unmap(start, len);
     if (likely(ret == 0)) {
-        page_set_flags(start, start + len - 1, 0);
+        page_set_flags(start, start + len - 1, 0, PAGE_VALID);
         shm_region_rm_complete(start, start + len - 1);
     }
     mmap_unlock();
@@ -1108,12 +1113,67 @@ abi_long target_mremap(abi_ulong old_addr, abi_ulong old_size,
     int prot;
     void *host_addr;
 
-    if (!guest_range_valid_untagged(old_addr, old_size) ||
-        ((flags & MREMAP_FIXED) &&
+    if (((flags & MREMAP_FIXED) &&
          !guest_range_valid_untagged(new_addr, new_size)) ||
         ((flags & MREMAP_MAYMOVE) == 0 &&
          !guest_range_valid_untagged(old_addr, new_size))) {
-        errno = ENOMEM;
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!old_size) {
+        if (!(flags & MREMAP_MAYMOVE)) {
+            errno = EINVAL;
+            return -1;
+        }
+        mmap_lock();
+        if (flags & MREMAP_FIXED) {
+            host_addr = mremap(g2h_untagged(old_addr), old_size, new_size,
+                             flags, g2h_untagged(new_addr));
+        } else {
+            /*
+             * We ensure that the new mapping stands in the
+             * region of guest mappable addresses.
+             */
+            abi_ulong mmap_start;
+
+            mmap_start = mmap_find_vma(0, new_size, TARGET_PAGE_SIZE);
+
+            if (mmap_start == -1) {
+                errno = ENOMEM;
+                mmap_unlock();
+                return -1;
+            }
+
+            host_addr = mremap(g2h_untagged(old_addr), old_size, new_size,
+                             flags | MREMAP_FIXED, g2h_untagged(mmap_start));
+
+            new_addr = mmap_start;
+        }
+
+        if (host_addr == MAP_FAILED) {
+            mmap_unlock();
+            return -1;
+        }
+
+        if (flags & MREMAP_FIXED) {
+            new_addr = h2g(host_addr);
+        }
+
+        prot = page_get_flags(old_addr);
+        /*
+         * For old_size zero, there is nothing to clear at old_addr.
+         * Only set the flags for the new mapping. They both are valid.
+         */
+        page_set_flags(new_addr, new_addr + new_size - 1,
+                       prot | PAGE_VALID, PAGE_VALID);
+        shm_region_rm_complete(new_addr, new_addr + new_size - 1);
+        mmap_unlock();
+        return new_addr;
+    }
+
+    if (!guest_range_valid_untagged(old_addr, old_size)) {
+        errno = EFAULT;
         return -1;
     }
 
@@ -1169,7 +1229,8 @@ abi_long target_mremap(abi_ulong old_addr, abi_ulong old_size,
                     errno = ENOMEM;
                     host_addr = MAP_FAILED;
                 } else if (reserved_va && old_size > new_size) {
-                    mmap_reserve_or_unmap(old_addr + old_size,
+                    /* Re-reserve pages we just shrunk out of the mapping */
+                    mmap_reserve_or_unmap(old_addr + new_size,
                                           old_size - new_size);
                 }
             }
@@ -1184,10 +1245,10 @@ abi_long target_mremap(abi_ulong old_addr, abi_ulong old_size,
     } else {
         new_addr = h2g(host_addr);
         prot = page_get_flags(old_addr);
-        page_set_flags(old_addr, old_addr + old_size - 1, 0);
+        page_set_flags(old_addr, old_addr + old_size - 1, 0, PAGE_VALID);
         shm_region_rm_complete(old_addr, old_addr + old_size - 1);
         page_set_flags(new_addr, new_addr + new_size - 1,
-                       prot | PAGE_VALID | PAGE_RESET);
+                       prot | PAGE_VALID, PAGE_VALID);
         shm_region_rm_complete(new_addr, new_addr + new_size - 1);
     }
     mmap_unlock();
@@ -1246,6 +1307,12 @@ abi_long target_madvise(abi_ulong start, abi_ulong len_in, int advice)
      */
     mmap_lock();
     switch (advice) {
+    case MADV_DONTDUMP:
+        page_set_flags(start, start + len - 1, PAGE_DONTDUMP, 0);
+        break;
+    case MADV_DODUMP:
+        page_set_flags(start, start + len - 1, 0, PAGE_DONTDUMP);
+        break;
     case MADV_WIPEONFORK:
     case MADV_KEEPONFORK:
         ret = -EINVAL;
@@ -1284,7 +1351,7 @@ static inline abi_ulong target_shmlba(CPUArchState *cpu_env)
 }
 #endif
 
-#if defined(__arm__) || defined(__mips__) || defined(__sparc__)
+#if defined(__mips__) || defined(__sparc__)
 #define HOST_FORCE_SHMLBA 1
 #else
 #define HOST_FORCE_SHMLBA 0
@@ -1433,9 +1500,10 @@ abi_ulong target_shmat(CPUArchState *cpu_env, int shmid,
 
         last = shmaddr + m_len - 1;
         page_set_flags(shmaddr, last,
-                       PAGE_VALID | PAGE_RESET | PAGE_READ |
+                       PAGE_VALID | PAGE_READ |
                        (shmflg & SHM_RDONLY ? 0 : PAGE_WRITE) |
-                       (shmflg & SHM_EXEC ? PAGE_EXEC : 0));
+                       (shmflg & SHM_EXEC ? PAGE_EXEC : 0),
+                       PAGE_VALID);
 
         shm_region_rm_complete(shmaddr, last);
         shm_region_add(shmaddr, last);
@@ -1447,10 +1515,7 @@ abi_ulong target_shmat(CPUArchState *cpu_env, int shmid,
      * supported by the host -- anything that requires EXCP_ATOMIC will not
      * be atomic with respect to an external process.
      */
-    if (!tcg_cflags_has(cpu, CF_PARALLEL)) {
-        tcg_cflags_set(cpu, CF_PARALLEL);
-        tb_flush(cpu);
-    }
+    begin_parallel_context(cpu);
 
     if (qemu_loglevel_mask(CPU_LOG_PAGE)) {
         FILE *f = qemu_log_trylock();
@@ -1479,7 +1544,7 @@ abi_long target_shmdt(abi_ulong shmaddr)
         if (rv == 0) {
             abi_ulong size = last - shmaddr + 1;
 
-            page_set_flags(shmaddr, last, 0);
+            page_set_flags(shmaddr, last, 0, PAGE_VALID);
             shm_region_rm_complete(shmaddr, last);
             mmap_reserve_or_unmap(shmaddr, size);
         }

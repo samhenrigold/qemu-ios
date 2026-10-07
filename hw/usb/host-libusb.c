@@ -55,8 +55,8 @@
 #include "system/system.h"
 #include "trace.h"
 
-#include "hw/qdev-properties.h"
-#include "hw/usb.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/usb/usb.h"
 
 /* ------------------------------------------------------------------------ */
 
@@ -1781,7 +1781,7 @@ static const Property usb_host_dev_properties[] = {
                      suppress_remote_wake, true),
 };
 
-static void usb_host_class_initfn(ObjectClass *klass, void *data)
+static void usb_host_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

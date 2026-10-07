@@ -14,8 +14,8 @@
 #include "crypto/hash.h"
 #include "crypto/aes.h"
 #include "crypto/cipher.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "hw/vmapple/vmapple.h"
 #include "migration/vmstate.h"
 #include "qemu/cutils.h"
@@ -558,7 +558,7 @@ static void aes_init(Object *obj)
     s->as = &address_space_memory;
 }
 
-static void aes_class_init(ObjectClass *klass, void *data)
+static void aes_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 

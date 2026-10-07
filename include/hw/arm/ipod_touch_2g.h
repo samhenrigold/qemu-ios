@@ -5,7 +5,7 @@
 #include "hw/arm/ipod-agent.h"
 #include "hw/arm/guest-pasteboard.h"
 #include "hw/arm/guest-package.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "qapi/qapi-types-common.h"
 #include "hw/intc/pl192.h"
 #include "hw/arm/boot.h"

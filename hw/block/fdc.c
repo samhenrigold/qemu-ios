@@ -33,10 +33,10 @@
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "qemu/memalign.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "hw/block/block.h"
 #include "system/block-backend.h"
@@ -553,7 +553,7 @@ static void floppy_drive_realize(DeviceState *qdev, Error **errp)
     fd_revalidate(drive);
 }
 
-static void floppy_drive_class_init(ObjectClass *klass, void *data)
+static void floppy_drive_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
     k->realize = floppy_drive_realize;

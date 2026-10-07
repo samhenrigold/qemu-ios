@@ -9,7 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/module.h"
 #include "qom/object.h"
 #include "system/runstate.h"
@@ -61,7 +61,7 @@ static const Property debug_exit_properties[] = {
     DEFINE_PROP_UINT32("iosize", ISADebugExitState, iosize, 0x02),
 };
 
-static void debug_exit_class_initfn(ObjectClass *klass, void *data)
+static void debug_exit_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

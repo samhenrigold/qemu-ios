@@ -4,9 +4,9 @@
  * retaining it as RAM deadlocks performance-state changes after video decode.
  */
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/ipod_touch_lcd.h"
 
 #define TYPE_IPOD_SWI "ipodtouch.swi"
@@ -86,7 +86,7 @@ static const Property swi_properties[] = {
     DEFINE_PROP_BOOL("backlight", IPodSWIState, backlight, false),
 };
 
-static void swi_class_init(ObjectClass *klass, void *data)
+static void swi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     device_class_set_props(dc, swi_properties);

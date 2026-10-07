@@ -6,6 +6,7 @@ typedef struct GDBFeature {
     const char *xml;
     const char *name;
     const char * const *regs;
+    int base_reg;
     int num_regs;
 } GDBFeature;
 
@@ -34,11 +35,10 @@ void gdb_init_cpu(CPUState *cpu);
  * @set_reg - set function (gdb modifying)
  * @num_regs - number of registers in set
  * @xml - xml name of set
- * @gpos - non-zero to append to "general" register set at @gpos
  */
 void gdb_register_coprocessor(CPUState *cpu,
                               gdb_get_reg_cb get_reg, gdb_set_reg_cb set_reg,
-                              const GDBFeature *feature, int g_pos);
+                              const GDBFeature *feature);
 
 /**
  * gdb_unregister_coprocessor_all() - unregisters supplemental set of registers
@@ -54,9 +54,6 @@ void gdb_unregister_coprocessor_all(CPUState *cpu);
  * For CONFIG_USER this is either a tcp port or a path to a fifo. For
  * system emulation you can use a full chardev spec for your gdbserver
  * port.
- *
- * The error handle should be either &error_fatal (for start-up) or
- * &error_warn (for QMP/HMP initiated sessions).
  *
  * Returns true when server successfully started.
  */
@@ -123,6 +120,20 @@ const GDBFeature *gdb_find_static_feature(const char *xmlname);
  * Return: The number of read bytes.
  */
 int gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
+
+/**
+ * gdb_write_register() - Write a register associated with a CPU.
+ * @cpu: The CPU associated with the register.
+ * @buf: The buffer that the register contents will be set to.
+ * @reg: The register's number returned by gdb_find_feature_register().
+ *
+ * The size of @buf must be at least the size of the register being
+ * written.
+ *
+ * Return: The number of written bytes, or 0 if an error occurred (for
+ * example, an unknown register was provided).
+ */
+int gdb_write_register(CPUState *cpu, uint8_t *mem_buf, int reg);
 
 /**
  * typedef GDBRegDesc - a register description from gdbstub

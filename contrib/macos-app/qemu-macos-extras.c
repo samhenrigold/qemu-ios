@@ -7,17 +7,18 @@
 
 #include "qemu/osdep.h"
 #include <math.h>
-#include "audio/audio.h"
+#include "qemu/audio.h"
+#include "qemu/audio-capture.h"
 #include "system/runstate.h"
 #include <pthread.h>
 #include "qemu-ios-ui.h"
 #include "qemu/main-loop.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "qapi/error.h"
 #include "qom/object.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/arm/ipod-attitude.h"
 #include "qapi/qapi-commands-qom.h"
 #include "qobject/qnum.h"
@@ -590,9 +591,9 @@ void qemu_ios_ui_powerdown(void) { schedule_qmp(qmp_system_powerdown); }
 void qemu_ios_ui_quit(void)      { schedule_qmp(qmp_quit); }
 
 /* --- hardware keyboard ------------------------------------------------------ */
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
-#include "hw/usb.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/usb/usb.h"
 
 static BusState *keyboard_bus(void)
 {
@@ -847,6 +848,7 @@ static struct {
 } recording_audio;
 /* Accessed only on the emulator thread, including audio cleanup. */
 static CaptureVoiceOut *recording_audio_voice;
+static AudioBackend *recording_audio_be;     /* the backend recording_audio_voice is on */
 static void *recording_audio_context;
 static VMChangeStateEntry *recording_audio_vm_change;
 
@@ -918,13 +920,16 @@ static void recording_audio_start_bh(void *opaque)
     bool current = recording_audio.active && generation == recording_audio.generation;
     pthread_mutex_unlock(&recording_audio_lock);
     if (!current) return;
-    if (recording_audio_voice) AUD_del_capture(recording_audio_voice, recording_audio_context);
+    if (recording_audio_voice) audio_be_del_capture(recording_audio_be, recording_audio_voice, recording_audio_context);
     Error *err = NULL;
-    AudioState *audio = audio_get_default_audio_state(&err);
-    struct audsettings settings = { .freq = 44100, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .endianness = 0 };
+    AudioBackend *audio = audio_get_default_audio_be(&err);
+    struct audsettings settings = { .freq = 44100, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .big_endian = false };
     struct audio_capture_ops ops = { recording_audio_notify, recording_audio_samples, recording_audio_destroy };
     recording_audio_context = (void *)(uintptr_t)generation;
-    if (audio) recording_audio_voice = AUD_add_capture(audio, &settings, &ops, recording_audio_context);
+    if (audio) {
+        recording_audio_be = audio;
+        recording_audio_voice = audio_be_add_capture(audio, &settings, &ops, recording_audio_context);
+    }
     if (recording_audio_voice) {
         recording_audio_vm_change = qemu_add_vm_change_state_handler(recording_audio_vm_changed, recording_audio_context);
     } else {
@@ -940,7 +945,7 @@ static void recording_audio_stop_bh(void *opaque)
     pthread_mutex_lock(&recording_audio_lock);
     bool current = generation == recording_audio.generation && !recording_audio.active;
     pthread_mutex_unlock(&recording_audio_lock);
-    if (current && recording_audio_voice) AUD_del_capture(recording_audio_voice, recording_audio_context);
+    if (current && recording_audio_voice) audio_be_del_capture(recording_audio_be, recording_audio_voice, recording_audio_context);
 }
 
 uint64_t qemu_ios_audio_capture_start(void)

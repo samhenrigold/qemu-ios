@@ -27,6 +27,7 @@
 #include <lm.h>
 #include <wtsapi32.h>
 #include <wininet.h>
+#include <pdh.h>
 
 #include "guest-agent-core.h"
 #include "vss-win32.h"
@@ -118,6 +119,28 @@ static OpenFlags guest_file_open_modes[] = {
     {"ab+", FILE_GENERIC_APPEND | GENERIC_READ, OPEN_ALWAYS  },
     {"a+b", FILE_GENERIC_APPEND | GENERIC_READ, OPEN_ALWAYS  }
 };
+
+/*
+ * We use an exponentially weighted moving average, just like Unix systems do
+ * https://en.wikipedia.org/wiki/Load_(computing)#Unix-style_load_calculation
+ *
+ * These constants serve as the damping factor and are calculated with
+ * 1 / exp(sampling interval in seconds / window size in seconds)
+ *
+ * This formula comes from linux's include/linux/sched/loadavg.h
+ * https://github.com/torvalds/linux/blob/345671ea0f9258f410eb057b9ced9cefbbe5dc78/include/linux/sched/loadavg.h#L20-L23
+ */
+#define LOADAVG_FACTOR_1F  0.9200444146293232478931553241
+#define LOADAVG_FACTOR_5F  0.9834714538216174894737477501
+#define LOADAVG_FACTOR_15F 0.9944598480048967508795473394
+/*
+ * The time interval in seconds between taking load counts, same as Linux
+ */
+#define LOADAVG_SAMPLING_INTERVAL 5
+
+double load_avg_1m;
+double load_avg_5m;
+double load_avg_15m;
 
 #define debug_error(msg) do { \
     char *suffix = g_win32_error_message(GetLastError()); \
@@ -826,8 +849,6 @@ static void get_disk_properties(HANDLE vol_h, GuestDiskAddress *disk,
     }
 out_free:
     g_free(dev_desc);
-
-    return;
 }
 
 static void get_single_disk_info(int disk_number,
@@ -891,7 +912,6 @@ static void get_single_disk_info(int disk_number,
 
 err_close:
     CloseHandle(disk_h);
-    return;
 }
 
 /* VSS provider works with volumes, thus there is no difference if
@@ -1144,15 +1164,15 @@ static GuestFilesystemInfo *build_guest_fsinfo(char *guid, Error **errp)
         fs->mountpoint = g_strdup("System Reserved");
     } else {
         fs->mountpoint = g_strndup(mnt_point, len);
-        if (GetDiskFreeSpaceEx(fs->mountpoint,
-                               (PULARGE_INTEGER) & i64FreeBytesToCaller,
-                               (PULARGE_INTEGER) & i64TotalBytes,
-                               (PULARGE_INTEGER) & i64FreeBytes)) {
-            fs->used_bytes = i64TotalBytes - i64FreeBytes;
-            fs->total_bytes = i64TotalBytes;
-            fs->has_total_bytes = true;
-            fs->has_used_bytes = true;
-        }
+    }
+    if (GetDiskFreeSpaceEx(fs->name,
+                            (PULARGE_INTEGER) & i64FreeBytesToCaller,
+                            (PULARGE_INTEGER) & i64TotalBytes,
+                            (PULARGE_INTEGER) & i64FreeBytes)) {
+        fs->used_bytes = i64TotalBytes - i64FreeBytes;
+        fs->total_bytes = i64TotalBytes;
+        fs->has_total_bytes = true;
+        fs->has_used_bytes = true;
     }
     wcstombs(fs_name, wfs_name, sizeof(wfs_name));
     fs->type = g_strdup(fs_name);
@@ -1778,8 +1798,8 @@ void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
     tf.dwHighDateTime = (DWORD) (time >> 32);
 
     if (!FileTimeToSystemTime(&tf, &ts)) {
-        error_setg(errp, "Failed to convert system time %d",
-                   (int)GetLastError());
+        error_setg_win32(errp, GetLastError(),
+                         "Failed to convert system time");
         return;
     }
 
@@ -1790,7 +1810,8 @@ void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
     }
 
     if (!SetSystemTime(&ts)) {
-        error_setg(errp, "Failed to set time to guest: %d", (int)GetLastError());
+        error_setg_win32(errp, GetLastError(),
+                         "Failed to set time to guest");
         return;
     }
 }
@@ -1814,13 +1835,12 @@ GuestLogicalProcessorList *qmp_guest_get_vcpus(Error **errp)
         (length > sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION))) {
         ptr = pslpi = g_malloc0(length);
         if (GetLogicalProcessorInformation(pslpi, &length) == FALSE) {
-            error_setg(&local_err, "Failed to get processor information: %d",
-                       (int)GetLastError());
+            error_setg_win32(&local_err, GetLastError(),
+                             "Failed to get processor information");
         }
     } else {
-        error_setg(&local_err,
-                   "Failed to get processor information buffer length: %d",
-                   (int)GetLastError());
+        error_setg_win32(&local_err, GetLastError(),
+                         "Failed to get processor information buffer length");
     }
 
     while ((local_err == NULL) && (length > 0)) {
@@ -2117,7 +2137,6 @@ static void ga_get_win_version(RTL_OSVERSIONINFOEXW *info, Error **errp)
 
     rtl_get_version_t rtl_get_version = (rtl_get_version_t)fun;
     rtl_get_version(info);
-    return;
 }
 
 static char *ga_get_win_name(const OSVERSIONINFOEXW *os_version, bool id)
@@ -2447,4 +2466,301 @@ char *qga_get_host_name(Error **errp)
     }
 
     return g_utf16_to_utf8(tmp, size, NULL, NULL, NULL);
+}
+
+
+static VOID CALLBACK load_avg_callback(PVOID hCounter, BOOLEAN timedOut)
+{
+    PDH_FMT_COUNTERVALUE displayValue;
+    double currentLoad;
+    PDH_STATUS err;
+
+    err = PdhGetFormattedCounterValue(
+        (PDH_HCOUNTER)hCounter, PDH_FMT_DOUBLE, 0, &displayValue);
+    /* Skip updating the load if we can't get the value successfully */
+    if (err != ERROR_SUCCESS) {
+        slog("PdhGetFormattedCounterValue failed to get load value with 0x%lx",
+             err);
+        return;
+    }
+    currentLoad = displayValue.doubleValue;
+
+    load_avg_1m = load_avg_1m * LOADAVG_FACTOR_1F + currentLoad * \
+        (1.0 - LOADAVG_FACTOR_1F);
+    load_avg_5m = load_avg_5m * LOADAVG_FACTOR_5F + currentLoad * \
+        (1.0 - LOADAVG_FACTOR_5F);
+    load_avg_15m = load_avg_15m * LOADAVG_FACTOR_15F + currentLoad * \
+        (1.0 - LOADAVG_FACTOR_15F);
+}
+
+static BOOL init_load_avg_counter(Error **errp)
+{
+    CONST WCHAR *szCounterPath = L"\\System\\Processor Queue Length";
+    PDH_STATUS status;
+    BOOL ret;
+    HQUERY hQuery;
+    HCOUNTER hCounter;
+    HANDLE event;
+    HANDLE waitHandle;
+
+    status = PdhOpenQueryW(NULL, 0, &hQuery);
+    if (status != ERROR_SUCCESS) {
+        /*
+         * If the function fails, the return value is a system error code or
+         * a PDH error code. error_setg_win32 cant translate PDH error code
+         * properly, so just report it as is.
+         */
+        error_setg_win32(errp, (DWORD)status,
+                         "PdhOpenQueryW failed with 0x%lx", status);
+        return FALSE;
+    }
+
+    status = PdhAddEnglishCounterW(hQuery, szCounterPath, 0, &hCounter);
+    if (status != ERROR_SUCCESS) {
+        error_setg_win32(errp, (DWORD)status,
+            "PdhAddEnglishCounterW failed with 0x%lx. Performance counters may be disabled.",
+            status);
+        PdhCloseQuery(hQuery);
+        return FALSE;
+    }
+
+    event = CreateEventW(NULL, FALSE, FALSE, L"LoadUpdateEvent");
+    if (event == NULL) {
+        error_setg_win32(errp, GetLastError(), "Create LoadUpdateEvent failed");
+        PdhCloseQuery(hQuery);
+        return FALSE;
+    }
+
+    status = PdhCollectQueryDataEx(hQuery, LOADAVG_SAMPLING_INTERVAL, event);
+    if (status != ERROR_SUCCESS) {
+        error_setg_win32(errp, (DWORD)status,
+                         "PdhCollectQueryDataEx failed with 0x%lx", status);
+        CloseHandle(event);
+        PdhCloseQuery(hQuery);
+        return FALSE;
+    }
+
+    ret = RegisterWaitForSingleObject(
+        &waitHandle,
+        event,
+        (WAITORTIMERCALLBACK)load_avg_callback,
+        (PVOID)hCounter,
+        INFINITE,
+        WT_EXECUTEDEFAULT);
+
+    if (ret == 0) {
+        error_setg_win32(errp, GetLastError(),
+                         "RegisterWaitForSingleObject failed");
+        CloseHandle(event);
+        PdhCloseQuery(hQuery);
+        return FALSE;
+    }
+
+    ga_set_load_avg_wait_handle(ga_state, waitHandle);
+    ga_set_load_avg_event(ga_state, event);
+    ga_set_load_avg_pdh_query(ga_state, hQuery);
+
+    return TRUE;
+}
+
+GuestLoadAverage *qmp_guest_get_load(Error **errp)
+{
+    /*
+     * The load average logic calls PerformaceCounterAPI, which can result
+     * in a performance penalty. This avoids running the load average logic
+     * until a management application actually requests it. The load average
+     * will not initially be very accurate, but assuming that any interested
+     * management application will request it repeatedly throughout the lifetime
+     * of the VM, this seems like a good mitigation.
+     */
+    if (ga_get_load_avg_pdh_query(ga_state) == NULL) {
+        /* set initial values */
+        load_avg_1m = 0;
+        load_avg_5m = 0;
+        load_avg_15m = 0;
+
+        if (init_load_avg_counter(errp) == false) {
+            return NULL;
+        }
+    }
+
+    GuestLoadAverage *ret = NULL;
+
+    ret = g_new0(GuestLoadAverage, 1);
+    ret->load1m = load_avg_1m;
+    ret->load5m = load_avg_5m;
+    ret->load15m = load_avg_15m;
+    return ret;
+}
+
+/* Helper function to get interface name with fallbacks */
+static char *get_interface_name(const MIB_IPFORWARD_ROW2 *row,
+                                IP_ADAPTER_ADDRESSES *adptr_addrs)
+{
+    IP_ADAPTER_ADDRESSES *adapter;
+    char *iface_name = NULL;
+
+    if (adptr_addrs) {
+        for (adapter = adptr_addrs; adapter; adapter = adapter->Next) {
+            if (adapter->Luid.Value == row->InterfaceLuid.Value) {
+                iface_name = guest_wctomb_dup(adapter->FriendlyName);
+                break;
+            }
+        }
+    }
+
+    if (!iface_name) {
+        iface_name = g_strdup_printf("if%lu", row->InterfaceIndex);
+    }
+
+    return iface_name;
+}
+
+/* Helper function to fill IPv4 route information */
+static void fill_ipv4_route_info(GuestNetworkRoute *route,
+                                 const MIB_IPFORWARD_ROW2 *row)
+{
+    struct sockaddr_in *addr_in;
+    char addr_str[INET_ADDRSTRLEN];
+
+    addr_in = (struct sockaddr_in *)&row->DestinationPrefix.Prefix;
+    if (inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, INET_ADDRSTRLEN)) {
+        route->destination = g_strdup(addr_str);
+    } else {
+        route->destination = g_strdup("0.0.0.0");
+    }
+
+    if (row->DestinationPrefix.PrefixLength == 0) {
+        route->mask = g_strdup("0.0.0.0");
+    } else {
+        uint32_t mask = htonl(0xFFFFFFFF << (32 -
+                               row->DestinationPrefix.PrefixLength));
+        struct in_addr mask_addr = { .s_addr = mask };
+        route->mask = g_strdup(inet_ntoa(mask_addr));
+    }
+
+    addr_in = (struct sockaddr_in *)&row->NextHop;
+    if (inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, INET_ADDRSTRLEN)) {
+        route->gateway = g_strdup(addr_str);
+    } else {
+        route->gateway = g_strdup("0.0.0.0");
+    }
+
+    route->version = 4;
+}
+
+/* Helper function to fill IPv6 route information */
+static void fill_ipv6_route_info(GuestNetworkRoute *route,
+                                 const MIB_IPFORWARD_ROW2 *row)
+{
+    struct sockaddr_in6 *addr_in6;
+    char addr_str[INET6_ADDRSTRLEN];
+
+    addr_in6 = (struct sockaddr_in6 *)&row->DestinationPrefix.Prefix;
+    if (inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, INET6_ADDRSTRLEN)) {
+        route->destination = g_strdup(addr_str);
+    } else {
+        route->destination = g_strdup("::");
+    }
+
+    addr_in6 = (struct sockaddr_in6 *)&row->NextHop;
+    if (inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, INET6_ADDRSTRLEN)) {
+        route->nexthop = g_strdup(addr_str);
+    } else {
+        route->nexthop = g_strdup("::");
+    }
+
+    route->desprefixlen = g_strdup_printf("%u",
+                                          row->DestinationPrefix.PrefixLength);
+    route->version = 6;
+}
+
+GuestNetworkRouteList *qmp_guest_network_get_route(Error **errp)
+{
+    GuestNetworkRouteList *head = NULL, **tail = &head;
+    PMIB_IPFORWARD_TABLE2 pIpForwardTable2;
+    DWORD dwRetVal = 0;
+    DWORD i;
+    PMIB_IPFORWARD_ROW2 row;
+    GuestNetworkRoute *route;
+    IP_ADAPTER_ADDRESSES *adptr_addrs;
+    MIB_IPINTERFACE_ROW ipifrow;
+    MIB_IF_ROW2 ifrow2;
+    Error *local_err = NULL;
+    GHashTable *interface_metric_cache;
+
+    dwRetVal = GetIpForwardTable2(AF_UNSPEC, &pIpForwardTable2);
+    if (dwRetVal != NO_ERROR) {
+        error_setg_win32(errp, dwRetVal, "failed to get IP routes");
+        return NULL;
+    }
+
+    interface_metric_cache = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                   g_free, NULL);
+    adptr_addrs = guest_get_adapters_addresses(&local_err);
+    if (local_err) {
+        error_free(local_err);
+        adptr_addrs = NULL;
+    }
+
+    for (i = 0; i < pIpForwardTable2->NumEntries; i++) {
+        row = &pIpForwardTable2->Table[i];
+
+        if (row->DestinationPrefix.Prefix.si_family == AF_INET) {
+            route = g_new0(GuestNetworkRoute, 1);
+            fill_ipv4_route_info(route, row);
+        } else if (row->DestinationPrefix.Prefix.si_family == AF_INET6) {
+            route = g_new0(GuestNetworkRoute, 1);
+            fill_ipv6_route_info(route, row);
+        } else {
+            continue;
+        }
+
+        route->iface = get_interface_name(row, adptr_addrs);
+
+        /*
+         * Get interface metric for combined route metric calculation.
+         * Windows calculates effective route metric as route + interface metric.
+         * This matches the values displayed by Windows 'route print' command.
+         * See:
+         * https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_ipforward_row2
+         */
+        gchar *luid_key = g_strdup_printf("%" G_GUINT64_FORMAT,
+                                          row->InterfaceLuid.Value);
+        gpointer cached_metric = g_hash_table_lookup(interface_metric_cache,
+                                                     luid_key);
+
+        if (cached_metric) {
+            route->metric = (int)row->Metric + GPOINTER_TO_INT(cached_metric);
+            g_free(luid_key);
+        } else {
+            memset(&ipifrow, 0, sizeof(ipifrow));
+            InitializeIpInterfaceEntry(&ipifrow);
+            ipifrow.InterfaceLuid = row->InterfaceLuid;
+            ipifrow.Family = row->DestinationPrefix.Prefix.si_family;
+            if (GetIpInterfaceEntry(&ipifrow) == NO_ERROR) {
+                g_hash_table_insert(interface_metric_cache, luid_key,
+                                   GINT_TO_POINTER(ipifrow.Metric));
+                route->metric = (int)row->Metric + (int)ipifrow.Metric;
+            } else {
+                route->metric = (int)row->Metric;
+                g_free(luid_key);
+            }
+        }
+
+        memset(&ifrow2, 0, sizeof(ifrow2));
+        ifrow2.InterfaceLuid = row->InterfaceLuid;
+        if (GetIfEntry2(&ifrow2) == NO_ERROR) {
+            route->has_mtu = true;
+            route->mtu = (int)ifrow2.Mtu;
+        }
+
+        QAPI_LIST_APPEND(tail, route);
+        route = NULL;
+    }
+
+    FreeMibTable(pIpForwardTable2);
+    g_free(adptr_addrs);
+    g_hash_table_destroy(interface_metric_cache);
+    return head;
 }
