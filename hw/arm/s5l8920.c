@@ -423,6 +423,7 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             qdev_prop_set_uint8(DEVICE(slave), "backlight-enable-reg", 0xfe);
             qdev_prop_set_uint8(DEVICE(slave), "backlight-enable-bit", 0x01);
             qdev_prop_set_uint8(DEVICE(slave), "backlight-level-reg", 0);
+            qdev_prop_set_uint8(DEVICE(slave), "backlight-led-reg", 0);
         }
         i2c_slave_realize_and_unref(slave, bus, &error_fatal);
         if (d->irq_pin) {

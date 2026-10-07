@@ -105,7 +105,7 @@ const char *qemu_ios_build_id(void);
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((2u << 16) | 0u)
+#define QEMU_IOS_API_VERSION ((2u << 16) | 1u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */

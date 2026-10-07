@@ -15,6 +15,20 @@ bool lcd_backlight_is_off(void)
     return qatomic_read(&lcd_brightness) == 0;
 }
 
+static int (*backlight_read)(void *);
+static void *backlight_opaque;
+
+void ios_backlight_register(int (*read)(void *opaque), void *opaque)
+{
+    backlight_opaque = opaque;
+    backlight_read = read;
+}
+
+int ios_backlight_level(void)
+{
+    return backlight_read ? backlight_read(backlight_opaque) : -1;
+}
+
 #define LCD_FB_WIDTH  320     /* the shipped panel; s->pw/s->ph are this one's */
 #define LCD_FB_HEIGHT 480
 

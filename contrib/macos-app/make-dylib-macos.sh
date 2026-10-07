@@ -128,6 +128,7 @@ _qemu_ios_ui_ready
 _qemu_ios_ui_storage_failed
 _qemu_ios_ui_guest_shutdown_confirmed
 _qemu_ios_ui_display_sleeping
+_qemu_ios_ui_backlight_level
 _qemu_ios_snapshot_save2
 _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume

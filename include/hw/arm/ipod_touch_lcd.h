@@ -132,6 +132,10 @@ typedef struct IPodTouchLCDState
 } IPodTouchLCDState;
 
 bool lcd_backlight_is_off(void);
+/* The board's backlight driver registers how to read the level the guest last programmed into it (the raw
+ * code its register takes; 0 with the light off, -1 when not decoded). One per machine; the latest wins. */
+void ios_backlight_register(int (*read)(void *opaque), void *opaque);
+int ios_backlight_level(void);
 void lcd_changebrightness(int brightness);
 
 /*

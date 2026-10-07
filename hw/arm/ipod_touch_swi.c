@@ -6,6 +6,8 @@
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
+#include "hw/arm/ipod_touch_lcd.h"
 
 #define TYPE_IPOD_SWI "ipodtouch.swi"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodSWIState, IPOD_SWI)
@@ -14,7 +16,21 @@ struct IPodSWIState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint32_t regs[0x1000 / 4];
+    bool backlight;     /* "backlight": channel 0x20 drives the backlight (the S5L8930's) */
 };
+
+/*
+ * The A4's backlight level, for the host: the last word sent on channel 0x20 (started through 0x1c) is 0b111
+ * followed by the 11-bit level code. 4.x/5.x ramp it to 0x7ff, 6.x/7.x step it through the DT's
+ * backlight-table (0x7b3 at the top on the n90); channel 0x18 is the core voltage.
+ * ponytail: the level as last sent. The driver's state across the D1815's WLED enable (0x50 bit 6) is not
+ * modelled: 7.1.2 can enable it at a new level (its kernel logs one) without a word on this channel.
+ */
+static int swi_backlight_level(void *opaque)
+{
+    uint32_t word = ((IPodSWIState *)opaque)->regs[0x20 / 4];
+    return (word >> 11) == 7 ? (int)(word & 0x7ff) : -1;
+}
 
 static uint64_t swi_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -43,6 +59,9 @@ static const MemoryRegionOps swi_ops = {
 static void swi_reset(DeviceState *dev)
 {
     IPodSWIState *s = IPOD_SWI(dev);
+    if (s->backlight) {
+        ios_backlight_register(swi_backlight_level, s);
+    }
     memset(s->regs, 0, sizeof(s->regs));
 }
 
@@ -63,9 +82,14 @@ static void swi_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
 }
 
+static const Property swi_properties[] = {
+    DEFINE_PROP_BOOL("backlight", IPodSWIState, backlight, false),
+};
+
 static void swi_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    device_class_set_props(dc, swi_properties);
     device_class_set_legacy_reset(dc, swi_reset);
     dc->vmsd = &vmstate_swi;
 }

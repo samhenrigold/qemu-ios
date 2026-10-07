@@ -336,6 +336,11 @@ bool qemu_ios_ui_display_sleeping(void)
                                        : lcd_backlight_is_off();
 }
 
+int qemu_ios_ui_backlight_level(void)
+{
+    return ios_backlight_level();
+}
+
 bool qemu_ios_ui_storage_failed(void)
 {
     return ipod_touch_fmss_io_failed() || ipod_touch_nor_io_failed() ||

@@ -82,7 +82,7 @@ typedef struct Pcf50633State {
 	uint8_t brick_mux;      /* "brick-mux": the dock data lines' ADC channel (0xff none) */
 	uint8_t rtc_reg;        /* "rtc-reg": the 32-bit LE seconds counter */
     bool exton1;           /* PCF50635 wake input level; both edges latch INT2 */
-	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg;   /* "backlight-*" */
+	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg, backlight_led_reg;   /* "backlight-*" */
     qemu_irq irq;
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];
