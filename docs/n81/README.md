@@ -10,7 +10,7 @@ the NAND. Nothing runs through iBoot yet.
 
 ## What runs
 
-- Kernel entry from `imgtools/ipad1_kboot.py`. The board comes from the DT's own compatible
+- Kernel entry from firmwarekit's KBoot. The board comes from the DT's own compatible
   (`N81AP` -> `BOARDS["n81"]`): 640x960 framebuffer, `display-rotation` 0, `display-scale` 2,
   board-id 8, model MC540.
 - No SPI NOR on this board (`boot-from-nand`: nvram, syscfg and effaceable live in NAND). The kboot
@@ -20,7 +20,7 @@ the NAND. Nothing runs through iBoot yet.
   IOFlashStorageDevice hunts NAND boot blocks and the FTL never finds root. The machine's NOR model is
   unchanged.
 - Data protection: `/defaults content-protect` makes launchd demand a system keybag ("FATAL KEYBAG ERROR:
-  kb_load", then a reboot into restore mode). `imgtools/ipad1_keybag.py` makes one exactly as for the
+  kb_load", then a reboot into restore mode). firmwarekit's keybag step makes one exactly as for the
   iPad 4.x: one boot of the IPSW's restore ramdisk with `it_keybag` formats effaceable (in the grafted
   NOR) and writes `/var/keybags/systembag.kb`. It boots the board's own machine.
 - Touch: AppleMultitouchN1SPI (`multi-touch,n18`; `n90` too). It speaks the Z2 HBPP/report protocol of
@@ -52,9 +52,8 @@ recipe yet, a device is the iPad 4.x pipeline run by hand:
 ```
 N=~/Developer/qemu-ios-files/n81
 imgtools/ipad1_fw.py $N/iPod4,1_4.2.1_8C148_Restore.ipsw $N/keys.txt $N/dec
-python3 -c 'import sys; sys.path.insert(0,"imgtools"); import ipad1_kboot as k, json; \
-  print(json.dumps(k.synth_identity("n81-8C148-default", "16g", "n81")))' > $N/identity.json   # mode 600
-imgtools/ipad1_kboot.py --identity $N/identity.json $N/dec $N/kboot.bin
+# identity.json: firmwarekit's KBoot synthesizes it (the Python tool is gone)
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 imgtools/ipad1_nand.py mbr --geometry k48-16g --system-mib 1280 $N/mbr.bin
 imgtools/ipad1_rootfs.py build --rootfs $N/dec/rootfs.dmg --pristine $N/dec/rootfs.dmg --mbr $N/mbr.bin \
   --out $N/userland --stash none --lockdown none
@@ -63,8 +62,7 @@ imgtools/ipad1_nand.py build --geometry k48-16g --mbr $N/mbr.bin --kernelcache $
   --system $N/userland/pristine/system.img --data $N/userland/pristine/data.img --out $N/userland/nand-pristine
 mkdir $N/dev1; cp -cR $N/userland/nand-pristine $N/dev1/nand
 python3 -c 'open("'$N'/dev1/nor.bin","wb").write(b"\xff"*0x100000)'
-imgtools/ipad1_keybag.py $N/dev1/nand $N/dev1/nor.bin --dec $N/dec --ramdisk 038-0024-002-ramdisk.dmg \
-  --identity $N/identity.json
+# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 ```
 
 The activation hook is the iPad 8C148 one (`qemu-ios-files/ipad1/offline-activation-8C148/patch_lockdownd.py`).
@@ -136,7 +134,7 @@ the panel, readback PASS, no bridge refusals), guest power-off.
 Notes: the boot check's unlock slide can miss on a loaded host (debt 11): every boot above passed when run
 with no other emulator or preparation running (two batch runs needed that rerun; one app-install tap on 8B117 missed the icon once and passed on the rerun). By hand, a build is
 the pipeline in "How to boot" with `--activation-hook` the activation.c CLI and, on 4.3.1-4.3.5, 8F190's
-decrypted Update ramdisk copied into the build's `dec/` for `ipad1_keybag.py --ramdisk`.
+decrypted Update ramdisk copied into the build's `dec/` for firmwarekit's keybag step.
 
 What it took beyond the 8C148 bring-up:
 
@@ -163,7 +161,7 @@ multitouch device).
 
 What 6.x needed, all generic (nothing is chosen by build):
 
-1. **boot_args Version** read off xnu-2107's pc-relative check (`ipad1_kboot.boot_args_version`).
+1. **boot_args Version** read off xnu-2107's pc-relative check (firmwarekit's KBoot `boot_args_version`).
 2. **DRAM's first page aliased at physical 0** under kboot: the kernel copies its exception vectors to
    kvtophys(gPhysBase) = 0 after unmapping V=P.
 3. **NVRAM image in `chosen/nvram-proxy-data`.** iBoot fills it; IODTNVRAM walks its partitions by

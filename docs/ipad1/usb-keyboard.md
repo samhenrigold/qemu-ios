@@ -95,7 +95,7 @@ it's kept only as the answer to "can it be done like hardware".
 
 ## Implemented (branch ipad1-kbd)
 
-- `imgtools/ipad1_kboot.py`: `DeviceTree.add()` appends a property; the blob grows, so the memory
+- firmwarekit's KBoot: `DeviceTree.add()` appends a property; the blob grows, so the memory
   layout now comes after the DT edits. `build()` adds `arm-io/usb-complex/hsic-enabled` (empty).
   The self-check covers it.
 - `hw/arm/ipad1.c`:

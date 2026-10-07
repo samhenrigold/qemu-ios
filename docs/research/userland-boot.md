@@ -22,9 +22,9 @@ tests/ipad1/boot-smoke.py --nand-clone FILES/userland/golden-pristine --seconds 
 ```
 
 The `bsd` (`BSD root:`) and `launchd` markers already exist in the test. Kernel bundle prerequisites are all in
-`ipad1_kboot.py` now: `root-matching` names partition 1, `chosen/debug-enabled = 1`, the unit's identity
+firmwarekit's KBoot now: `root-matching` names partition 1, `chosen/debug-enabled = 1`, the unit's identity
 (serial, MLB, ECID and die-id from an `identity.json`, the real unit's untracked one by default or a
-synthetic one from `ipad1_kboot.synth_identity`; see `ipad1_kboot.py --identity`), and the `sgx` node disabled
+synthetic one from firmwarekit's KBoot `synth_identity`; see firmwarekit's KBoot), and the `sgx` node disabled
 (9ed863257d).
 
 Why the AMFI flags on the jailbroken store only: `sshd`, `bash`, Cydia, Substrate and ~180 GNU tools are
@@ -90,7 +90,7 @@ with a throwaway overlay and requires `FTL_Open` with no rescan. Sealed golden-p
 as a store is killed rather than halted, which is why golden stays read-only and everything boots it
 through a clone or an overlay.
 
-The helpers are ldid-signed, so they need the AMFI boot-args. Those are the default in `ipad1_kboot.py`
+The helpers are ldid-signed, so they need the AMFI boot-args. Those are the default in firmwarekit's KBoot
 and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch. `7B500/k48-kboot-noamfi.bin` keeps the old
 `-v serial=3 debug=0x8` bundle.
 `ipad1_rootfs.py --selfcheck` runs on every invocation: APM slicing, plist edits, owner rule, signature classifier.
@@ -98,7 +98,7 @@ and therefore in `7B500/k48-kboot.bin`, which is a stock kernel with no patch. `
 ## A fresh device from a stock IPSW (no unit data)
 
 `imgtools/ipad1_device.py create manifests/ipad1-7B500.json OUT` runs the recipe above from declared inputs
-only: the IPSW (sha1-pinned), its keys page, and a seed for a synthetic identity (`ipad1_kboot.synth_identity`;
+only: the IPSW (sha1-pinned), its keys page, and a seed for a synthetic identity (firmwarekit's KBoot `synth_identity`;
 `OUT/identity.json`, mode 600). The MBR comes from `ipad1_nand.py mbr` (byte-identical to the unit's sector 0 for
 16 GB / 1280 MiB), the data volume has no Lockdown dir and no stash, and `OUT/device.lock.json` records every
 input and output hash. Without an activation hook the device stops at "Connect to iTunes"; the manifest's
@@ -114,13 +114,13 @@ build, and where it now comes from:
 | per-build value | derived from |
 |---|---|
 | component file names (iBSS … KernelCache, rootfs `018-xxxx.dmg`, ramdisks) | BuildManifest.plist (Erase identity; Update identity's RestoreRamDisk) in `ipad1_fw.py`; the keys page only supplies IV/Key per file name |
-| `chosen/firmware-version` | the `iBoot-N.N` tag in the IPSW's decrypted iBoot (`ipad1_kboot.iboot_version`) |
+| `chosen/firmware-version` | the `iBoot-N.N` tag in the IPSW's decrypted iBoot (firmwarekit's KBoot `iboot_version`) |
 | NANDDRIVERSIGN kernel version | the kernelcache's `Darwin Kernel Version` string (already) |
 | MISValidateSignature (AppSync) | symbol lookup in the shared cache (already) |
 | GLI dispatch ABI | `ipad1_rootfs.gli_abi_problem`: the shared cache's `__GLIFunctionDispatchRec` @encode must list `gli-dispatch-7B500.tsv`'s fields in order, else the build refuses GL CA (7B367: identical, 826 slots; its GLEngine differs from 7B500's only in LC_UUID and the signature) |
 | expected ProductVersion (regress `usbmux`) | Restore.plist, recorded as `device.lock.json` product_version |
 | system partition size | not in the firmware: restored_external takes `SystemPartitionSize` from the restore host, so it stays the manifest's `system_mib` |
-| kernel link base (virtBase, VA->PA) | the kernelcache's lowest segment (3.x 0xC0000000, 4.x 0x80000000; `ipad1_kboot.build`) |
+| kernel link base (virtBase, VA->PA) | the kernelcache's lowest segment (3.x 0xC0000000, 4.x 0x80000000; firmwarekit's KBoot `build`) |
 | DT NAND props | kboot sets only those the IPSW DT has (4.x drops the `*-ns` timings, adds the FMI meta layout) |
 | IOP firmware `cnfg` block, bss | read from the loaded image (`s5l8930_iop.c` `iop_config`, header fw[0x318]/[0x31c]) |
 | IOPFMI command ABI (v1 / v2) | the loaded image (v2 carries `h2fmi_iop_read_chip_ids`); docs/ipad1/ios4.md |
@@ -246,7 +246,7 @@ classifier over any tree.
   lowercase, colon-separated, **no ECID/IMEI** on a Wi-Fi iPad (brute-forced over the orderings and formats;
   nothing else matched). iBoot puts the two MACs (syscfg `WMac`/`BMac`) into DT `arm-io/sdio` and
   `arm-io/uart3/bluetooth` `local-mac-address` (6 bytes each, zero in the IPSW DT; the real unit's IORegistry
-  shows them on the `sdio` and `bluetooth` nubs), and `ipad1_kboot.MACS` now fills both. Serial/MLB/ECID/die-id
+  shows them on the `sdio` and `bluetooth` nubs), and firmwarekit's KBoot `MACS` now fills both. Serial/MLB/ECID/die-id
   were already in kboot (571f433ec3). The data-volume records need no change.
 - **`/dev/console` redirect** is untested on this launchd; if it refuses, fall back to a file under `/var/log`
   and read it back through the store.

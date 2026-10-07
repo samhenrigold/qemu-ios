@@ -51,9 +51,9 @@ this is a 4.3 change, not a 5.0 one.
 
 | # | Component | Class | Predicted | Actual |
 |---|---|---|---|---|
-| 1 | kboot boot_args (`imgtools/ipad1_kboot.py`) | P | version field per iBoot generation | **Hit first** on 8L1 and 9B206: `pe_identify_machine: Epoch Mismatch` (Version 3 wanted). Fixed generically: `boot_args_version()` reads the demanded value off the kernel's own check (2 for 7B500/8C148, 3 for 8L1/9A405/9B206). |
+| 1 | kboot boot_args (firmwarekit's KBoot) | P | version field per iBoot generation | **Hit first** on 8L1 and 9B206: `pe_identify_machine: Epoch Mismatch` (Version 3 wanted). Fixed generically: `boot_args_version()` reads the demanded value off the kernel's own check (2 for 7B500/8C148, 3 for 8L1/9A405/9B206). |
 | 2 | IOP HLE (`hw/arm/s5l8930_iop.c`) | H | new mailbox ABI with EmbeddedIOP-33 | **Hit** on 8L1 and 9B206: `IOP::_sendControlMessageGated: control message timeout` → `panic "IOP: startup ping failed"` (EmbeddedIOP-20.4 line 221 / 33.4 line 210). Cause: config-block layout (above). Not fixed: a v3 table keeps the class at H. |
-| 3 | Real iBoot chain, `iboot=` path (`ipad1_iboot.py`, PMGR `POWER_ID`) | P + S | NOR/NVRAM format, PMGR values | **Hit**: iBoot-1219 panics `miu_init: Epoch Mismatch` in a reset loop (15 resets/2 s; the console is not on the UART yet, so serial stays empty). It compares `POWER_ID[31:24]` (the model's fixed 0x01020001, epoch 1 as captured under iBoot-817) with its own epoch 2 (SEPO 2 from 4.3.5 on). On hardware LLB writes that byte; the `iboot=` path skips LLB. iBoot-1072 (4.3.5) carries SEPO 2 too. |
+| 3 | Real iBoot chain, `iboot=` path (firmwarekit's K48IBoot, PMGR `POWER_ID`) | P + S | NOR/NVRAM format, PMGR values | **Hit**: iBoot-1219 panics `miu_init: Epoch Mismatch` in a reset loop (15 resets/2 s; the console is not on the UART yet, so serial stays empty). It compares `POWER_ID[31:24]` (the model's fixed 0x01020001, epoch 1 as captured under iBoot-817) with its own epoch 2 (SEPO 2 from 4.3.5 on). On hardware LLB writes that byte; the `iboot=` path skips LLB. iBoot-1072 (4.3.5) carries SEPO 2 too. |
 | 3b | same, diagnostic with epoch 2 (temporary, reverted) | S/H | – | iBoot-1219 then runs `platform_init`, writes an unmodelled I2C register (+0x14, 525×), and ends in the PMU power-off/reset sequence (D1815 reg 0xe9 read, 0xe0 ← \|1, \|3) and `b .`: an early "power off" decision the D1815 stand-in does not act on. Not diagnosed further. |
 | 4 | SecureROM chain, `bootrom=` + `development-fuses=on`, stock NOR images | R | signature rejection of unpersonalised 5.x images | **Partly better than predicted**: the ROM accepts and runs LLB-1219 from SRAM; LLB does the same I2C +0x14 writes, touches unmodelled blocks at 0xbfc00000/0xbfe00000 (miu/DMC-side) and 0x89e0xxxx/0x89f0xxxx, then takes the same PMU 0xe9/0xe0 power-off path and spins at 0x84001984. |
 | 5 | `contrib/guest-package/mkpkg.py` FAMILIES by build | P | no family for 9B206 | **Hit**: bake aborted "0 packages for build 9B206". Fixed generically: no family → stock volume, lock records `family: null`. |
@@ -102,7 +102,7 @@ From the 8L1 static diff and its kboot boot, in the order the matrix run will me
 | Blocker | Class | Fix that raises the class | Special case instead (not done) |
 |---|---|---|---|
 | IOP mailbox ABI (v1 → v2 → v3 config block, EmbeddedIOP-20/33 ping) | H | Run the ARM7 firmware on a second core (ledger K48 #33; 20-30 d). | A `cnfg` version switch (+0x4) and ring table at +0x10, plus the new control op: 0.5-1 d, stays H, and the next EmbeddedIOP will do it again. |
-| `POWER_ID` epoch byte (`s5l8930_pmgr.c`) on the `iboot=` path | S + P | Boot from the ROM (`bootrom=`), where LLB sets it (R); the ROM already accepts LLB-1219 under development fuses. | Machine property `security-epoch` filled from the image's SEPO by `ipad1_iboot.py`: generic, 0.5 d, but the `iboot=` path stays P. |
+| `POWER_ID` epoch byte (`s5l8930_pmgr.c`) on the `iboot=` path | S + P | Boot from the ROM (`bootrom=`), where LLB sets it (R); the ROM already accepts LLB-1219 under development fuses. | Machine property `security-epoch` filled from the image's SEPO by firmwarekit's K48IBoot: generic, 0.5 d, but the `iboot=` path stays P. |
 | D1815 PMU power-off/reset registers (0xe0/0xe9) not acted on | H | PMU power sequencing (ledger K48 #15; 5-10 d). | – |
 | I2C controller register +0x14 (unmodelled, written by LLB/iBoot-1219) | R (gap) | Add the register from the S5L8930 I2C block (0.5 d); harmless until proven otherwise. | – |
 | Unmodelled blocks 0xbfc00000 / 0xbfe00000 (LLB-1219 miu path), 0x89e00000 / 0x89f00000 | S | Identify (DT `dmc`/`dart`?) and model; 1-3 d. | – |
@@ -138,14 +138,14 @@ Where the two builds stop now (kboot, golden 7B500 store, blank NOR):
 
 ## Changes on this branch
 
-- `imgtools/ipad1_kboot.py`: `boot_args_version()`; boot_args.Version read off the kernel (2 or 3).
+- firmwarekit's KBoot: `boot_args_version()`; boot_args.Version read off the kernel (2 or 3).
 - `contrib/guest-package/mkpkg.py`: `seed()` returns an empty seed when no family covers the build.
 - `imgtools/ipad1_rootfs.py`: bake tolerates a cache-only GLEngine with no shim; summary line.
 - `manifests/ipad1-9B206.json`.
 - This document.
 - `iop-v3`: `hw/arm/s5l8930_iop.c`, `hw/arm/s5l8930_sdio.c`, `include/hw/arm/s5l8930.h` (the v3 instrument above).
 
-Selfchecks green: `ipad1_kboot.py`, `ipad1_rootfs.py --selfcheck`, `mkpkg.py selfcheck`,
+Selfchecks green: firmwarekit's KBoot, `ipad1_rootfs.py --selfcheck`, `mkpkg.py selfcheck`,
 `tests/guest-package/test_it_boot.py`. The 7B500 and 8C148 kernels still get Version 2 (checked by
 `boot_args_version` on their kernelcaches); no prepared device was rebuilt for them here.
 

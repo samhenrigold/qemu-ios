@@ -11,7 +11,7 @@ with persistence all work.
 
 - 512 MiB: the machine's DRAM and its iBoot mirror come from the board. CDMA's memory-vs-FIFO test reads
   the `dram-size` property (default 256 MiB), and the IOP core's DRAM window follows its `dram` link.
-  `ipad1_kboot.py` puts memSize, vram and pram at the top of 512 MiB (`BOARDS["n90"]["dram"]`).
+  firmwarekit's KBoot puts memSize, vram and pram at the top of 512 MiB (`BOARDS["n90"]["dram"]`).
 - Baseband: the DT keeps its `baseband` node (`compatible baseband,n90`). The machine's `baseband`
   property (default off) rewrites that node's `compatible` to `none` in the staged kboot DT at every
   reset, so nothing matches it and nothing waits on a silent radio. The cell stream's modem turns it back on
@@ -60,7 +60,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
 ## iOS 6.1.3 (10B329) and 7.1.2 (11D257): what breaks (2026-10-05)
 
 1. Fixed: boot_args.Version. 6.x reaches pe_identify_machine's "Epoch Mismatch" string with movw/movt,
-   so ipad1_kboot read Version 0 and the kernel panicked before the console came up. Now 3 (08a698c2f1).
+   so firmwarekit's KBoot read Version 0 and the kernel panicked before the console came up. Now 3 (08a698c2f1).
    FirmwareKit's KBoot.swift has the same scan (LightTouchMac a4-n81 6233871).
 2. Fixed: PA 0. In early init both kernels ml_io_map PA 0 (ml_vtophys of gPhysBase, no longer V=P) and copy
    the reset and exception vectors there. The machine had nothing at PA 0, so the copy took an external abort
@@ -68,7 +68,7 @@ pipeline with n90 paths; activation through fw-a4's `lt_activate` hook; guest pa
    these kernels leave out of the image (they link at 0x80001000).
 3. Fixed: NVRAM. iBoot-1537/1940 hand NVRAM to the kernel as `/chosen/nvram-proxy-data` (8 KiB, which N90
    has no NOR for). The IPSW DT reserves it zeroed, and IODTNVRAM::initNVRAMImage loops forever on a
-   zero-length partition. That was the busy CPU after AppleKeyStore. ipad1_kboot now fills it with an empty
+   zero-length partition. That was the busy CPU after AppleKeyStore. firmwarekit's KBoot now fills it with an empty
    CHRP image (2 KiB "common", the rest "free"). 7.1.2 then runs IOKit through Wi-Fi, USB and the N1
    multitouch.
 4. 6.1.3 now prepares end to end, keybag one-shot included, and boots to launchd and SpringBoard, but the panel

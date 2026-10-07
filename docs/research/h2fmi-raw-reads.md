@@ -132,8 +132,8 @@ A read-only gdb sample found CPU0 at `0xc0695f6a` in the IMGSGX535 driver:
 `ldr r3,[r2,#0x18]; ands r5,r3,#1; bne` with `r2=0xed38d000` and the busy bit set.
 This is a native GPU hardware barrier: the board has no SGX model. The prepared
 direct-kernel path explicitly sets `arm-io/sgx`'s `compatible` property to `none`
-in `imgtools/ipad1_kboot.py:fill_dt`, preventing IMGSGX535 from matching. The
-prepared real-iBoot DeviceTree helper in `imgtools/ipad1_gid.py` makes the same
+in firmwarekit's KBoot, preventing IMGSGX535 from matching. The
+prepared real-iBoot DeviceTree helper in firmwarekit's K48IBoot makes the same
 edit. Prepared-device regressions therefore do not validate stock SGX startup.
 
 The available gdb dumps contain core registers and instructions but no MMU

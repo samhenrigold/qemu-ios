@@ -142,7 +142,7 @@ AppleBCMWLAN (Broadcom 802.11 Driver, AppleBCMWLAN-2.60)
     Nothing on the unit suggests that's fatal.
   - `local-mac-address` is **empty in the IPSW DT and filled by iBoot** from syscfg.
     The unit's value is `<unit Wi-Fi MAC>`. Without it the driver stops with
-    "Unit isn't properly provisioned (no WiFi MAC Address)!", so `ipad1_kboot.py`
+    "Unit isn't properly provisioned (no WiFi MAC Address)!", so firmwarekit's KBoot
     has to fill it in (a fake locally-administered MAC is fine).
   - `wireless-board-snum` is also iBoot-filled (`J5024U3A9YXA` on the unit) and
     probably cosmetic.
@@ -247,7 +247,7 @@ regress `wifi` check has to stay green from stage 2 on.
 
 | Stage | Work | Done when | Effort |
 |---|---|---|---|
-| 0. MAC | `ipad1_kboot.py` fills `sdio/local-mac-address` (+ `wireless-board-snum`) | selfcheck; DT dump | ½ day |
+| 0. MAC | firmwarekit's KBoot fills `sdio/local-mac-address` (+ `wireless-board-snum`) | selfcheck; DT dump | ½ day |
 | 1. Enumerate | Reverse IOPSDIO ops 2-7 argument layout (kext 0xc0584000, 24 KB). Implement them in `s5l8930_iop.c` against a card behind an SDIO-card API; add the SDHC IRQ register block. | `IOSDIOIoCardDevice` with `s=B1`/`P=K48 m=u80`, `AppleBCMWLAN::start` on the K48 personality | 3-5 days |
 | 2. Share the card model | Move the card and dongle half of `ipod_touch_sdio.c` into a chip-parametrised model (4325/4329: IDs, CIS, cores, RAM). The iPod host keeps its register interface. | iPod regress `wifi` still associates | 2-3 days |
 | 3. Firmware up | 4329 chipcommon/cores/SOCRAM, OTP, download + verify, dongle-ready mailbox. wifiFirmwareLoader runs unmodified. | "BCM4329 revision B1", firmware version logged, `IO80211Interface` en0 attached, Settings shows "Not Connected" | 2-4 days |

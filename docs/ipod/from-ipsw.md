@@ -126,7 +126,7 @@ keybagd's own log, persisted on the data volume, showed the blocker: `validateSe
 restore mode, so the next boot stopped at iBoot's recovery screen. Same as the iPad (docs/ipad1/ios4.md);
 the 4.2.1 DT's `nor-flash/effaceable` is `effaceable,nor`, so the lockers live in NOR.
 
-**The one-shot** (`imgtools/ipod2g_keybag.py`, run by `ipod2g_device.py` for manifests with
+**The one-shot** (firmwarekit's keybag step, run by `ipod2g_device.py` for manifests with
 `options.data_protection`, i.e. 8C148). As on the iPad, the IPSW's own (Update) restore ramdisk, a private
 copy with `it_keybag` (contrib/it-keybag, armv6 build `build-ipod.sh`: the iPod volume is one, disk0s1,
 data at `/private/var`) as `restored_external`, boots as `md0` so the root is a SecureRoot (the normal
@@ -264,7 +264,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 | NOR images | IPSW all_flash, SHSH wrapped | same; image set = stock order ∩ the IPSW's all_flash manifest (`ipod2g_device.build`, :158) |
 | iBoot | `ios3/iBoot.bin` (decrypted, stock; identical to the IPSW's) | `OUT/iBoot.bin` from the decrypt cache |
 | GID table | built into hw/arm/ipod_touch_aes.c (5F138, 7E18) | plus `OUT/gid-blobs.bin` (`ipod2g_device.gid_blobs`, :140) |
-| identity | real unit's (NOR) | `ipod2g_device.identity` (:84): serial and MACs from `ipad1_kboot.synth_identity`, battery serial from the seed, Mod#/Regn from the manifest; UDID SHA1(serial+Wi-Fi+BT) |
+| identity | real unit's (NOR) | `ipod2g_device.identity` (:84): serial and MACs from firmwarekit's KBoot `synth_identity`, battery serial from the seed, Mod#/Regn from the manifest; UDID SHA1(serial+Wi-Fi+BT) |
 | NAND geometry / FTL metadata | 50 pages copied from `nand-canonical` (itself generator output) | generated, `imgtools/ipod2g_nand.py` (build_nand.py:219); 49/50 identical to nand-current.new, the 50th being the protective MBR's size, stale (128010) there and correct here |
 | NANDDRIVERSIGN epoch | '411C' (the 3.1.3 kernel rewrote the template's '111C') | Restore.plist `SCEP` |
 | volume | rootfs grown to 1835008 blocks, fstab rw | same (build_nand.py), zero blocks not written (:243) |

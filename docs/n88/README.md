@@ -22,7 +22,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
 | 6.0 10A403, 6.0.1 10A523 | Setup Assistant, walked to the home screen (with the modem: `baseband=on`, the lock's `imei=`) | yes | yes (gesture; marker survives) | yes (app-install.py all PASS) | draws |
 | 6.1 10B141, 6.1.2 10B146, 6.1.3 10B329, 6.1.6 10B500 | Setup Assistant, walked to the home screen | yes | yes (gesture; marker survives) | yes (app-install.py all PASS) | draws |
 
-- kboot (`imgtools/s5l8920_kboot.py n88 --nor`, the DT's own NOR kept) -> xnu-1504.58.28
+- kboot (firmwarekit's KBoot, the DT's own NOR kept) -> xnu-1504.58.28
   RELEASE_ARM_S5L8920X. The kernel's EmbeddedIOP firmware is the s5l8920x build of iBoot-931 (the N18 runs
   the s5l8922x build), and it drives the H2FMI its own way: FMC at +0x400 and ECC at +0x800 inside the DT's
   4 KiB window, READ ID read a byte at a time (go 0x10 after 0x90), a blank page reported by ECC summary
@@ -30,7 +30,7 @@ data; an IPA installs through installation_proxy and AppSync and launches.
   (0xB614D5AD on both buses), VFL opens on an epoch-3 store (`ipad1_nand.py --epoch 3`, the IPSW's SCEP),
   the YaFTL R/O restore takes seconds, BSD root disk0s1, fsck clean, launchd.
 - Data protection: effaceable storage and NVRAM on the N88's NOR, formatted with the system keybag by the
-  restore-ramdisk one-shot (`ipad1_keybag.py --board n88`, ramdisk 038-0082-001); kb_load passes.
+  restore-ramdisk one-shot (firmwarekit's keybag step, ramdisk 038-0082-001); kb_load passes.
 - Activated by the FirmwareKit lockdownd strategy (`offline-activation-8C148/patch_lockdownd.py` matches the
   N88's lockdownd). SpringBoard draws the lock screen; Home wakes panel and digitizer (the N88's firmware
   0x0066.bin downloads over HBPP, frames read), slide to unlock, home screen. Hold 4 s brings up "slide to
@@ -72,12 +72,10 @@ with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
 imgtools/ipad1_nand.py build --no-whitening --epoch 3 --geometry k48-16g --mbr $F/mbr.bin \
     --kernelcache $F/dec/kernelcache.mach --system $F/userland-gl/pristine/system.img \
     --data $F/userland-gl/pristine/data.img --out $F/userland-gl/nand
-imgtools/s5l8920_kboot.py n88 --identity $F/identity.json --nor $F/dec $F/kboot-nor.bin \
-    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 mkdir $F/dev4; cp -cR $F/userland-gl/nand $F/dev4/nand
 python3 -c "open('$F/dev4/nor.bin','wb').write(b'\xff'*0x100000)"
-imgtools/ipad1_keybag.py $F/dev4/nand $F/dev4/nor.bin --dec $F/dec --ramdisk 038-0082-001-ramdisk.dmg \
-    --identity $F/identity.json --board n88
+# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 build/qemu-system-arm -M n88,kboot=$F/kboot-nor.bin,nand=$F/dev4/nand,nand-overlay=OV,nor-rw=NORCOPY \
     -display none -serial file:serial.log -qmp unix:/tmp/n88.qmp,server,nowait
 tests/ipad1/app-install.py --machine n88 --device $F/dev4 --kboot $F/kboot-nor-nov.bin --nor $F/dev4/nor.bin \
@@ -197,7 +195,7 @@ PASS; N18 unlock to the home screen with touch PASS.
     imgtools/ipad1_nand.py build --no-whitening --epoch 2 --sig-flags 4 --geometry k48-16g-v1 --mbr $F/mbr.bin \
         --kernelcache $F/dec/kernelcache.mach --system $F/userland/pristine/system.img \
         --data $F/userland/pristine/data.img --out $F/nand
-    imgtools/s5l8920_kboot.py n88 --identity $N/identity.json --nor $F/dec $F/kboot.bin "serial=3 debug=0x8 -v ..."
+    # firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
     tests/ipad1/regress.py --machine n88 --kboot $F/kboot.bin --nand $F/nand --nor <erased 1 MiB> \
         --product-version 3.0 --checks usbmux,afc,persist --jobs 1
     ```

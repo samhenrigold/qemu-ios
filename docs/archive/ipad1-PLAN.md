@@ -223,7 +223,7 @@ www.google.com and Maps draws live tiles (`screens/2026-09-27-net-*.png`). Three
 - guest prefs: `ipad1_rootfs.py` seeds an en1 DHCP service (vanilla: a plist, like a configured unit).
 - guest: the baked `it_ethlink` helper raises the link through IOKit (LinkStatus 0 then 1 on each of the
   service's interest messages), as USBEthernetSharing does on a tethering iPhone, and the kernel is stock
-  (guest-services.md). The byte patch described below was deleted from `ipad1_kboot.py`.
+  (guest-services.md). The byte patch described below was deleted from the old Python kboot builder.
   On by default is safe because it only fires when a host selects the Ethernet interface's alt setting 1,
   which only usbmuxd-qemu's ipad1 branch does. The built-in USB host configures configuration 3 (no
   Ethernet) and bridges without that branch never select it, so for them the kernel behaves as stock.
@@ -234,7 +234,7 @@ USBEthernetSharing, and only while MobileInternetSharing tethers; a Wi-Fi iPad h
 provisioning (misd State 1020, ENOTSUP), so en1 stays `Link Active: FALSE` and IPConfiguration never
 DHCPs. Nothing the host sends over USB can raise the link (alt 0 only lowers it). The patch (2 sites, 24
 bytes, byte-checked) makes the host's SET_INTERFACE alt 1 run that same LinkStatus=1 path; details and
-addresses were in `USB_ETH_LINK` in `imgtools/ipad1_kboot.py` (see git history).
+addresses were in `USB_ETH_LINK` in the old Python kboot builder (see git history).
 
 Not covered yet: the real-iBoot boot path, which loads the signed kernelcache from NAND, so kboot's patch
 never applies there. Open decision: have the machine apply the same bytes at runtime for that path.

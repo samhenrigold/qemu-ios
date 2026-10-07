@@ -22,7 +22,7 @@ Components: kernel `xnu-1504.58.28~3/RELEASE_ARM_S5L8930X` (Darwin 10.4.0), iBoo
 | per-build value | 3.2 / 3.2.2 | 4.2.1 | now derived from |
 |---|---|---|---|
 | component names, keys | | `038-0018-002.dmg` rootfs, `038-0032/0024-002` ramdisks | BuildManifest.plist + keys page (unchanged `ipad1_fw.py`) |
-| kernel link base (boot_args virtBase, all VA->PA) | 0xC0000000 | **0x80000000** | the kernelcache's lowest segment, `& 0xF0000000` (`ipad1_kboot.build`) |
+| kernel link base (boot_args virtBase, all VA->PA) | 0xC0000000 | **0x80000000** | the kernelcache's lowest segment, `& 0xF0000000` (firmwarekit's KBoot `build`) |
 | DT `flash-controller0/disk` | `*-ns` timings | `*-clks` timings, `meta-per-logical-page`, `valid-meta-per-logical-page`, `logical-page-size`, `ppn-device` + PPN geometry | kboot sets only the props the IPSW DT has; the 4.x meta layout (12 total / 10 DMA bytes, 4096) is a property of this raw NAND, declared next to the other NAND values. PPN props stay 0 (iBoot-931 fills them only when `ppn-device` = 1, iBoot 0x5ff077fc). `*-clks` stay 0: the IOP model ignores timings (the kernel prints `tRP 41ns ...`) |
 | IOP firmware `cnfg` block / bss | 0xf018 / 0xf160-0x1b000 | 0x15018 / 0x15160-0x22000 | `s5l8930_iop.c`: bss bounds from the image header words fw[0x318]/[0x31c], `cnfg` by scanning the loaded image for its magic |
 | IOPFMI command ABI | v1 | **v2** (below) | `s5l8930_iop.c` picks v2 when the loaded image carries `h2fmi_iop_read_chip_ids` |
@@ -148,9 +148,9 @@ NAND store + `nor-rw` before the seal, and both outputs then travel with the dev
 ## The one-shot, as built (2026-09-28)
 
 `create` for a manifest with `options.writable_nor` (4.x) runs, between the NAND store and the seal:
-`imgtools/ipad1_keybag.py nand/ nor.bin --dec DEC --ramdisk <Update identity RestoreRamDisk>`.
+firmwarekit's keybag step, with the Update identity's RestoreRamDisk.
 
-- **kboot RAM-disk mode** (`ipad1_kboot.py --ramdisk DMG`): the raw-HFS ramdisk sits in DRAM right after
+- **kboot RAM-disk mode** (firmwarekit's KBoot): the raw-HFS ramdisk sits in DRAM right after
   the kernel (below `topOfKernelData`, so the VM never reuses it), `chosen/memory-map` gets `RAMDisk (pa,
   len)`, boot-args gain `rd=md0`, and `chosen/root-matching` is left empty: xnu reads the `RAMDisk` entry
   only when root-matching does not match, then roots on `md0`. Kernelcache and DeviceTree are the stock
@@ -170,11 +170,11 @@ NAND store + `nor-rw` before the seal, and both outputs then travel with the dev
   ramdisk's launchd saw its job die, started its own `reboot(RB_AUTOBOOT)` alongside the halt, and the
   two shutdowns panicked ("ARM7M: timed out waiting for workloop to process completed command") instead
   of halting, so the one-shot waited out its 300 s. 50 runs with RB_QUICK (20 of them concurrent) halted
-  cleanly; the race was never reproduced live, so `ipad1_keybag.py` also stops a boot at `panic(` and
+  cleanly; the race was never reproduced live, so firmwarekit's keybag step also stops a boot at `panic(` and
   retries it (3 attempts) from a clone of the store and NOR, logging the reason.
   Serial: `it_keybag: effaceable open 0 isFormatted 0 -> 0`, `format 0`, `MKBKeyBagCreateSystem -> 0`, then
   `it_keybag: effaceable formatted, system keybag created; halting`, about 4 s after power-on.
-- `ipad1_keybag.py` requires that line, a clean halt, and a changed `nor.bin` (the lockers: ~8 KiB of
+- firmwarekit's keybag step requires that line, a clean halt, and a changed `nor.bin` (the lockers: ~8 KiB of
   non-`ff`); the device lock records the ramdisk under `inputs.restore_ramdisk`. The normal sealing boot
   follows unchanged (`it_seal`, 54 s).
 
@@ -367,7 +367,7 @@ activation hook), and the iPod regression — see the commit.
 |---|---|
 | ~~NOR persistence on the ipad1 machine (`nor-rw`) and a per-device `nor.bin` through the pipeline~~ **DONE this session** (the app still needs to pass its own private writable `nor.bin` copy as `nor-rw=`; see below) | — |
 | Trust gate: what the `+0x1f8` virtual reads. ~~Gated on this.~~ **DONE 2026-09-27** — it is the DeviceTree `secure-root-prefix='md'` property + root-device match (`SecureRoot` IOResource from AppleARMPlatform), not the img3 chain. Route 1 confirmed viable, no kernel patching. Evidence above. | — |
-| ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach `ipad1_kboot.build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
+| ~~Restore-ramdisk one-shot~~ **DONE 2026-09-28** (see "The one-shot, as built"). The plan was: (1) **kboot**: teach firmwarekit's KBoot `build` an optional RAM-disk mode — add a segment carrying the raw-HFS ramdisk at a chosen PA in DRAM, a `chosen/memory-map` `RAMDisk` entry `(pa,len)` for it, boot-args `rd=md0` (root selects `md0`), and keep the restore DeviceTree's `secure-root-prefix='md'` (do NOT overwrite it in `fill_dt`; the normal-boot DT has no such prefix so 3.x/normal boots are unaffected). Restore kernelcache+ramdisk+DeviceTree come from the BuildManifest's Update/Restore identity via `ipad1_fw.py`. (2) **guest helper** (built like the others, ldid-signed, AMFI boot-args already on): call the two stable symbols `format_effaceable_storage`-equivalent (AppleEffaceableStorage user client sels 3/4) + `_MKBKeyBagCreateSystem(NULL, dataMount)`; mount the data volume, write `/private/var/keybags/systembag.kb`, `it_seal`-style `reboot(RB_HALT)`. (3) **pipeline**: `ipad1_device.py create` runs this one-shot boot against the device's *writable* NAND + `nor-rw` before the normal boot+seal; verify effaceable formatted + `systembag.kb` present; version-gated by manifest (`options.writable_nor`/a `restore_keybag` flag). | — |
 | ~~GLI shim for 4.2.1~~ **DONE 2026-09-28**: GL CoreAnimation is the 8C148 default (below) | — |
 | ~~Activation~~ the user's own 4.2.1 tool | — |
 | ~~Unlock / power-off coordinates on 4.x SpringBoard~~ **DONE 2026-09-28**: unlock, Home and power-off in all four orientations verified on an activated device | — |

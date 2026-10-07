@@ -87,7 +87,7 @@ It needs no entitlement or privilege beyond running as root: both calls return 0
 (serial). A property-driven variant, which waits for `HostAttached` to become true, does not work:
 the property appears only after alt 1, and it reads false.
 
-This replaces the 7B500-only kernel patch, which is gone from `ipad1_kboot.py` (2026-09-27); the
+This replaces the 7B500-only kernel patch, which is gone from the kboot builder (2026-09-27); the
 bundle is a stock kernel. Proof, with the regenerated stock
 `7B500/k48-kboot.bin` and the re-baked golden-pristine, using a4-net's
 `tests/ipad1/regress.py --checks boot,net`: both PASS ("guest fetched /regress-….html over en1

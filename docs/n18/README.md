@@ -8,7 +8,7 @@ second board on the same machine file (`-M n88`, below).
 
 ## What runs (2026-10-04)
 
-- kboot bundle (`imgtools/s5l8920_kboot.py n18`, ipad1_kboot's iBoot stand-in with the board's values) ->
+- kboot bundle (firmwarekit's KBoot, the iBoot stand-in with the board's values) ->
   xnu-1504.58.28 RELEASE_ARM_S5L8922X -> every platform driver starts: VICs, GPIO IC, performance
   controller, IOP (the kernel's EmbeddedIOP firmware on the second core), NAND through the IOP and the
   H2FMI, SPI, I2C, D1755 PMU, CS42L58, M2 CLCD, MIPI-DSIM, SWI, scaler, USB PHY/OTG (device mode,
@@ -16,7 +16,7 @@ second board on the same machine file (`-M n88`, below).
 - Root: YaFTL mounts the store's MBR volumes ("Creating block device of 3925449 sectors"), BSD root
   disk0s1, fsck clean, /private/var on disk0s2, launchd.
 - Data protection: effaceable storage and NVRAM on a SPI NOR grafted into the DT (debt 1), formatted with
-  the system keybag by the iPad's restore-ramdisk one-shot (`ipad1_keybag.py --board n18`).
+  the system keybag by the iPad's restore-ramdisk one-shot (firmwarekit's keybag step).
 - Activated by the FirmwareKit lockdownd strategy (`offline-activation-8C148/patch_lockdownd.py`, the
   4.2.1 lockdownd is byte-identical to the iPad's), SpringBoard draws the lock screen through the M2 CLCD
   behind dart0. Home wakes the panel, slide to unlock works (N1F55 digitizer firmware downloaded, frames
@@ -80,15 +80,14 @@ keys page, `ipad1_fw.py` output in `dec/`.
 ```
 F=~/Developer/qemu-ios-files/n18
 imgtools/ipad1_fw.py $F/iPod3,1_4.2.1_8C148_Restore.ipsw $F/keys-8C148.txt $F/dec
-imgtools/ipad1_kboot.py --synth-identity n18-default $F/identity.json
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 imgtools/ipad1_nand.py mbr --geometry k48-16g --system-mib 1280 $F/mbr.bin
 imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
     --out $F/userland --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl
 imgtools/ipad1_nand.py build --no-whitening --geometry k48-16g --mbr $F/mbr.bin \
     --kernelcache $F/dec/kernelcache.mach --system $F/userland/pristine/system.img \
     --data $F/userland/pristine/data.img --out $F/userland/nand-pristine
-imgtools/s5l8920_kboot.py n18 --identity $F/identity.json $F/dec $F/kboot.bin \
-    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 mkdir -p /tmp/n18-ovl
 build/qemu-system-arm -M n18,kboot=$F/kboot.bin,nand=$F/userland/nand-pristine,nand-overlay=/tmp/n18-ovl \
     -display none -serial file:/tmp/n18.log
@@ -104,11 +103,10 @@ to unlock, give lockdownd the activation strategy when building the system image
 `activation_hook`, as `bake --activation-hook` does):
 
 ```
-imgtools/s5l8920_kboot.py n18 --identity $F/identity.json --nor $F/dec $F/kboot-nor.bin "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 mkdir -p $F/dev; cp -cR $F/userland/nand-pristine $F/dev/nand
 python3 -c "open('$F/dev/nor.bin','wb').write(b'\xff'*0x100000)"
-imgtools/ipad1_keybag.py $F/dev/nand $F/dev/nor.bin --dec $F/dec --ramdisk 038-0031-002-ramdisk.dmg \
-    --identity $F/identity.json --board n18          # needs build/ipad1-guest/it_keybag (armv7)
+# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 build/qemu-system-arm -M n18,kboot=$F/kboot-nor.bin,nand=$F/dev/nand,nand-overlay=/tmp/n18-ovl,nor-rw=$F/dev/nor.bin ...
 ```
 
@@ -136,7 +134,7 @@ python3 -c "import sys; sys.path.insert(0, 'imgtools'); import ipad1_rootfs as r
 d = '$F/userland-app/pristine'
 with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
     r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
-# ipad1_nand.py build ... --out $F/userland-app/nand; dev3 = a copy + erased NOR; ipad1_keybag.py --board n18
+# ipad1_nand.py build ... --out $F/userland-app/nand; dev3 = a copy + erased NOR; then firmwarekit's keybag step
 tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-nov.bin --nor $F/dev3/nor.bin \
     --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
 ```
@@ -153,7 +151,7 @@ firmware need:
 |---|---|
 | `ipad1_nand.py build --sig-flags 4` | 3.1.3's AppleNANDFTL formats with NANDDRIVERSIGN flags 4 (0xc03dbae2). It reports "Incompatible Signature" for flags above 4 under a '1' second signature byte (0xc03db8aa), which includes 4.x's 5 |
 | `ipad1_rootfs.py build --data-block-size 8192 --data-unjournaled` | 3.1.3's mount_hfs fails the journaled data volume the Mac makes with EINVAL, at 4096 or 8192 bytes, and also with the journal left for the device to initialize. An unjournaled volume mounts. Debt 10 |
-| kboot (`s5l8920_kboot.py`) | the 3.1.x DT has no die-id, display-rotation or display-scale slots, so fill_dt skips them (the 3.x kernel reads none of them) |
+| kboot (firmwarekit's KBoot) | the 3.1.x DT has no die-id, display-rotation or display-scale slots, so fill_dt skips them (the 3.x kernel reads none of them) |
 | lockdownd | the 8C148 activation patcher's pattern matches 3.1.3's lockdownd unchanged (`activation_hook` as for 4.2.1) |
 
 The model side:
@@ -175,8 +173,7 @@ imgtools/ipad1_rootfs.py build --rootfs $F/dec-7E18/rootfs.dmg --pristine $F/dec
 imgtools/ipad1_nand.py build --no-whitening --sig-flags 4 --geometry k48-16g --mbr $F/mbr.bin \
     --kernelcache $F/dec-7E18/kernelcache.mach --system $F/userland-7E18/pristine/system.img \
     --data $F/userland-7E18/pristine/data.img --out $F/userland-7E18/nand-pristine
-imgtools/s5l8920_kboot.py n18 --identity $F/identity.json $F/dec-7E18 $F/kboot-7E18.bin \
-    "serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
+# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userland-7E18/nand-pristine \
     --product-version 3.1.3 --checks usbmux,afc,persist
 ```

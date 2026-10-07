@@ -39,7 +39,7 @@ This path uses **pattern-patched iBoot**, not verified secure boot. The stock
 IPSW images are unpersonalized, and the captured device kernelcache's signature
 does not match its payload. `iBoot32Patcher --rsa --debug -b ...` bypasses image
 signature/personalization checks and enables the same debug boot arguments as
-`ipad1_kboot.py`. No emulator-side RSA success forgery or fixed-address iBoot
+firmwarekit's KBoot. No emulator-side RSA success forgery or fixed-address iBoot
 patch is required. The SHA, RSA, and AES device models remain functional.
 
 ## Prepare and run
@@ -48,11 +48,7 @@ Build QEMU using `scripts/configure-patched-ffmpeg` and `scripts/ccninja` as for
 the normal iPad/iPod build. Supply your own firmware and iBoot32Patcher:
 
 ```sh
-python3 imgtools/ipad1_iboot.py \
-  --iboot /path/to/7B500/dec/iBoot.bin \
-  --all-flash /path/to/ipsw/Firmware/all_flash/all_flash.k48ap.production \
-  --patcher /path/to/iBoot32Patcher \
-  --out /path/to/prepared
+# firmwarekit's K48IBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
 ```
 
 The tested patcher is the arm64 macOS binary in Legacy-iOS-Kit v25.09.01. It
@@ -90,7 +86,7 @@ and PPM screenshots are retained in the output directory.
 
 ## Firmware settings and hardware corrections
 
-`ipad1_iboot.py` creates K48 SysCfg and NVRAM from the existing test iPad identity
+firmwarekit's K48IBoot creates K48 SysCfg and NVRAM from the existing test iPad identity
 (`--identity` accepts JSON overrides), without borrowing iPod settings. SysCfg
 uses 20-byte records (four-byte tag plus sixteen inline bytes). The two 8 KiB
 NVRAM banks contain CHRP partition headers, folded header checksums, generation
