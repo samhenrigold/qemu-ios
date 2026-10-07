@@ -155,7 +155,6 @@
     {"name": "tests/ipad1/test_device_cli.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_display_panel.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_frame_references.py", "tier": "quick", "prerequisites": []},
-    {"name": "tests/ipad1/test_gid.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_h2fmi.py", "tier": "quick", "prerequisites": []},
     {"name": "tests/ipad1/test_iboot_epoch.py", "tier": "quick", "prerequisites": [], "optional_prerequisites": ["decrypted-iboot-cache (synthetic checks always run)"]},
     {"name": "tests/ipad1/test_iop_writeback.py", "tier": "quick", "prerequisites": []},

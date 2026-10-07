@@ -9,7 +9,7 @@
  * access (-d unimp) instead of faulting, so bring-up can see what the kernel
  * reaches for next.
  *
- * Boot input is a K48KBOOT bundle from imgtools/ipad1_kboot.py: a flat image of
+ * Boot input is a K48KBOOT bundle from firmwarekit (LightTouchMac FirmwareKit KBoot): a flat image of
  * physical memory (kernel, filled device tree, boot_args) followed by a 24-byte
  * trailer {char magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}.
  * Between the image and the trailer sit optional segments {"K48SEG\0\0";
@@ -210,7 +210,7 @@ static const A4Board a4_k48 = {
 
 /*
  * iPod touch 4G (N81AP): portrait 640x960 Retina panel, no SPI NOR on the
- * board (imgtools/ipad1_kboot.py grafts K48's into the DT, docs/n81), PMU-only
+ * board (firmwarekit's KBoot grafts K48's into the DT, docs/n81), PMU-only
  * battery, no chargers/expander/compass/Mikey, BT on uart1. docs/n81/README.md.
  */
 static const A4Board a4_n81 = {
@@ -2239,7 +2239,7 @@ static void ipad1_class_init(ObjectClass *klass, void *data)
     object_class_property_add_str(klass, "kboot", ipad1_get_kboot,
                                   ipad1_set_kboot);
     object_class_property_set_description(klass, "kboot",
-        "K48KBOOT bundle from imgtools/ipad1_kboot.py (this or iboot required)");
+        "K48KBOOT bundle from firmwarekit (this or iboot required)");
     object_class_property_add_str(klass, "gid-blobs", ipad1_get_gid_blobs,
                                   ipad1_set_gid_blobs);
     object_class_property_set_description(klass, "gid-blobs",

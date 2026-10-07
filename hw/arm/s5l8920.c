@@ -8,7 +8,7 @@
  * at this SoC's addresses and interrupt numbers (DT arm-io, docs/n18/). The
  * display is not the A4's pipe but the S5L8720's M2 CLCD.
  *
- * Boot input is a K48KBOOT bundle (imgtools/s5l8920_kboot.py), loaded as
+ * Boot input is a K48KBOOT bundle (firmwarekit's KBoot), loaded as
  * the ipad1 machine loads it: kernel, filled device tree and boot_args in
  * DRAM, the CPU entered at the kernel with r0 = boot_args.
  */
@@ -330,7 +330,7 @@ static void s5l8920_cpu_reset(void *opaque)
     }
     if (s->bb_modem) {
         /*
-         * kboot (s5l8920_kboot.py, fill_dt) unmatches and renames the baseband node
+         * kboot (firmwarekit's KBoot) unmatches and renames the baseband node
          * ("nobb"); with the modem attached, give it back its name and compatible.
          * lockdownd compares the DT's IMEI with the modem's +CGSN (iBoot fills it on
          * hardware), so that comes from the modem too.
@@ -790,7 +790,7 @@ static void s5l8920_init(MachineState *machine)
     /*
      * SPI0: the N88's 1 MiB NOR (as the iPad's), chip select GPIO 0x1204
      * (DT function-spi_cs0). The N18 has none; nor=/nor-rw= put one there
-     * for kboot's grafted nor-flash node (s5l8920_kboot.py --nor).
+     * for kboot's grafted nor-flash node (KBoot.graftNOR).
      */
     if (s->board->nor || s->nor_path || (s->nor_rw_path && s->nor_rw_path[0])) {
         dev = ipod_touch_spi_create(S5L8920_SPI_BASE(0), s5l8920_irq(s, S5L8920_IRQ_SPI(0)), 0,
@@ -1434,7 +1434,7 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     mc->default_ram_size = 0x10000000;
     object_class_property_add_str(klass, "kboot", s5l8920_get_kboot, s5l8920_set_kboot);
     object_class_property_set_description(klass, "kboot",
-        "K48KBOOT bundle from imgtools/s5l8920_kboot.py");
+        "K48KBOOT bundle from firmwarekit");
     object_class_property_add_str(klass, "nand", s5l8920_get_nand, s5l8920_set_nand);
     object_class_property_set_description(klass, "nand",
         "NAND page-store directory (geometry.json + bus<b>-ce<c>.pages); blank chips if unset");

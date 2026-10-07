@@ -383,22 +383,41 @@ void qemu_ios_ui_vm_started(void)
 
 /* --- app thread -------------------------------------------------------- */
 
+/*
+ * Every machine's facts for the app (qemu-ios-ui.h). Panel limits are the
+ * machines' panel= setters': the CLCD boards' even width 64..1024 by 64..511
+ * rows (the S5L8720 window keeps 9 bits of height), the A4 pipe's width a
+ * multiple of 16 with both sides 64..2047, inside iBoot's display region
+ * (9 MB at 4 bytes a pixel, 0x4f700000 up to the iPad's DRAM end).
+ */
+#define CLCD_PANEL 64, 1024, 511, 2, 0
+#define A4_PANEL   64, 2047, 2047, 16, 0x900000 / 4
+static const QemuIosDeviceInfo ios_devices[] = {
+    /* machine          board    w     h    scale orient cell   usbhost compass charger panel */
+    { "iPod-Touch",    "n72ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
+    { "iPod-Touch-1G", "n45ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
+    { "iPhone-2G",     "m68ap",  320,  480, 1, 0, true,  false, false, false, CLCD_PANEL },
+    { "n18",           "n18ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
+    { "n88",           "n88ap",  320,  480, 1, 0, true,  false, false, false, CLCD_PANEL },
+    /* s5l8930_display scans out 1024x768: the K48 panel is mounted landscape */
+    { "ipad1",         "k48ap", 1024,  768, 1, 1, false, true,  true,  true,  A4_PANEL },
+    { "iPod-Touch-4G", "n81ap",  640,  960, 2, 0, false, true,  false, false, A4_PANEL },
+    { "iPhone-4",      "n90ap",  640,  960, 2, 0, true,  true,  true,  false, A4_PANEL },
+};
+
 const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
 {
-    static const QemuIosDeviceInfo devices[] = {
-        { "iPod-Touch", 320, 480, 1, 0, false },
-        { "ipad1", 1024, 768, 1, 1, false },     /* s5l8930_display scans out 1024x768 */
-        { "iPod-Touch-1G", 320, 480, 1, 0, false },
-        { "iPod-Touch-4G", 640, 960, 2, 0, false },  /* a4_n81: portrait Retina panel */
-        { "iPhone-4", 640, 960, 2, 0, false },       /* a4_n90: the same panel */
-    };
-
-    for (size_t i = 0; machine && i < ARRAY_SIZE(devices); i++) {
-        if (!strcmp(devices[i].machine, machine)) {
-            return &devices[i];
+    for (size_t i = 0; machine && i < ARRAY_SIZE(ios_devices); i++) {
+        if (!strcmp(ios_devices[i].machine, machine)) {
+            return &ios_devices[i];
         }
     }
     return NULL;
+}
+
+const QemuIosDeviceInfo *qemu_ios_device_info_at(int index)
+{
+    return index >= 0 && index < (int)ARRAY_SIZE(ios_devices) ? &ios_devices[index] : NULL;
 }
 
 void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque)
@@ -787,67 +806,10 @@ void qemu_ios_ui_input_sequence_cancel(uint64_t id)
  *
  * The guest is stopped first: a snapshot taken while the vCPU is running would
  * capture RAM that disagrees with itself.
- */
-static void ios_snapshot_bh(void *opaque)
-{
-    ios_sequence_cancel_current();
-    char *path = opaque;
-    Error *err = NULL;
-    g_autofree char *uri = g_strdup_printf("file:%s", path);
-
-    if (qemu_ios_ui_storage_failed()) {
-        fprintf(stderr, "[snapshot] NAND storage failed; refusing save\n");
-        g_free(path);
-        return;
-    }
-
-    qmp_stop(&err);
-    if (err) {
-        fprintf(stderr, "[snapshot] stop failed: %s\n", error_get_pretty(err));
-        error_free(err);
-        g_free(path);
-        return;
-    }
-
-    /* Omit global-state so the restore autostarts running, not frozen-paused.
-     * See ios_snapshot2_bh for the full reasoning. */
-    migrate_get_current()->store_global_state = false;
-    qmp_migrate(uri, false, NULL, false, false, false, false, &err);
-    if (err) {
-        fprintf(stderr, "[snapshot] save failed: %s\n", error_get_pretty(err));
-        error_free(err);
-    } else {
-        fprintf(stderr, "[snapshot] writing %s\n", path);
-    }
-    g_free(path);
-}
-
-void qemu_ios_snapshot_save(const char *path)
-{
-    if (!qemu_ios_ui_ready()) {
-        return;
-    }
-    /* Runs on the QEMU thread under the BQL, like every other command here. */
-    aio_bh_schedule_oneshot(qemu_get_aio_context(), ios_snapshot_bh,
-                            g_strdup(path));
-}
-
-/*
- * Whether the save has finished. The app has only a few seconds of background
- * time, so it needs to know when the file is complete rather than guessing.
- */
-bool qemu_ios_snapshot_done(void)
-{
-    return !qemu_ios_ui_storage_failed() && !migration_is_running();
-}
-
-/*
- * Tracked variant. The plain _done() above is true both before the bottom half
- * has run (nothing is migrating yet) and after a failed migrate (it stopped
- * running) -- so the app could not tell "not started" from "done" from
- * "failed". This tracks an explicit status, set RUNNING on the app thread
- * before the BH so the pre-BH window reads RUNNING, then resolved by reading
- * the migration state.
+ *
+ * The status distinguishes "not started", "in flight", "done" and "failed": it
+ * is set RUNNING on the app thread before the BH so the pre-BH window reads
+ * RUNNING, then resolved by reading the migration state.
  */
 static int ios_snap_status = QEMU_IOS_SNAPSHOT_IDLE;
 static char ios_snap_err[256];

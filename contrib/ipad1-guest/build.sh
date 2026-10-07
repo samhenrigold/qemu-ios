@@ -4,7 +4,7 @@
 # way tethering would. Everything else is a stock USB service or a hardware
 # model -- docs/ipad1/guest-services.md. Same source, armv6-toolchain
 # pipeline with GUEST_ARCH=armv7 against the 3.2 SDK. it_keybag is not baked: it is the
-# 4.x restore-ramdisk one-shot (imgtools/ipad1_keybag.py). Output: build/ipad1-guest/
+# 4.x restore-ramdisk one-shot (firmwarekit's K48 keybag step). Output: build/ipad1-guest/
 # (untracked), installed by `ipad1_rootfs.py bake`.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"

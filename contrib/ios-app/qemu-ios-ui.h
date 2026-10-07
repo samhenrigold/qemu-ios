@@ -32,20 +32,35 @@ extern "C" {
 int qemu_ios_main(int argc, char **argv);
 
 /*
- * What an app needs to know about a machine BEFORE it boots it: which -M name
- * to pass, how big a window to open, which way up. Static per machine, so it
- * is valid before qemu_ios_main() and needs no lock. Unknown name -> NULL.
+ * What an app needs to know about a machine BEFORE it boots it: the board it
+ * is, how big a window to open, which way up, which controls it has. Static per
+ * machine, so it is valid before qemu_ios_main() and needs no lock. These are
+ * the emulator's facts; an app keeps no copy. Unknown name -> NULL.
  */
 typedef struct {
     const char *machine;        /* the -M name */
+    const char *board;          /* the board ID iBoot reports ("n72ap") */
     int screen_width;           /* framebuffer pixels at default_orientation */
     int screen_height;
     int screen_scale;           /* points per pixel */
     int default_orientation;    /* 0 portrait, 1 landscape */
-    bool has_cellular;
+    bool has_cellular;          /* a modem: qemu_ios_ui_modem_* (baseband=on on iPhone-4/n88) */
+    bool has_usb_host;          /* usb-bus.0: -device usb-kbd, qemu_ios_ui_hardware_keyboard */
+    bool has_compass;           /* qemu_ios_ui_compass */
+    bool has_usb_charger;       /* qemu_ios_ui_usb_charger */
+    /* What panel=WxH accepts, as the panel scans: both sides >= panel_min, the
+     * width a multiple of panel_width_step, and at most panel_max_pixels pixels
+     * (0: no bound beyond the sides). */
+    int panel_min;
+    int panel_max_width;
+    int panel_max_height;
+    int panel_width_step;
+    int panel_max_pixels;
 } QemuIosDeviceInfo;
 
 const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine);
+/* The index-th machine this library runs, for listing; NULL past the last. */
+const QemuIosDeviceInfo *qemu_ios_device_info_at(int index);
 
 /* Called on the QEMU thread whenever a new frame is ready. Do not block. */
 typedef void (*qemu_ios_frame_cb)(void *opaque);
@@ -120,28 +135,19 @@ void qemu_ios_ui_cancel_input(void);
 void qemu_ios_ui_manual_touch2(bool down);
 
 /*
- * Save the machine to `path`, so the next launch can restore instead of
- * booting. Asynchronous: poll qemu_ios_snapshot_done(). The guest is stopped
- * as a side effect and does not resume.
- *
- * Restore by passing `-incoming file:<path>` at startup.
- */
-/*
  * Whether the app is foreground. iOS kills a process that issues GL commands
  * while it is not, so this must be cleared BEFORE the app is backgrounded --
  * on willResignActive, not on didEnterBackground.
  */
 void qemu_ios_set_foreground(bool foreground);
 
-void qemu_ios_snapshot_save(const char *path);
-bool qemu_ios_snapshot_done(void);
-
 /*
- * Tracked snapshot save. Unlike qemu_ios_snapshot_save/_done, this reports
- * real progress: _status() distinguishes "not started", "in flight", "done"
- * and "failed", and fills errbuf with the reason on failure. _save2 sets the
- * status to RUNNING on the calling thread before scheduling the work, so a
- * status() call that races ahead of the bottom half never reads a stale DONE.
+ * Save the machine to `path`, so the next launch can restore instead of
+ * booting (`-incoming file:<path>`). Asynchronous: _status() distinguishes "not
+ * started", "in flight", "done" and "failed", and fills errbuf with the reason
+ * on failure. _save2 sets the status to RUNNING on the calling thread before
+ * scheduling the work, so a status() call that races ahead of the bottom half
+ * never reads a stale DONE. The guest is stopped as a side effect.
  */
 typedef enum {
     QEMU_IOS_SNAPSHOT_IDLE = 0,

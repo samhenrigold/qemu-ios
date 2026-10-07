@@ -1,6 +1,6 @@
 #!/bin/bash
 # it_keybag for the iPod touch 2G (armv6, 4.x): the one volume is disk0s1, data at /private/var.
-# Output: build/ipod-guest/it_keybag, ldid-signed. imgtools/ipod2g_keybag.py uses it.
+# Output: build/ipod-guest/it_keybag, ldid-signed. firmwarekit's N72 keybag step boots it.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"

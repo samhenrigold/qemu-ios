@@ -105,8 +105,9 @@ _qemu_ios_ui_input_sequence
 _qemu_ios_ui_input_sequence_status
 _qemu_ios_ui_input_sequence_cancel
 _qemu_ios_set_foreground
-_qemu_ios_snapshot_save
-_qemu_ios_snapshot_done
+_qemu_ios_snapshot_save2
+_qemu_ios_snapshot_status
+_qemu_ios_snapshot_resume
 SYMS
 
 sh ios-link-dylib.sh

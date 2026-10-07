@@ -6,7 +6,7 @@
  * restored_update and are refused from a normal boot ("format attempt from untrusted
  * root"): AppleARMPlatform publishes the SecureRoot resource only when the root device
  * matches the DeviceTree's secure-root-prefix ('md', the RAM disk). So imgtools/
- * ipad1_keybag.py boots the IPSW's own restore ramdisk (a private copy) as md0, with this
+ * firmwarekit's keybag step boots the IPSW's own restore ramdisk (a private copy) as md0, with this
  * helper as /usr/local/bin/restored_external, which the ramdisk's rc.boot runs first.
  *
  * Same calls as restored_update: AppleEffaceableStorage user client selector 3

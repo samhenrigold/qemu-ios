@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boot the ipad1 machine for a while and report how far the 7B500 kernel got.
 
-    tests/ipad1/boot-smoke.py [--seconds N] [--kboot PATH] [--qemu PATH] [--args "BOOT_ARGS"]
+    tests/ipad1/boot-smoke.py [--seconds N] [--kboot PATH] [--qemu PATH]
                               [--nand DIR | --nand-clone DIR | --nand-overlay BASE]
                               [--checkpoint-out DIR] [--from-checkpoint DIR]
                               [--overlay DIR] [--die-id 0xW2:0xW3] [--unlock] [--shot FILE.png]
@@ -164,7 +164,6 @@ def main():
     import ipad1_boot
     ipad1_boot.add_arguments(ap)
     ap.add_argument("--qemu", default=f"{ROOT}/build/qemu-system-arm")
-    ap.add_argument("--args", help="rebuild the bundle with these boot-args first")
     ap.add_argument("--nand", help="NAND page-store directory to attach (booted in place: it gets written)")
     ap.add_argument("--nand-clone", help="NAND store to APFS-clone into a temp dir and boot (the original is untouched)")
     ap.add_argument("--nand-overlay", metavar="BASE", help="boot BASE read-only with a fresh copy-on-write overlay")
@@ -185,11 +184,6 @@ def main():
     ap.add_argument("--no-rescan", action="store_true", help=f"fail on '{RESCAN}'")
     a = ap.parse_args()
 
-    if a.args and not a.kboot:
-        ap.error("--args rebuilds a direct-kernel bundle; specify --kboot")
-    if a.args:
-        subprocess.run([sys.executable, f"{ROOT}/imgtools/ipad1_kboot.py",
-                        f"{FILES}/dec", a.kboot, a.args], check=True)
     meta = {}
     if a.from_checkpoint:
         meta = json.load(open(f"{a.from_checkpoint}/checkpoint.json"))

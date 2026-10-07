@@ -22,9 +22,6 @@ extern "C" {
  */
 void qemu_ios_ui_touch2(int phase, double nx, double ny);
 
-/* A host key event, as a QKeyCode value (Q_KEY_CODE_*). */
-void qemu_ios_ui_key(int qcode, bool down);
-
 /* Rotate the device (Meta+Left/Right chord); edge-triggered, self-releasing. */
 void qemu_ios_ui_rotate(bool clockwise);
 
@@ -38,12 +35,6 @@ void qemu_ios_ui_key_mac(int mac_keycode, bool down);
 /* Shake gesture (machine property "accel-shake"). */
 void qemu_ios_ui_shake(void);
 
-/*
- * Raw accelerometer counts (machine properties "accel-x/y/z"; ±0x40 == ±1 g).
- * Sets the steady-state vector, so it persists until the next call or the
- * next orientation change.
- */
-void qemu_ios_ui_accel(int x, int y, int z);
 /* Degrees, right edge down / top edge away positive. pose: 0 upright, 1 flat. */
 void qemu_ios_ui_attitude(double pitch_deg, double roll_deg, int pose);
 
@@ -114,7 +105,7 @@ const char *qemu_ios_build_id(void);
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((1u << 16) | 2u)
+#define QEMU_IOS_API_VERSION ((2u << 16) | 0u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */
@@ -123,13 +114,13 @@ void qemu_ios_ui_resume(void);
 void qemu_ios_ui_reset(void);
 void qemu_ios_ui_powerdown(void);
 void qemu_ios_ui_quit(void);
-/* (1.1) The guest powers itself off. 1: the guest agent was asked to halt (reboot2(RB_HALT), the call
+/* The guest powers itself off. 1: the guest agent was asked to halt (reboot2(RB_HALT), the call
  * SpringBoard's slide-to-power-off ends in; launchd stops every job, syncs and halts); its reply, if any,
  * carries the agent id "qemu-ios-shutdown". 2: no live agent (iPhone OS 1.x): the board's power-off
  * gesture, as qemu_ios_ui_powerdown. 0: nothing started (not ready, or NAND storage failed). Completion
  * is the guest's halt: qemu_ios_ui_guest_shutdown_confirmed(). */
 int qemu_ios_ui_shutdown(void);
-/* (1.1) Attach or detach the emulated USB keyboard (usb-kbd on usb-bus.0); detached, iOS shows its
+/* Attach or detach the emulated USB keyboard (usb-kbd on usb-bus.0); detached, iOS shows its
  * on-screen keyboard. false where the machine has no usb-bus.0 (n18, n88, the S5L8900/S5L8720 boards). */
 bool qemu_ios_ui_hardware_keyboard(bool attached);
 
@@ -137,7 +128,7 @@ bool qemu_ios_ui_hardware_keyboard(bool attached);
  * the only user stack). restrict=false opens outbound networking without a
  * link event, so the guest keeps its Wi-Fi association and DHCP lease. */
 void qemu_ios_ui_net_restrict(const char *id, bool restrict_);
-/* (1.2) Allow or refuse the guest's traffic to the Mac's local networks (private, link-local,
+/* Allow or refuse the guest's traffic to the Mac's local networks (private, link-local,
  * multicast) on a running user netdev; boot with -netdev user,...,lan=off to start refused. */
 void qemu_ios_ui_net_lan(const char *id, bool allowed);
 
