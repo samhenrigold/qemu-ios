@@ -469,6 +469,17 @@ int main(void) {
     assert(lduw_le_p(aperture+0x18000+0xc) == 1024);           /* the 2.1 block */
     unsigned loud=0; for (unsigned i=0;i<4096;i++) loud+=a.port[i]!=0;
     assert(loud>100);
+    /* iOS 7 (n90ap 11D257) chains several frames' commands into one list, 16 links and more: every link runs. */
+    for (unsigned i=0;i<18;i++) {
+        uint32_t at=0x34600+i*0x1c;
+        stl_le_p(aperture+at, i<17 ? at+0x1c : 0);
+        stl_le_p(aperture+at+4,0x00040005);                    /* 4 bytes to engine-local memory */
+        stl_le_p(aperture+at+8,0x34800);
+        stl_le_p(aperture+at+12,0x34900+i*4);
+    }
+    stl_le_p(aperture+0x34800,0x5a5a0000);
+    ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x34602, 4);
+    assert(ldl_le_p(aperture+0x34900+17*4)==0x5a5a0000);       /* the 18th link ran */
     amc_decoder_close(&a);
     puts("PASS: AMC 2.1 layout, engine-local input and engine 0 collection into the output port");
     puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");

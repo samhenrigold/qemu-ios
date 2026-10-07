@@ -105,6 +105,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_E0_HEAD          0x000       /* AMC 2.1: engine 0's command list */
 #define AMC_XFER_FIFO        0x303060    /* AMC 2.1 transfer unit, engine 0's view */
 #define AMC_XFER_QUEUE       8
+/* Engine 0's list length bound, against a looping list only: iOS 7's AppleAMC (n90ap 11D257, a ringtone) chains
+ * several frames' commands, six links a frame, into one list, and the old bound of 16 rejected it part-way. */
+#define AMC_E0_LINKS 1024
 /*
  * AMC 2.1's output port: transfer jobs to engine-local 0x38000 go to a FIFO
  * that CDMA channel 0x17 drains from 0x8480002c (DT /arm-io/amc

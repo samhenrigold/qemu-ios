@@ -1002,7 +1002,7 @@ static bool amc_engine0(IPodTouchAMCState *s, uint32_t head)
     for (unsigned links = 0; head; links++) {
         uint32_t w[4];
         uint8_t data[64];
-        if (links == 16 || !amc_local(s, head & ~3u, sizeof(w)) ||
+        if (links == AMC_E0_LINKS || !amc_local(s, head & ~3u, sizeof(w)) ||
             address_space_read(&address_space_memory, s->buf_base + (head & ~3u),
                                MEMTXATTRS_UNSPECIFIED, w, sizeof(w))) {
             return false;
