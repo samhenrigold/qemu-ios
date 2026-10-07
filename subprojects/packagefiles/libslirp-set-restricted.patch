@@ -27,10 +27,10 @@ index d8fe7cb2..ab6cfdcb 100644
          } else {
              struct socket *so;
 diff --git a/src/libslirp.h b/src/libslirp.h
-index 240dfe8b..0e5b3556 100644
+index 240dfe8b..f96ddbbc 100644
 --- a/src/libslirp.h
 +++ b/src/libslirp.h
-@@ -268,6 +268,21 @@ Slirp *slirp_init(int restricted, bool in_enabled, struct in_addr vnetwork,
+@@ -268,6 +268,28 @@ Slirp *slirp_init(int restricted, bool in_enabled, struct in_addr vnetwork,
  SLIRP_EXPORT
  void slirp_cleanup(Slirp *slirp);
  
@@ -44,19 +44,26 @@ index 240dfe8b..0e5b3556 100644
 +/* Allow or refuse guest traffic to local-network destinations on the host's
 + * side (10/8, 172.16/12, 192.168/16, 169.254/16, 224/4, fc00::/7, fe80::/10,
 + * ff00::/8). Refused, such a connection or datagram fails as if unreachable;
-+ * the host's own DNS server (the guest's 10.0.2.3) and loopback forwards stay
-+ * reachable. Allowed by default; takes effect on the next connection. */
++ * loopback forwards stay reachable, and so does the host's own DNS server (the
++ * guest's 10.0.2.3) unless slirp_set_dns_forward gives a resolver instead. Allowed by default; takes effect on the next connection. */
 +SLIRP_EXPORT
 +void slirp_set_local_network(Slirp *slirp, int allowed);
++
++/* While the local network is refused, the guest's UDP DNS (to its virtual
++ * nameserver, port 53) goes to `addr` -- a resolver on the host's loopback that
++ * asks the system resolver -- instead of the host's DNS server, which usually
++ * sits on the LAN; other DNS to the virtual nameserver is refused. NULL clears. */
++SLIRP_EXPORT
++void slirp_set_dns_forward(Slirp *slirp, const struct sockaddr_in *addr);
 +
  /* This is deprecated, use slirp_pollfds_fill_socket instead. */
  SLIRP_EXPORT
  void slirp_pollfds_fill(Slirp *slirp, uint32_t *timeout,
 diff --git a/src/slirp.c b/src/slirp.c
-index 0fc51a96..0261b8fa 100644
+index 0fc51a96..e30c2194 100644
 --- a/src/slirp.c
 +++ b/src/slirp.c
-@@ -782,6 +782,30 @@ void slirp_cleanup(Slirp *slirp)
+@@ -782,6 +782,38 @@ void slirp_cleanup(Slirp *slirp)
      g_free(slirp);
  }
  
@@ -68,6 +75,14 @@ index 0fc51a96..0261b8fa 100644
 +void slirp_set_local_network(Slirp *slirp, int allowed)
 +{
 +    slirp->local_network_blocked = !allowed;
++}
++
++void slirp_set_dns_forward(Slirp *slirp, const struct sockaddr_in *addr)
++{
++    memset(&slirp->dns_forward, 0, sizeof(slirp->dns_forward));
++    if (addr) {
++        slirp->dns_forward = *addr;
++    }
 +}
 +
 +bool slirp_local_network_addr4(struct in_addr a)
@@ -88,18 +103,19 @@ index 0fc51a96..0261b8fa 100644
      (((so)->so_state & (SS_FCANTSENDMORE | SS_ISFCONNECTED)) == SS_ISFCONNECTED)
  #define CONN_CANFRCV(so) \
 diff --git a/src/slirp.h b/src/slirp.h
-index 63330314..1034a317 100644
+index 63330314..097b0b94 100644
 --- a/src/slirp.h
 +++ b/src/slirp.h
-@@ -154,6 +154,7 @@ struct Slirp {
+@@ -154,6 +154,8 @@ struct Slirp {
      char client_hostname[33];
  
      int restricted;
 +    bool local_network_blocked;
++    struct sockaddr_in dns_forward; /* sin_port 0: none */
      struct gfwd_list *guestfwd_list;
  
      int if_mtu;
-@@ -234,6 +235,10 @@ void if_start(Slirp *);
+@@ -234,6 +236,10 @@ void if_start(Slirp *);
  /* Get the IPv4 address and port of the DNS server on the host side */
  int get_dns_addr(struct in_addr *pdns_addr, uint16_t *pdns_port);
  
@@ -111,10 +127,35 @@ index 63330314..1034a317 100644
  int get_dns6_addr(struct in6_addr *pdns6_addr, uint16_t *pdns_port,
                    uint32_t *scope_id);
 diff --git a/src/socket.c b/src/socket.c
-index 8ca61d74..3561ddaf 100644
+index 8ca61d74..b92c8ab8 100644
 --- a/src/socket.c
 +++ b/src/socket.c
-@@ -1019,14 +1019,26 @@ static bool sotranslate_out6(Slirp *s, struct socket *so, struct sockaddr_in6 *s
+@@ -976,6 +976,14 @@ void sofwdrain(struct socket *so)
+ static bool sotranslate_out4(Slirp *s, struct socket *so, struct sockaddr_in *sin)
+ {
+     if (!s->disable_dns && so->so_faddr.s_addr == s->vnameserver_addr.s_addr) {
++        if (s->local_network_blocked && s->dns_forward.sin_port) {
++            if (so->so_fport != htons(53) || so->so_type != IPPROTO_UDP) {
++                return false;
++            }
++            sin->sin_addr = s->dns_forward.sin_addr;
++            sin->sin_port = s->dns_forward.sin_port;
++            return true;
++        }
+         return (so->so_fport == htons(53) &&
+                 get_dns_addr(&sin->sin_addr, &sin->sin_port) >= 0);
+     }
+@@ -996,6 +1004,9 @@ static bool sotranslate_out6(Slirp *s, struct socket *so, struct sockaddr_in6 *s
+ {
+     if (!s->disable_dns && in6_equal(&so->so_faddr6, &s->vnameserver_addr6)) {
+         uint32_t scope_id;
++        if (s->local_network_blocked && s->dns_forward.sin_port) {
++            return false; /* the guest falls back to its IPv4 nameserver */
++        }
+         if (so->so_fport == htons(53) &&
+                 get_dns6_addr(&sin->sin6_addr, &sin->sin6_port, &scope_id) >= 0) {
+             sin->sin6_scope_id = scope_id;
+@@ -1019,14 +1030,26 @@ static bool sotranslate_out6(Slirp *s, struct socket *so, struct sockaddr_in6 *s
  
  int sotranslate_out(struct socket *so, struct sockaddr_storage *addr)
  {
@@ -142,4 +183,14 @@ index 8ca61d74..3561ddaf 100644
 +        }
          break;
      }
+ 
+@@ -1065,6 +1088,9 @@ void sotranslate_in(struct socket *so, struct sockaddr_storage *addr)
+                 sin->sin_port == dns_port &&
+                 sin->sin_addr.s_addr == sin_addr.s_addr)
+             sin->sin_port = htons(53);
++        /* An answer from the dns_forward resolver: from the nameserver's port. */
++        if (!slirp->disable_dns && so->so_faddr.s_addr == slirp->vnameserver_addr.s_addr)
++            sin->sin_port = so->so_fport;
+ 
+         break;
  

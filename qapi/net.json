@@ -123,8 +123,9 @@
 # @restrict: isolate the guest from the host
 #
 # @lan: whether the guest may reach the host's local networks (private,
-#     link-local and multicast addresses; the host's DNS server and
-#     loopback forwards stay reachable), default true
+#     link-local and multicast addresses; loopback forwards stay
+#     reachable, and DNS still works: on macOS through the system
+#     resolver, elsewhere through the host's DNS server), default true
 #
 # @ipv4: whether to support IPv4, default true for enabled (since 2.6)
 #

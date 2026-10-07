@@ -1309,8 +1309,16 @@ int net_init_slirp(const Netdev *netdev, const char *name,
                          user->dns, user->ipv6_dns, user->smb,
                          user->smbserver, dnssearch, user->domainname,
                          user->tftp_server_name, errp);
-    if (ret == 0 && user->has_lan && !user->lan) {
-        slirp_set_local_network(QTAILQ_LAST(&slirp_stacks)->slirp, false);
+    if (ret == 0) {
+#ifdef CONFIG_DARWIN
+        struct sockaddr_in dns;
+        if (net_slirp_dns_forward(&dns)) {
+            slirp_set_dns_forward(QTAILQ_LAST(&slirp_stacks)->slirp, &dns);
+        }
+#endif
+        if (user->has_lan && !user->lan) {
+            slirp_set_local_network(QTAILQ_LAST(&slirp_stacks)->slirp, false);
+        }
     }
 
     while (slirp_configs) {
