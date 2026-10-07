@@ -38,7 +38,7 @@ UART1: carrier "LightTouch" with full bars and EDGE, Wi-Fi up, SMS in, calls in 
   Safari's Apple bookmark goes over it: DNS, TCP and `GET /iphone/start/` reach www.apple.com, which
   redirects to HTTPS; 1.0's Safari can't negotiate today's TLS ("could not establish a secure connection").
 - Time zone: on registration the modem sends NITZ (`+CTZV: <tz>,"yy/MM/dd,hh:mm:ss"`, the host's offset in quarter
-  hours, the time UTC; the `ios-baseband` property `nitz`, on for the M68). 1.0's CommCenter points
+  hours, the time UTC; the `ios-baseband` property `nitz`, on by default for every radio board). 1.0's CommCenter points
   /var/db/localtime at `Etc/GMT<offset>`; its lockdownd has no TimeZone, so this is how 1.x shows the Mac's local
   time (without it, the restore's Pacific).
 - Power-off: `system_powerdown` (Home, Hold 20 s, slide) ends in `pmu go stdby` and QEMU exits.

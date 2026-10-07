@@ -903,8 +903,8 @@ static void iosbb_instance_init(Object *obj)
 static const Property iosbb_props[] = {
     DEFINE_PROP_INT32("ifx-version", IosBasebandState, ifx_version, 0),
     DEFINE_PROP_INT32("ifx-max-data", IosBasebandState, ifx_max_data, 0),
-    /* NITZ (+CTZV with the host's offset) once the host enables +CTZR; the M68 turns it on. */
-    DEFINE_PROP_BOOL("nitz", IosBasebandState, nitz, false),
+    /* NITZ (+CTZV with the host's offset) once the host enables +CTZR, as a network sends it. */
+    DEFINE_PROP_BOOL("nitz", IosBasebandState, nitz, true),
 };
 
 static void iosbb_class_init(ObjectClass *oc, void *data)
