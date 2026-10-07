@@ -475,6 +475,13 @@ static void pcf50633_init(Object *obj)
     s->adc_values[6] = 512;
 }
 
+/* For the host (qemu_ios_ui_backlight_level): the LED level register, 0 while the rail is off. */
+static int pmu_backlight_level(void *opaque)
+{
+    Pcf50633State *s = opaque;
+    return s->regs[s->backlight_enable_reg] & s->backlight_enable_bit ? s->regs[s->backlight_led_reg] : 0;
+}
+
 static void pcf50633_reset(DeviceState *dev)
 {
     Pcf50633State *s = PCF50633(dev);
@@ -488,6 +495,9 @@ static void pcf50633_reset(DeviceState *dev)
     /* The backlight rail is on out of reset (iBoot lights its logo without
      * touching 0x10); the level is whatever the guest programs. */
     s->regs[s->backlight_enable_reg] |= s->backlight_enable_bit;
+    if (s->backlight_led_reg) {
+        ios_backlight_register(pmu_backlight_level, s);
+    }
     s->adc_sample = 0;
     unsigned base = pmu_event_base(s), count = pmu_event_count(s);
     for (unsigned i = 0; i < count; i++) {
@@ -568,6 +578,9 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_UINT8("backlight-enable-reg", Pcf50633State, backlight_enable_reg, PMU_LDO_ENABLE),
     DEFINE_PROP_UINT8("backlight-enable-bit", Pcf50633State, backlight_enable_bit, PMU_LDO_BACKLIGHT),
     DEFINE_PROP_UINT8("backlight-level-reg", Pcf50633State, backlight_level_reg, PMU_DSBL1),
+    /* The LED level register reported to the host as the programmed backlight level (0: none decoded):
+     * the D1759's 0x30, the PCF50633's LEDOUT 0x28. */
+    DEFINE_PROP_UINT8("backlight-led-reg", Pcf50633State, backlight_led_reg, PMU_DSBL1),
     /* The PCF50633's BCD calendar at 0x59 (1.x) instead of the D1759's counter at 0x5c. */
     DEFINE_PROP_BOOL("rtc-bcd", Pcf50633State, rtc_bcd, false),
     DEFINE_PROP_UINT8("event-count", Pcf50633State, event_count, 3),

@@ -1565,8 +1565,13 @@ static void ipad1_init(MachineState *machine)
      * off one to confirm. */
     ipod_scaler_set_version(scaler, 0x20007);
 
-    /* SWI: backlight and DPSM core voltage; only the busy bit matters. */
-    sysbus_create_simple("ipodtouch.swi", S5L8930_SWI_BASE, NULL);
+    /* SWI: backlight and DPSM core voltage; only the busy bit matters, and the backlight level is reported. */
+    {
+        DeviceState *swi = qdev_new("ipodtouch.swi");
+        qdev_prop_set_bit(swi, "backlight", true);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(swi), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(swi), 0, S5L8930_SWI_BASE);
+    }
 
     /*
      * I2S0-2. i2s0 carries the CS42L61 codec's PCM from CDMA channel 0x1a to

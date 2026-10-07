@@ -87,6 +87,10 @@ bool qemu_ios_ui_storage_failed(void);
 bool qemu_ios_ui_guest_shutdown_confirmed(void);
 /* Guest backlight state, independent of black framebuffer contents. */
 bool qemu_ios_ui_display_sleeping(void);
+/* The level the guest last programmed into the backlight driver, as the raw code that driver takes (the
+ * 2G's D1759 WLED 0x30, the 1G's PCF50633 LEDOUT 0x28, the A4's SWI level); 0 with the light off, -1 where
+ * the board's backlight is not decoded. API 2.1. */
+int qemu_ios_ui_backlight_level(void);
 void qemu_ios_ui_vm_stopped(void);
 
 /*

@@ -1092,6 +1092,7 @@ static void n45_machine_init(MachineState *machine)
         qdev_prop_set_uint8(DEVICE(pmu), "backlight-enable-reg", 0x29);
         qdev_prop_set_uint8(DEVICE(pmu), "backlight-enable-bit", 0x01);
         qdev_prop_set_uint8(DEVICE(pmu), "backlight-level-reg", 0);
+        qdev_prop_set_uint8(DEVICE(pmu), "backlight-led-reg", 0x28);   /* LEDOUT, reported, not rendered */
         PCF50633(pmu)->usb_cable = (s->usb_tcp_addr && s->usb_tcp_addr[0]) || getenv("IT_USB_TCP");
         i2c_slave_realize_and_unref(pmu, i2c[s->board->pmu_i2c], &error_fatal);
         qdev_connect_gpio_out(DEVICE(pmu), 0, qdev_get_gpio_in(DEVICE(s->sysic), 0x55));
