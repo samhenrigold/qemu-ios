@@ -150,6 +150,10 @@ typedef struct S5L8920Board {
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
     const MTSensorProfile *mt_profile;   /* the sensor the multitouch model reports */
     S5L8920Buttons buttons;
+    /* The ring/silent switch (DT function-button_ringerab): its GPIO and which level is silent
+     * (the function's flags 0x100: active high). 0: none (the iPod). */
+    uint16_t ringer;
+    bool ringer_active_high;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     S5L8920PowerKnob pwroff_knob;
     const char *wifi_board;              /* the card's CIS VERS_1 board string; NULL = no Wi-Fi card */
@@ -205,6 +209,7 @@ static const S5L8920Board s5l8920_n88 = {
     .mt_atn = 0xb4,
     .mt_profile = &mt_profile_n88,       /* N1F54 */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
+    .ringer = 0x1403,                    /* function-button_ringerab flags 0: active low (the N90's is high) */
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
         { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
@@ -218,6 +223,7 @@ static const S5L8920Board s5l8920_n88 = {
 
 #define TYPE_S5L8920_MACHINE "s5l8920-machine"
 OBJECT_DECLARE_TYPE(S5L8920MachineState, S5L8920MachineClass, S5L8920_MACHINE)
+static void s5l8920_apply_ring_switch(S5L8920MachineState *s);
 
 struct S5L8920MachineClass {
     MachineClass parent;
@@ -244,6 +250,7 @@ struct S5L8920MachineState {
     char *die_id;                        /* ChipID words 2-3 of the unit, hex pair */
     char *usb_tcp_addr;                  /* usbmuxd-qemu host bridge; empty = the built-in host */
     bool btn_hold, btn_home;             /* button-hold/-home properties */
+    bool ring_silent;                    /* ring-switch: the side switch at silent (default off: ring) */
     QEMUBH *bt_kick;                     /* resumes the CDMA receive from the HCI's UART */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool wifi;                           /* bridge the Wi-Fi card to -netdev id=wifi0 (default on) */
@@ -625,6 +632,7 @@ static void s5l8920_init(MachineState *machine)
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8920_GPIO_BASE);
     sysbus_connect_irq(sbd, 0, s5l8920_irq(s, S5L8920_IRQ_GPIO));
+    s5l8920_apply_ring_switch(s);
 
     for (i = 0; i < s->board->nuarts; i++) {
         Chardev *chr = serial_hd(i);
@@ -895,6 +903,7 @@ static void s5l8920_init(MachineState *machine)
      */
     dev = qdev_new(TYPE_S5L8930_I2S);
     qdev_prop_set_bit(dev, "audio-out", true);
+    qdev_prop_set_bit(dev, "ctrl-run", true);   /* AppleS5L8920XI2SController starts TX with CTRL bit 0 */
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_I2S0_BASE);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S5L8920_I2S0_FIFO);
@@ -1030,6 +1039,16 @@ static bool s5l8920_get_guest_shutdown_confirmed(Object *obj, Error **errp)
 static bool s5l8920_get_display_sleeping(Object *obj, Error **errp)
 {
     return ipod_touch_mipi_dsi_panel_off();
+}
+
+/* The ring/silent switch's pad at the level its position and polarity give; the GPIO keeps it across
+ * resets, and both edges interrupt, so a flip at run time reaches the guest. */
+static void s5l8920_apply_ring_switch(S5L8920MachineState *s)
+{
+    if (s->gpio && s->board->ringer) {
+        s5l8930_gpio_set_rest_level(s->gpio, S5L8930_GPIO_PIN(s->board->ringer),
+                                    s->ring_silent == s->board->ringer_active_high);
+    }
 }
 
 /* After every device reset (the GPIO model's puts every input high): buttons at rest. */
@@ -1335,6 +1354,17 @@ static void s5l8920_set_imei(Object *obj, const char *value, Error **errp)
     s->imei = g_strdup(value);
 }
 
+static bool s5l8920_get_ring_switch(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->ring_silent;
+}
+
+static void s5l8920_set_ring_switch(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->ring_silent = value;
+    s5l8920_apply_ring_switch(S5L8920_MACHINE(obj));
+}
+
 static bool s5l8920_get_baseband(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->baseband_on;
@@ -1417,6 +1447,9 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
         "Bridge the Wi-Fi card to -netdev id=wifi0 (a NAT one is made when absent); off keeps the card, unbridged");
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
     object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
+    object_class_property_add_bool(klass, "ring-switch", s5l8920_get_ring_switch, s5l8920_set_ring_switch);
+    object_class_property_set_description(klass, "ring-switch",
+        "the side switch (buttons/ringerab, iPhone): on = silent, off = ring (default); settable at run time");
     object_class_property_set_description(klass, "baseband",
         "radio boards: put the fake cellular modem behind spi2 (default off: a bare controller)");
     object_class_property_add_str(klass, "imei", s5l8920_get_imei, s5l8920_set_imei);

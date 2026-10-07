@@ -57,6 +57,10 @@ struct S5L8930I2SState {
 
     uint32_t regs[I2S_REGS_SIZE / 4];
     bool audio_out;                 /* property: this port reaches the host (out and in) */
+    /* property "ctrl-run": the S5L8920's controller, which its driver starts with CTRL bit 0
+     * (0x7900101) and stops by clearing it (0x7900000, then 0), leaving +0x08 at its frame
+     * format (0x78057805); the A4's starts with TXCOM = 6. */
+    bool ctrl_run;
     uint8_t port;                   /* property: i2s<port>, selects its NCO */
     unsigned rate;                  /* the voice's current frame rate */
 
@@ -213,13 +217,18 @@ static uint64_t i2s_read(void *opaque, hwaddr offset, unsigned size)
     return offset == I2S_TXFIFO ? 0 : s->regs[offset >> 2];
 }
 
+static bool i2s_tx_running(S5L8930I2SState *s)
+{
+    return s->ctrl_run ? s->regs[I2S_CTRL >> 2] & 1 : s->regs[I2S_TXCOM >> 2] == I2S_CMD_RUN;
+}
+
 static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
                       unsigned size)
 {
     S5L8930I2SState *s = opaque;
 
     if (offset == I2S_TXFIFO) {
-        if (s->voice && s->regs[I2S_TXCOM >> 2] == I2S_CMD_RUN) {
+        if (s->voice && i2s_tx_running(s)) {
             i2s_push(s, value, size);
         }
         return;
@@ -236,11 +245,11 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
             AUD_set_active_in(s->voice_in, run);
         }
     }
-    if (offset == I2S_TXCOM && s->voice) {
-        if (value == I2S_CMD_RUN) {
+    if (offset == (s->ctrl_run ? I2S_CTRL : I2S_TXCOM) && s->voice) {
+        if (i2s_tx_running(s)) {
             i2s_set_rate(s, s5l8930_i2s_rate(s->port));
         }
-        AUD_set_active_out(s->voice, value == I2S_CMD_RUN);
+        AUD_set_active_out(s->voice, i2s_tx_running(s));
     }
 }
 
@@ -318,7 +327,7 @@ static int s5l8930_i2s_post_load(void *opaque, int version_id)
 {
     S5L8930I2SState *s = opaque;
 
-    if (s->voice && s->regs[I2S_TXCOM >> 2] == I2S_CMD_RUN) {
+    if (s->voice && i2s_tx_running(s)) {
         i2s_set_rate(s, s5l8930_i2s_rate(s->port));
         AUD_set_active_out(s->voice, 1);
     }
@@ -339,6 +348,7 @@ static const VMStateDescription vmstate_s5l8930_i2s = {
 
 static const Property s5l8930_i2s_properties[] = {
     DEFINE_PROP_BOOL("audio-out", S5L8930I2SState, audio_out, false),
+    DEFINE_PROP_BOOL("ctrl-run", S5L8930I2SState, ctrl_run, false),
     DEFINE_PROP_UINT8("port", S5L8930I2SState, port, 0),
     DEFINE_PROP_UINT32("tone-hz", S5L8930I2SState, tone_hz, 0),
 };
