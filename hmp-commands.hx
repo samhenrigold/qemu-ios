@@ -1387,6 +1387,21 @@ SRST
   Remove host-to-guest TCP or UDP redirection.
 ERST
 
+#ifdef CONFIG_SLIRP
+    {
+        .name       = "netdev_set_restrict",
+        .args_type  = "arg1:s,arg2:s?",
+        .params     = "[netdev_id] on|off",
+        .help       = "flip a running user netdev's slirp restrict flag in place (requires -net user)",
+        .cmd        = hmp_netdev_set_restrict,
+    },
+#endif
+SRST
+``netdev_set_restrict``
+  Turn the restrict flag of a running user (slirp) netdev on or off in place,
+  without dropping the guest link, association or DHCP lease.
+ERST
+
     {
         .name       = "balloon",
         .args_type  = "value:M",

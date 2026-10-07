@@ -272,7 +272,7 @@ extern "C" {
  * supports QEMU_ERROR, this will be reported at compile time; otherwise
  * this will be reported at link time due to the missing symbol.
  */
-G_NORETURN
+G_NORETURN extern
 void QEMU_ERROR("code path is reachable")
     qemu_build_not_reached_always(void);
 #if defined(__OPTIMIZE__) && !defined(__NO_INLINE__)
@@ -839,6 +839,20 @@ size_t qemu_get_host_physmem(void);
  * for the current thread.
  */
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+/*
+ * pthread_jit_write_protect_np() is macOS-only: the iOS SDK marks it
+ * __API_UNAVAILABLE and libSystem does not export it (it exports the newer
+ * callback-based pthread_jit_write_with_callback_np instead).
+ *
+ * The no-op below is correct for an interpreter build, which never maps
+ * executable pages. It is NOT obviously correct for the iOS JIT build -- if
+ * that platform enforces per-thread W^X on MAP_JIT pages, writes to the code
+ * buffer will fault with these stubbed out. UTM sidesteps the missing libSystem
+ * call by toggling the APRR registers directly (their tcg-apple-jit.h).
+ */
+#if defined(__APPLE__) && TARGET_OS_OSX
 static inline void qemu_thread_jit_execute(void)
 {
     pthread_jit_write_protect_np(true);

@@ -45,10 +45,10 @@
 
 #if defined(__APPLE__) && (__MACH__)
 #include <sys/ioctl.h>
-#if defined(HAVE_HOST_BLOCK_DEVICE)
-#include <paths.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#if defined(HAVE_HOST_BLOCK_DEVICE)
+#include <paths.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOBSD.h>
 #include <IOKit/storage/IOMediaBSDClient.h>
@@ -2089,6 +2089,25 @@ static int handle_aiocb_write_zeroes_unmap(void *opaque)
         break;
     default:
         return ret;
+    }
+#endif
+
+#if defined(__APPLE__) && (__MACH__)
+    /*
+     * macOS: F_PUNCHHOLE deallocates and reads back as zeros (APFS, HFS+),
+     * for ranges aligned to the filesystem block; anything else falls
+     * through to writing zeroes. Without this every write-zeroes request
+     * with MAY_UNMAP filled the file densely (a NAND page store's block
+     * erases allocated the whole store).
+     */
+    if (!(aiocb->aio_type & QEMU_AIO_BLKDEV)) {
+        fpunchhole_t fpunchhole = {
+            .fp_flags = 0, .reserved = 0,
+            .fp_offset = aiocb->aio_offset, .fp_length = aiocb->aio_nbytes,
+        };
+        if (fcntl(s->fd, F_PUNCHHOLE, &fpunchhole) == 0) {
+            return 0;
+        }
     }
 #endif
 

@@ -1,0 +1,174 @@
+/*
+ * The ABI an iOS app uses to drive this emulator. Kept free of QEMU headers so
+ * the app can include it directly, and small enough that dlsym'ing each entry
+ * point by hand stays reasonable.
+ */
+
+#ifndef QEMU_IOS_UI_H
+#define QEMU_IOS_UI_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define QEMU_IOS_TOUCH_BEGIN  0
+#define QEMU_IOS_TOUCH_UPDATE 1
+#define QEMU_IOS_TOUCH_END    2
+
+#define QEMU_IOS_BUTTON_HOME        0
+#define QEMU_IOS_BUTTON_POWER       1
+#define QEMU_IOS_BUTTON_VOLUME_UP   2
+#define QEMU_IOS_BUTTON_VOLUME_DOWN 3
+
+/*
+ * Runs qemu_init(), the main loop and cleanup on the calling thread. Call it
+ * on a background pthread; it does not return until the VM stops. QEMU cannot
+ * be started twice in one process, so call it once per app launch.
+ */
+int qemu_ios_main(int argc, char **argv);
+
+/*
+ * What an app needs to know about a machine BEFORE it boots it: the board it
+ * is, how big a window to open, which way up, which controls it has. Static per
+ * machine, so it is valid before qemu_ios_main() and needs no lock. These are
+ * the emulator's facts; an app keeps no copy. Unknown name -> NULL.
+ */
+typedef struct {
+    const char *machine;        /* the -M name */
+    const char *board;          /* the board ID iBoot reports ("n72ap") */
+    int screen_width;           /* framebuffer pixels at default_orientation */
+    int screen_height;
+    int screen_scale;           /* points per pixel */
+    int default_orientation;    /* 0 portrait, 1 landscape */
+    bool has_cellular;          /* a modem: qemu_ios_ui_modem_* (baseband=on on iPhone-4/n88) */
+    bool has_usb_host;          /* usb-bus.0: -device usb-kbd, qemu_ios_ui_hardware_keyboard */
+    bool has_compass;           /* qemu_ios_ui_compass */
+    bool has_usb_charger;       /* qemu_ios_ui_usb_charger */
+    /* What panel=WxH accepts, as the panel scans: both sides >= panel_min, the
+     * width a multiple of panel_width_step, and at most panel_max_pixels pixels
+     * (0: no bound beyond the sides). */
+    int panel_min;
+    int panel_max_width;
+    int panel_max_height;
+    int panel_width_step;
+    int panel_max_pixels;
+} QemuIosDeviceInfo;
+
+const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine);
+/* The index-th machine this library runs, for listing; NULL past the last. */
+const QemuIosDeviceInfo *qemu_ios_device_info_at(int index);
+
+/* Called on the QEMU thread whenever a new frame is ready. Do not block. */
+typedef void (*qemu_ios_frame_cb)(void *opaque);
+
+/*
+ * Attach the app's display. Safe to call before the VM has a console; the
+ * listener is registered as soon as one exists.
+ */
+void qemu_ios_ui_attach(qemu_ios_frame_cb cb, void *opaque);
+
+/* Called by qemu_ios_main() itself once the VM exists; not for app use. */
+void qemu_ios_ui_vm_started(void);
+
+/*
+ * True only while the emulator is initialised and its main loop is running.
+ * Entry points that schedule bottom halves must check this: before qemu_init()
+ * the AioContext is NULL, and after the main loop returns nothing services it.
+ */
+bool qemu_ios_ui_ready(void);
+/* Session-latched host NAND I/O failure; thread-safe to poll from the UI. */
+bool qemu_ios_ui_storage_failed(void);
+
+/* True only after the guest writes the final PMU power-off command. */
+bool qemu_ios_ui_guest_shutdown_confirmed(void);
+/* Guest backlight state, independent of black framebuffer contents. */
+bool qemu_ios_ui_display_sleeping(void);
+/* The level the guest last programmed into the backlight driver, as the raw code that driver takes (the
+ * 2G's D1759 WLED 0x30, the 1G's PCF50633 LEDOUT 0x28, the A4's SWI level); 0 with the light off, -1 where
+ * the board's backlight is not decoded. API 2.1. */
+int qemu_ios_ui_backlight_level(void);
+void qemu_ios_ui_vm_stopped(void);
+
+/*
+ * The newest frame as tightly packed BGRA, WITHOUT a copy. `serial` is in-out:
+ * pass the last one you saw and this returns false if nothing is newer, which
+ * is the common case (the guest paints slower than the display refreshes).
+ * The pixels stay valid for a few more frames; never free them.
+ */
+bool qemu_ios_ui_frame(const void **pixels, int *width, int *height,
+                       uint64_t *serial);
+
+void qemu_ios_ui_frame_size(int *width, int *height);
+
+/*
+ * Touch position is normalised 0..1 over the guest screen, y downwards.
+ * One finger only for now -- see the note in qemu-ios-ui.c.
+ */
+void qemu_ios_ui_touch(int slot, int phase, double nx, double ny);
+
+/*
+ * A hardware button, pressed and released as separate calls. Home and power
+ * are the two that matter: an emulated device that has gone to sleep cannot be
+ * woken any other way.
+ */
+void qemu_ios_ui_button(int button, bool down);
+
+/* Generic button/single-touch sequences in virtual milliseconds, not wall
+ * time. Arrays have count elements; transitions must be balanced and ordered.
+ * A new submission cancels/releases the prior sequence. Manual input cancels
+ * it too; held manual input causes admission refusal. The immediate return
+ * means queued, not executed; poll the most recent ID for actual admission.
+ * Explicit cancellation releases only owned signals even while paused.
+ * This is host automation state and is not part of a guest snapshot. */
+#define QEMU_IOS_INPUT_UNKNOWN 0
+#define QEMU_IOS_INPUT_RUNNING 1
+#define QEMU_IOS_INPUT_DONE 2
+#define QEMU_IOS_INPUT_CANCELLED 3
+#define QEMU_IOS_INPUT_REJECTED 4
+bool qemu_ios_ui_input_sequence(uint64_t id, size_t count,
+    const int64_t *at_ms, const int32_t *kind, const int32_t *value,
+    const int32_t *phase, const double *x, const double *y);
+int qemu_ios_ui_input_sequence_status(uint64_t id);
+void qemu_ios_ui_input_sequence_cancel(uint64_t id);
+/* Internal: QEMU thread under BQL, before reset/quit/semantic powerdown. */
+void qemu_ios_ui_cancel_input(void);
+void qemu_ios_ui_manual_touch2(bool down);
+
+/*
+ * Whether the app is foreground. iOS kills a process that issues GL commands
+ * while it is not, so this must be cleared BEFORE the app is backgrounded --
+ * on willResignActive, not on didEnterBackground.
+ */
+void qemu_ios_set_foreground(bool foreground);
+
+/*
+ * Save the machine to `path`, so the next launch can restore instead of
+ * booting (`-incoming file:<path>`). Asynchronous: _status() distinguishes "not
+ * started", "in flight", "done" and "failed", and fills errbuf with the reason
+ * on failure. _save2 sets the status to RUNNING on the calling thread before
+ * scheduling the work, so a status() call that races ahead of the bottom half
+ * never reads a stale DONE. The guest is stopped as a side effect.
+ */
+typedef enum {
+    QEMU_IOS_SNAPSHOT_IDLE = 0,
+    QEMU_IOS_SNAPSHOT_RUNNING = 1,
+    QEMU_IOS_SNAPSHOT_DONE = 2,
+    QEMU_IOS_SNAPSHOT_FAILED = 3,
+} QemuIosSnapshotStatus;
+
+void qemu_ios_snapshot_save2(const char *path);
+QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errlen);
+
+/* Resume the vCPU after a completed save, without touching foreground state
+ * (qemu_ios_set_foreground(true) is the only other thing that restarts it). */
+void qemu_ios_snapshot_resume(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* QEMU_IOS_UI_H */

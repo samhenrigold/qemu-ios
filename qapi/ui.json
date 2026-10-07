@@ -1315,6 +1315,108 @@
             'events' : [ 'InputEvent' ] } }
 
 ##
+# @InputSequenceEventKind:
+# @key: Ordered QEMU keycode transition.
+# @touch: Absolute single-finger transition.
+#
+# Since: 9.2
+##
+{ 'enum': 'InputSequenceEventKind', 'data': [ 'key', 'touch' ] }
+##
+# @InputSequenceTouchPhase:
+# @begin: Finger down.
+# @update: Finger motion.
+# @end: Finger up.
+#
+# Since: 9.2
+##
+{ 'enum': 'InputSequenceTouchPhase', 'data': [ 'begin', 'update', 'end' ] }
+##
+# @InputSequenceKey:
+# @key: QEMU keycode.
+# @down: Press or release.
+#
+# Since: 9.2
+##
+{ 'struct': 'InputSequenceKey', 'data': { 'key': 'QKeyCode', 'down': 'bool' } }
+##
+# @InputSequenceTouch:
+# @phase: Finger transition.
+# @x: Normalized panel x, zero to one.
+# @y: Normalized panel y, zero to one.
+#
+# Since: 9.2
+##
+{ 'struct': 'InputSequenceTouch', 'data': {
+    'phase': 'InputSequenceTouchPhase', 'x': 'number', 'y': 'number' } }
+##
+# @InputSequenceEvent:
+# @type: Physical input kind.
+# @at-ms: Nondecreasing virtual milliseconds after admission, at most
+#     600000.
+#
+# Since: 9.2
+##
+{ 'union': 'InputSequenceEvent',
+  'base': { 'type': 'InputSequenceEventKind', 'at-ms': 'int' },
+  'discriminator': 'type',
+  'data': { 'key': 'InputSequenceKey', 'touch': 'InputSequenceTouch' } }
+##
+# @InputSequenceStatus:
+# @unknown: The queried ID is not the latest submitted sequence.
+# @running: Accepted and scheduled in guest time.
+# @completed: Every input was delivered; this does not imply guest
+#     shutdown.
+# @cancelled: Owned keys/finger were released before completion.
+#
+# Since: 9.2
+##
+{ 'enum': 'InputSequenceStatus', 'data': [ 'unknown', 'running', 'completed', 'cancelled' ] }
+##
+# @input-send-sequence:
+# @id: Nonzero caller-unique sequence ID.
+# @device: Console device, defaults to first console.
+# @head: Display head, defaults to zero.
+# @events: One to 256 balanced key/finger transitions in virtual time.
+#
+# Replaces and releases a previous sequence.  Paused execution does
+# not advance events.  Cancellation/reset releases only owned signals,
+# even while paused.  Host automation is not migrated; reset cancels
+# it.  Callers must cancel before saving a guest snapshot.
+#
+#
+# Since: 9.2
+##
+{ 'command': 'input-send-sequence', 'data': {
+    'id': 'uint64', '*device': 'str', '*head': 'int',
+    'events': [ 'InputSequenceEvent' ] } }
+##
+# @InputSequenceInfo:
+# @status: Input delivery state.
+#
+# Since: 9.2
+##
+{ 'struct': 'InputSequenceInfo', 'data': { 'status': 'InputSequenceStatus' } }
+##
+# @query-input-sequence:
+# @id: Caller-unique sequence ID.
+#
+# Returns: Input delivery state, not an OS or power-off verdict.
+#
+# Since: 9.2
+##
+{ 'command': 'query-input-sequence', 'data': { 'id': 'uint64' },
+  'returns': 'InputSequenceInfo' }
+##
+# @input-cancel-sequence:
+# @id: Sequence ID to cancel; other IDs do not affect current
+#     ownership.
+#
+# Since: 9.2
+##
+{ 'command': 'input-cancel-sequence', 'data': { 'id': 'uint64' } }
+
+##
 # @DisplayGTK:
 #
 # GTK display options.
