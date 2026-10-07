@@ -243,6 +243,7 @@ struct S5L8920MachineState {
     Pcf50633State *pmu;
     LIS302DLState *accel;
     char *kboot_path;
+    uint32_t panel_w, panel_h;           /* "panel=WxH", issue #21; 0 = the 320x480 panel */
     char *nand_path;
     char *nand_overlay_path;
     char *nor_path;
@@ -869,6 +870,10 @@ static void s5l8920_init(MachineState *machine)
     /* kboot's vram (the boot logo, then the kernel console): where iBoot leaves window 1 */
     qdev_prop_set_uint32(dev, "fb-base", 0x4f700000);
     qdev_prop_set_bit(dev, "ctrl-readback", true);
+    if (s->panel_w) {
+        qdev_prop_set_uint32(dev, "panel-width", s->panel_w);
+        qdev_prop_set_uint32(dev, "panel-height", s->panel_h);
+    }
     IPOD_TOUCH_LCD(dev)->sysmem = sysmem;
     IPOD_TOUCH_LCD(dev)->mt = s->mt;
     memory_region_add_subregion(sysmem, S5L8920_CLCD_BASE, &IPOD_TOUCH_LCD(dev)->iomem);
@@ -1354,6 +1359,32 @@ static void s5l8920_set_imei(Object *obj, const char *value, Error **errp)
     s->imei = g_strdup(value);
 }
 
+static char *s5l8920_get_panel(Object *obj, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    return s->panel_w ? g_strdup_printf("%ux%u", s->panel_w, s->panel_h) : g_strdup("");
+}
+
+/* "panel=WxH": a panel of another size than the 320x480 one, as on the iPod 2G, whose M2 CLCD this is
+ * (its window keeps 9 bits of height). */
+static void s5l8920_set_panel(Object *obj, const char *value, Error **errp)
+{
+    S5L8920MachineState *s = S5L8920_MACHINE(obj);
+    unsigned w, h;
+    char end;
+
+    if (s->gpio) {
+        error_setg(errp, "panel must be set before the machine starts");
+        return;
+    }
+    if (sscanf(value, "%ux%u%c", &w, &h, &end) != 2 || w < 64 || h < 64 || w > 1024 || h > 511 || (w & 1)) {
+        error_setg(errp, "panel must be WxH (even width 64..1024, height 64..511)");
+        return;
+    }
+    s->panel_w = w;
+    s->panel_h = h;
+}
+
 static bool s5l8920_get_ring_switch(Object *obj, Error **errp)
 {
     return S5L8920_MACHINE(obj)->ring_silent;
@@ -1448,6 +1479,7 @@ static void s5l8920_class_init(ObjectClass *klass, void *data)
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
     object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
     object_class_property_add_bool(klass, "ring-switch", s5l8920_get_ring_switch, s5l8920_set_ring_switch);
+    object_class_property_add_str(klass, "panel", s5l8920_get_panel, s5l8920_set_panel);
     object_class_property_set_description(klass, "ring-switch",
         "the side switch (buttons/ringerab, iPhone): on = silent, off = ring (default); settable at run time");
     object_class_property_set_description(klass, "baseband",
