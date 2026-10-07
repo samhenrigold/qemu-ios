@@ -679,8 +679,8 @@ static void s5l8920_init(MachineState *machine)
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
         if (s->wifi && !qemu_find_netdev("wifi0")) {
-            /* no backend given: NAT it */
-            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0", false);
+            /* no backend given: NAT it, off the Mac's LAN (lan=off) */
+            QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"), "type=user,id=wifi0,lan=off", false);
             Error *err = NULL;
             if (o) {
                 netdev_add(o, &err);
