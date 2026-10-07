@@ -38,6 +38,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/un.h>
 #include <netdb.h>
 
 static bool tcp_usb_debug(void)
@@ -468,6 +469,23 @@ int tcp_usb_connect(tcp_usb_state_t *_state, const char *_host, uint32_t _port)
 	char port[16];
 	int fd;
 
+	if (_host[0] == '/') {   /* the bridge's Unix socket */
+		struct sockaddr_un su = { .sun_family = AF_UNIX };
+		if (strlen(_host) >= sizeof(su.sun_path)) {
+			return -ENAMETOOLONG;
+		}
+		strcpy(su.sun_path, _host);
+		fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (fd < 0) {
+			return -EIO;
+		}
+		if (connect(fd, (struct sockaddr *)&su, sizeof(su)) < 0) {
+			close(fd);
+			return -EIO;
+		}
+		goto connected;
+	}
+
 	snprintf(port, sizeof(port), "%u", _port);
 	if (getaddrinfo(_host, port, &hints, &res) != 0 || !res) {
 		return -EIO;
@@ -489,6 +507,8 @@ int tcp_usb_connect(tcp_usb_state_t *_state, const char *_host, uint32_t _port)
 	/* Every control transfer is a round trip; Nagle would add 40ms to each. */
 	int one = 1;
 	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+connected:
 
 	_state->socket = fd;
 	_state->closed = 0;

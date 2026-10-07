@@ -514,10 +514,17 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 }
 
 /* "host:port" of the host bridge (usbmuxd-qemu); the port defaults to 1235,
- * an empty host to 127.0.0.1. NULL or "" leaves the link unconfigured. */
+ * an empty host to 127.0.0.1. An absolute path is the bridge's Unix socket.
+ * NULL or "" leaves the link unconfigured. */
 void synopsys_usb_set_tcp_addr(synopsys_usb_state *state, const char *spec)
 {
 	if (!spec || !*spec) {
+		return;
+	}
+	if (spec[0] == '/') {
+		g_free(state->server_host);
+		state->server_host = g_strdup(spec);
+		state->server_port = 0;
 		return;
 	}
 	g_autofree char *dup = g_strdup(spec);
