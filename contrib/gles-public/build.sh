@@ -10,8 +10,8 @@ export LEGACY_LINK=1 ARMV6_SDK="${ARMV6_SDK:-$HOME/Developer/ipod2g-re/OldSDK/iP
 OUT="${1:-$HERE/OpenGLES}"
 GEN="$(mktemp -d /tmp/gles-public.XXXXXX)"
 trap 'rm -rf "$GEN"' EXIT
-python3 "$HERE/../it-gles/genstubs.py" "$HERE/../it-gles/gles_stubs.h" >/dev/null
-python3 "$HERE/../it-gles/gles2x_exports.py" gen "$HERE/opengles.exports" \
+sh "$HERE/../it-gles/genstubs.sh" "$HERE/../it-gles/gles_stubs.h"
+sh "$HERE/../it-gles/gles-exports.sh" "$HERE/opengles.exports" \
     "$HERE/../../include/hw/arm/guest-services/gles-names.h" "$GEN"
 # What the EAGL classes need beyond libSystem, bound two-level from the library every firmware has it in (NSObject
 # and the constant-string class in CoreFoundation, the messengers in libobjc), so a bare dlopen resolves them as it

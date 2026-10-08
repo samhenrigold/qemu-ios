@@ -35,6 +35,6 @@ needed. The source remains a reference for the 3.1.3 orientation semantics.
 
 ## Verification
 
-The native agent replacement is covered by `tests/ipod/test_agent_guest.py
---orientation`: a disposable landscape Harness reports landscape and Home
+The native agent replacement was covered by the retired `tests/ipod/test_agent_guest.py
+--orientation` (see git history at 5508b504b8): a disposable landscape Harness reports landscape and Home
 returns to portrait. The older streaming helper is retained for legacy images.

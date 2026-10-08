@@ -20,24 +20,18 @@ mkdir -p "$OUT/src/contrib" "$OUT/src/include/hw/arm/guest-services" "$OUT/src/t
 COMPONENTS="it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt it-orientation
             ipad1-guest appsync it-boot"
 # ipad1-guest also compiles these sources; it-gles/gles-public/it-boot read their neighbors
-for c in $(python3 "$HERE/build_inputs.py" --components); do
+for c in $(bash "$HERE/build-inputs.sh" --components); do
     cp -R "$SRC/contrib/$c" "$OUT/src/contrib/"
 done
 # the GL shims and the host share the name table (the wire ids)
 cp "$SRC/include/hw/arm/guest-services/gles-names.h" "$OUT/src/include/hw/arm/guest-services/"
 cp -R "$SRC/tests/guest-package" "$OUT/src/tests/"
 # binaries checked in or left by earlier builds are not inputs: only what builds here ships
-python3 - "$OUT/src" <<'PY'
-import os, sys
-for d, _, names in os.walk(sys.argv[1]):
-    for n in names:
-        p = os.path.join(d, n)
-        with open(p, "rb") as f:
-            if f.read(4) in (b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xcf\xfa\xed\xfe"):
-                os.unlink(p)
-PY
+find "$OUT/src" -type f -print0 | while IFS= read -r -d '' f; do
+    case "$(od -An -tx1 -N4 "$f" | tr -d ' \n')" in cefaedfe|cafebabe|cffaedfe) rm -f "$f" ;; esac
+done
 # A recipe that fails after its shipped payloads (a broken probe) only warns:
-# mkpkg.py refuses any payload that did not build.
+# mkpkg refuses any payload that did not build.
 for c in $COMPONENTS; do
     echo "building $c"
     # One armv6 helper ABI for 2.x through 4.x. These recipes only build
@@ -58,4 +52,8 @@ fi
 if ! LEGACY_LINK=1 bash "$OUT/src/contrib/it-prefs/build-ipod.sh" >"$OUT/logs/it-prefs-ipod.log" 2>&1; then
     echo "guest-package: warning: it-prefs/build-ipod.sh failed (log: $OUT/logs/it-prefs-ipod.log)" >&2
 fi
-python3 "$HERE/mkpkg.py" build "$OUT/src" "$OUT"
+# mkpkg (mkpkg.c), a host tool built here for this build
+mkdir -p "$OUT/tools"
+xcrun clang -O2 -Wall -Werror -o "$OUT/tools/mkpkg" "$HERE/mkpkg.c" -lz -framework CoreFoundation
+"$OUT/tools/mkpkg" selfcheck "$OUT/src"
+"$OUT/tools/mkpkg" build "$OUT/src" "$OUT"

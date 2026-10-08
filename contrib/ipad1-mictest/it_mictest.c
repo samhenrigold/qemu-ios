@@ -124,7 +124,7 @@ static double now(void)
 }
 
 /* No arguments: the toolchain links no crt1, so main is entered straight from
- * dyld with argc/argv never set up (see armv6-toolchain/mkold.py). */
+ * dyld with argc/argv never set up (see armv6-toolchain/machotool.c). */
 #define DELAY_S  45
 #define RECORD_S 10
 

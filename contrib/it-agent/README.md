@@ -12,8 +12,7 @@ performs the file changes; its documented ownership step is required.
 Requests are `id operation arguments\n<binary body>` on the guest wire, with a
 base64 body in QOM's `agent-request` string. `agent-result` returns
 `id status\n<base64 body>`. `agent-cancel` accepts an id. `agent-status` is
-absent/alive/stale. The QMP helper exposes `agent(q, op, args, body)` and the CLI
-`python3 imgtools/itqmp.py PORT agent ping`.
+absent/alive/stale.
 
 `ping` answers `it_agent v3\nops <space-separated op list>\n` (v2 the same without
 `putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
@@ -67,8 +66,8 @@ Command service starts immediately; only the clipboard waits 40 seconds for
 UIKit readiness. The agent corrects the guest wall clock when drift exceeds two seconds. It touches receive-buffer pages before host
 copies, because debug memory writes cannot fault in iOS demand-zero pages.
 
-Tests: `test_agent_proto.py` and `test_agent_ops.py` exercise production C under
-ASan/UBSan. `test_agent_guest.py` boots a fresh native overlay and verifies binary
+Tests: `tests/slice/ipod-agent-proto.c` and `ipod-agent-ops.c` exercise production C under
+ASan/UBSan. `test_agent_guest.py` (retired; see git history at 5508b504b8) booted a fresh native overlay and verified binary
 transfers, shell-free spawn/sync/chown/unlink/dlicon, clock correction and SpringBoard operations.
 `it_typein.dylib` is inherited by SpringBoard-spawned UIKit apps. It receives
 `type` (UTF-8 body), `backspace`, and `uidump` requests routed by the daemon to the
@@ -79,8 +78,8 @@ or cross-process UIKit access. Bulk text uses the focused delegate's insertText:
 method; physical keys use UIKeyboardImpl's one-key path. A non-consuming key
 check avoids polling SpringBoardServices while idle.
 
-Native acceptance covers Notes and an installed Harness UITextField:
-`python3 tests/ipod/test_agent_guest.py --typing`. Snapshot-load rekeying and
+Native acceptance covered Notes and an installed Harness UITextField
+(the retired `test_agent_guest.py --typing`). Snapshot-load rekeying and
 existing-device rollout are covered by native acceptance and the app’s idempotent
 media upgrade. SBS focus queries run on a worker thread: synchronous queries on
 SpringBoard’s own main thread deadlock its service. UIKit mutations stay on the
@@ -98,8 +97,8 @@ send/receive waits to 250 ms each. A private reply port is destroyed on every
 path, including timeout. Other firmware stubs fail with ENOSYS rather than
 assuming this ABI. The host retries without changing orientation on failure.
 
-Run `python3 tests/ipod/test_agent_orientation.py` for the bounded ABI check;
-`test_agent_guest.py --orientation --base-nand .../nand-agent-v4` exercises a
+`tests/slice/ipod-agent-orientation.c` is the bounded ABI check; the retired
+`test_agent_guest.py --orientation` exercised a
 landscape Harness, Home, a stopped SpringBoard and respring on disposable media.
 
 The exported armv6 helpers use the existing legacy linker mode: classic dyld

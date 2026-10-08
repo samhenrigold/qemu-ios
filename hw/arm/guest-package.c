@@ -1,7 +1,7 @@
 /*
  * Guest-package delivery, shared by the iPod Touch 2G and iPad 1 machines.
  * See include/hw/arm/guest-package.h. The core (guest_pkg_op and the report
- * state) needs only glib, so tests/guest-package/test_guest_package.py builds
+ * state) needs only glib, so tests/guest-package/guest-package-test.sh builds
  * it on the host with GUEST_PKG_CORE_ONLY.
  */
 #include "qemu/osdep.h"

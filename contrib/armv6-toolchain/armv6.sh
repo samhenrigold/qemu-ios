@@ -13,11 +13,11 @@
 #
 # GUEST_ARCH=armv7 retargets the same pipeline at the iPad 1 (Cortex-A8, iOS
 # 3.2.2): real armv7 code, no subtype round-trip, cpusubtype 9. Point ARMV6_SDK
-# at the 3.2 SDK then. mkold.py's LC_MAIN->LC_UNIXTHREAD rewrite is what lets
+# at the 3.2 SDK then. machotool mkold's LC_MAIN->LC_UNIXTHREAD rewrite is what lets
 # these be executables at all on 3.2 dyld (docs/ipad1/guest-services.md).
 #
 # LEGACY_LINK=1 makes link6 emit what 2.x dyld takes as well: a non-PIE link
-# whose LC_DYLD_INFO_ONLY mkold.py --legacy proves redundant and drops; executables
+# whose LC_DYLD_INFO_ONLY machotool mkold --legacy proves redundant and drops; executables
 # also get crt1old.c, the start routine 1.x libSystem needs (it does not initialize itself).
 set -eu
 
@@ -26,6 +26,24 @@ ARMV6_SDK="${ARMV6_SDK:-${HOME}/Downloads/OldSDK/iPhoneOS3.1.3.sdk}"
 GUEST_API_VERSION="${GUEST_API_VERSION:-5.0}"
 case "$GUEST_API_VERSION" in 2.0|5.0) ;; *) echo "unsupported compiler API target: $GUEST_API_VERSION" >&2; return 1 2>/dev/null || exit 1 ;; esac
 ARMV6_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# machotool (machotool.c: subtype, mkold, tbd), built with the host compiler on first use and cached
+# by the source's hash. It is built under a temporary name and moved into place, so parallel builds
+# never run a half-written binary.
+machotool() {
+    local src="$ARMV6_HERE/machotool.c" tool tmp
+    tool="${TMPDIR:-/tmp}"
+    tool="${tool%/}/armv6-machotool-$(shasum -a 256 "$src" | cut -c1-12)"
+    if [ ! -x "$tool" ]; then
+        tmp="$(mktemp "$tool.XXXXXX")" || return 1
+        if ! xcrun clang -std=c11 -O2 -o "$tmp" "$src"; then
+            rm -f "$tmp"
+            return 1
+        fi
+        mv -f "$tmp" "$tool"
+    fi
+    "$tool" "$@"
+}
 
 cc6() {
     # -marm because clang defaults to Thumb for this target and would emit
@@ -53,7 +71,7 @@ cc6() {
     rm -f "$2.cclog"
     # ld rejects -arch armv6 outright, so present the object as armv7 and put
     # the subtype back after linking.
-    [ "$GUEST_ARCH" = armv7 ] || python3 "$ARMV6_HERE/subtype.py" "$2" 9 >/dev/null
+    [ "$GUEST_ARCH" = armv7 ] || machotool subtype "$2" 9 >/dev/null
 }
 
 link6() {
@@ -65,7 +83,7 @@ link6() {
     # checked rather than swallowed. An earlier version piped straight into
     # `grep ... || true`, which hid a genuine link error ("-framework OpenGLES
     # ... built for 'unknown'" is fatal, unlike the same mismatch on -lSystem)
-    # and surfaced it as a confusing "no such file" from mkold.py two steps
+    # and surfaced it as a confusing "no such file" from machotool mkold two steps
     # later. A failed link must fail here.
     rm -f "$out"
     legacy=()
@@ -88,7 +106,7 @@ link6() {
     fi
     grep -v "built for 'unknown'" "$out.ldlog" >&2 || true
     rm -f "$out.ldlog" "$out.crt1old.o"
-    python3 "$ARMV6_HERE/mkold.py" "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)" \
+    machotool mkold "$out" --subtype "$([ "$GUEST_ARCH" = armv7 ] && echo 9 || echo 6)" \
         $([ "${LEGACY_LINK:-0}" = 1 ] && echo --legacy)
 }
 

@@ -1,48 +1,24 @@
 #!/bin/bash
+# Build the test harness app and its installable IPA: build.sh [--out DIR] (default contrib/it-harness/build).
+# LightTouchMac's `sessions single` installs build/Harness.ipa from the pinned checkout.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FLAVOR=full
-OUT=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --flavor) FLAVOR="$2"; shift 2 ;;
-        --out) OUT="$2"; shift 2 ;;
-        *) echo "usage: build.sh [--flavor full|ios2] [--out DIR]" >&2; exit 1 ;;
-    esac
-done
-case "$FLAVOR" in full|ios2) ;; *) echo "unsupported fixture flavor: $FLAVOR" >&2; exit 1 ;; esac
-if [ "$FLAVOR" = ios2 ]; then
-    : "${ARMV6_SDK:?ios2 requires an explicitly supplied SDK 2.0 path}"
-    GUEST_API_VERSION=2.0; LEGACY_LINK=1; GUEST_ARCH=armv6
-fi
+OUT="$HERE/build"
+case "${1:-}" in
+    --out) OUT="$2" ;;
+    "") ;;
+    *) echo "usage: build.sh [--out DIR]" >&2; exit 1 ;;
+esac
 . "$HERE/../armv6-toolchain/armv6.sh"
 command -v ldid >/dev/null || { echo 'ldid is required for an installable IPA' >&2; exit 1; }
 command -v ffmpeg >/dev/null || { echo 'ffmpeg is required for the bundled fixtures' >&2; exit 1; }
-if [ -z "$OUT" ]; then
-    OUT="$HERE/build"
-    [ "$FLAVOR" != ios2 ] || OUT="$HERE/build-ios2"
-fi
-flags=()
-if [ "$FLAVOR" = ios2 ]; then
-    flags=(-DHARNESS_IOS2_PCM -F"$ARMV6_SDK/System/Library/Frameworks")
-    mkdir -p "$OUT"
-    LINK_STUB_DIR="$(mktemp -d "$OUT/link-stub.XXXXXX")"
-    trap 'rm -rf "$LINK_STUB_DIR"' EXIT
-    python3 "$HERE/audit.py" unused --sdk "$ARMV6_SDK" --sdk-version 2.0 --copy-link-stub "$LINK_STUB_DIR/libSystem.dylib"
-    LEGACY_SYSTEM_STUB="$LINK_STUB_DIR"
-fi
 APP="$OUT/Payload/Harness.app"
 mkdir -p "$APP"
 cc6 "$HERE/harness.c" "$OUT/harness.o" -idirafter "$(xcrun clang -print-resource-dir)/include" \
-    ${flags[@]+"${flags[@]}"} -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-cast-function-type-mismatch
+    -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-cast-function-type-mismatch
 link6 -execute "$APP/Harness" "$OUT/harness.o"
 chmod 755 "$APP/Harness"
 ldid -S "$APP/Harness"
-# Keep the smoke run's bridge in the build directory; never replace a user's
-# prebuilt helper or modify the firmware base image.
-python3 "$HERE/../it-gles/genstubs.py" "$OUT/gles_stubs.h"
-cc6 "$HERE/../it-gles/mbxshim.c" "$OUT/mbxshim.o" -I"$OUT" -include "$OUT/gles_stubs.h"
-link6 -bundle "$OUT/MBXGLEngine" "$OUT/mbxshim.o"
 ffmpeg -hide_banner -loglevel error -y -f lavfi \
     -i 'aevalsrc=0.2*sin(2*PI*440*t)|0.2*sin(2*PI*880*t):s=44100:d=6' \
     -c:a pcm_s16le "$APP/stereo.wav"
@@ -58,8 +34,52 @@ for codec in h264 mpeg4; do
     ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=size=320x240:rate=30:duration=6' \
         -i "$APP/stereo.wav" "${flags[@]}" -c:a aac -b:a 96k -shortest -movflags +faststart "$APP/$codec.mp4"
 done
-python3 "$HERE/package.py" --flavor "$FLAVOR" "$OUT"
-python3 "$HERE/package.py" --check "$OUT/Harness.ipa"
-python3 "$HERE/audit.py" "$APP/Harness" --sdk "$ARMV6_SDK" $([ "$FLAVOR" = ios2 ] && echo --legacy) > "$OUT/binary-audit.json"
-# Copied SDK link stub is a temporary build input, never part of the IPA.
+cat > "$APP/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Test Harness</string>
+	<key>CFBundleExecutable</key>
+	<string>Harness</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.qemuios.harness</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Harness</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>DTPlatformName</key>
+	<string>iphoneos</string>
+	<key>DTSDKName</key>
+	<string>iphoneos3.1.3</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>3.1</string>
+	<key>UIStatusBarHidden</key>
+	<false/>
+</dict>
+</plist>
+PLIST
+# An armv6 executable with the 2010 entry point (LC_UNIXTHREAD, no LC_MAIN) and a signature.
+cmds="$(xcrun otool -l "$APP/Harness" | awk '$1 == "cmd" { print $2 }')"
+xcrun otool -h "$APP/Harness" | awk 'NR == 4 && !($2 == 12 && $3 == 6 && $5 == 2) { exit 1 }' ||
+    { echo "Harness is not an armv6 executable" >&2; exit 1; }
+for want in LC_UNIXTHREAD LC_CODE_SIGNATURE; do
+    grep -qx "$want" <<<"$cmds" || { echo "Harness lacks $want" >&2; exit 1; }
+done
+! grep -qx LC_MAIN <<<"$cmds" || { echo "Harness has LC_MAIN (old dyld refuses it)" >&2; exit 1; }
+rm -f "$OUT/Harness.ipa"
+(cd "$OUT" && zip -q -X Harness.ipa Payload/Harness.app/Harness Payload/Harness.app/Info.plist \
+    Payload/Harness.app/{stereo.wav,aac.m4a,tone.mp3,lossless.m4a,h264.mp4,mpeg4.mp4})
+rm -f "$OUT/harness.o"
 echo "Installable app: $OUT/Harness.ipa"

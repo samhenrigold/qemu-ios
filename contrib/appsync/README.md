@@ -17,8 +17,8 @@ hook, or third-party package installation is needed.
 
 The helpers remain automatic preparation artifacts. Rebuild devices to get this
 behavior; an existing image may still contain its earlier shared-cache patch.
-The historical `imgtools/appsync_cachepatch.py` inspector remains available for
-research, but neither preparation pipeline invokes it for AppSync.
+The historical `imgtools/appsync_cachepatch.py` inspector is retired (see git
+history at 5508b504b8); preparation never invoked it for AppSync.
 
 ## Hook behavior
 
@@ -38,7 +38,7 @@ The original-first metadata and selective certificate fallback follow AppSync
 Unified's behavior; see [prior-art.md](prior-art.md). Its richer metadata
 synthesis is gated for iOS 8+, outside this project's current supported range.
 The embedded certificate in appsync_cert.h is used only for the legacy fallback;
-`build.sh --regen-cert` regenerates it. The fallback compares its bytes exactly.
+The fallback compares its bytes exactly.
 
 ## Build and check
 
@@ -53,10 +53,8 @@ the 3.2 SDK. Both link with undefined dynamic lookup for host CF/Security/MIS
 symbols and are ldid-signed. The explicit launcher ARM entry trampoline accepts
 old dyld's argc/argv stack convention.
 
-The export script builds/stages both helpers. FirmwareKit and the Python device
-bakers insert them into the appropriate service. For a historical iPod image,
-`patch-appsync-dylib.sh` can restore standalone stock installd/SpringBoard from
-STOCK_ROOT, but does not undo an already patched shared cache.
+The export script builds/stages both helpers. FirmwareKit inserts them into the
+appropriate service.
 
 The native test uses real CoreFoundation objects under ASan/UBSan to check
 original metadata preservation, Copy ownership, exact certificate scope, and

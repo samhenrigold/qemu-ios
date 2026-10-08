@@ -18,8 +18,8 @@
  *
  * Generated once by contrib/gles-public/gligen.py --from-tsvs from the 7E18, 7B500 and 8C148
  * dispatch tables (docs/ipod, docs/ipad1 gli-dispatch-*.tsv); hand-edited since. After an edit
- * run gligen.py --stamp (GLES_NAMES_VERSION is the rows' CRC, carried in the shim's hello) and
- * --check.
+ * run gligen.sh --stamp (GLES_NAMES_VERSION is the rows' CRC, carried in the shim's hello),
+ * then gligen.sh with no argument to check.
  */
 #ifndef GLES_NAMES_VERSION
 #define GLES_NAMES_VERSION 0xad3b3412

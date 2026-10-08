@@ -1,6 +1,6 @@
 // A real Apple cert (iPhoneActivation, from the 3.2.2 rootfs), so iOS 3.2.2's
 // SecCertificateCreateWithData parses it (a synthetic openssl DER does not).
-// installd only reads its subject summary. Regenerate with build.sh --regen-cert.
+// installd only reads its subject summary.
 static const unsigned char kAppSyncCertDER[] = {
     0x30, 0x82, 0x03, 0x67, 0x30, 0x82, 0x02, 0x4f, 0xa0, 0x03, 0x02, 0x01,
     0x02, 0x02, 0x01, 0x02, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,

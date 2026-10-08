@@ -56,8 +56,8 @@ static void on_error(id self, SEL _cmd, id manager, id error)
 #define RUN_SECONDS     150
 
 /*
- * mkold.py points LC_UNIXTHREAD straight at _main: no crt1, so no argc/argv
- * and main must not return (see contrib/armv6-toolchain/mkold.py).
+ * machotool mkold points LC_UNIXTHREAD straight at _main: no crt1, so no argc/argv
+ * and main must not return (see contrib/armv6-toolchain/machotool.c).
  */
 int main(void)
 {

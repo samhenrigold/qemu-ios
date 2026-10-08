@@ -8,7 +8,7 @@
 # every single build with half a gigabyte of hashing. They change roughly never,
 # so they are pushed once and then left alone.
 #
-# The NAND goes over as the packed single-file image (imgtools/pack_nand.py):
+# The NAND goes over as the packed single-file image (imgtools/pack_nand.py, retired with the Python tools: check out 5508b504b8 to run it):
 # copying 128,000 tiny files to a phone is slow enough to look hung, and the
 # emulator reads the packed form ~27x faster anyway.
 set -eu
@@ -23,16 +23,13 @@ if [ $# -ge 1 ]; then
     DEVICE="$1"
 else
     DEVICE="$(xcrun devicectl list devices --quiet --json-output /dev/stdout 2>/dev/null |
-        python3 -c 'import json,sys
-d = json.load(sys.stdin)["result"]["devices"]
-paired = [x for x in d if x.get("connectionProperties", {}).get("pairingState") == "paired"]
-print(paired[0]["hardwareProperties"]["udid"] if paired else "")')"
+        jq -r '[.result.devices[] | select(.connectionProperties.pairingState? == "paired")][0].hardwareProperties.udid // ""')"
 fi
 [ -n "$DEVICE" ] || { echo "no paired device found; pass one explicitly" >&2; exit 1; }
 
 if [ ! -f "$PACKED" ]; then
     echo "no packed NAND at $PACKED" >&2
-    echo "make one:  imgtools/pack_nand.py $F/nand-grow7g $PACKED" >&2
+    echo "make one with imgtools/pack_nand.py from 5508b504b8: $F/nand-grow7g $PACKED" >&2
     exit 1
 fi
 

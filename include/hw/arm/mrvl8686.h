@@ -15,7 +15,7 @@
  * Layouts are the ones AppleMRVL868x parses (they match Linux libertas).
  *
  * Mrvl8686Card is the whole protocol state and is plain C, so the host tests
- * (tests/ipod/test_mrvl8686.py) compile the core against it directly.
+ * (tests/slice/ipod-mrvl8686.c) compile the core against it directly.
  */
 
 #include <stdint.h>

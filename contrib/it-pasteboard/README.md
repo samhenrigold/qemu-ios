@@ -92,27 +92,19 @@ It is already baked into `nand-grow7g` (what `run-ios3.sh` boots by default) and
 An ssh install onto a running device works too, but ssh writes into the **NAND
 overlay**, and the overlay is thrown away — that is how this feature came to be
 "verified working" and yet dead on every image anyone actually boots. To put it
-in an image, three steps, in this order:
-
-    cp -Rc <image> <image>-pb                     # COW clone; never edit in place
-    imgtools/editimg.py --nand <image>-pb --blocks <N> --script install.sh
-    imgtools/setowner.py --nand <image>-pb \
-        /usr/local:0:0:755 /usr/local/bin:0:0:755 \
-        /usr/local/bin/it_pbd:0:0:755 \
-        /System/Library/LaunchDaemons/com.qemu.it-pbd.plist:0:0:644
-
-`--blocks` is the volume size: 1835008 for the 7 GiB images, 128000 for the
-500 MB ones. `install.sh` just copies `it_pbd` to `/usr/local/bin` and the plist
+in an image it went through `imgtools/editimg.py` and `imgtools/setowner.py`
+(retired; see git history at 5508b504b8; devices are now made by LightTouchMac's
+`firmwarekit create`). `install.sh` just copies `it_pbd` to `/usr/local/bin` and the plist
 to `/System/Library/LaunchDaemons`, both `chmod`ped.
 
 Three ways this silently produces a dead daemon, all of them hit:
 
 1. **Ownership.** launchd ignores a plist it does not see as root-owned, without
-   a word in any log. You cannot fix it inside the `editimg.py` script: that
+   a word in any log. It could not be fixed inside the `editimg.py` script: that
    mount is `noowners` and unprivileged, so `chown` fails outright, and worse,
    `ls -ln` there reports *every* file as 501:20 — Apple's own included — so the
    listing cannot tell you either way. Files created through it land as **99:99**
-   on disk. `setowner.py` edits the HFS+ catalog directly and is the fix.
+   on disk. `setowner.py` edited the HFS+ catalog directly and was the fix.
 2. **The code-signing gate.** `it_pbd` is our own armv6 binary and 3.1.3's kernel
    will not exec anything that is not Apple-signed. It needs
    `amfi_allow_any_signature=1 cs_enforcement_disable=1` to reach the kernel —

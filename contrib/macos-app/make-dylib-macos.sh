@@ -20,12 +20,8 @@ cd "$BUILD"
 DEP_CFLAGS="$(pkg-config --cflags glib-2.0 pixman-1)"
 # Use the build's own compiler and host CPU, so a cross-compiled x86_64 build
 # (the Intel slice of a universal app) compiles these for the same target.
-read -r HOST_CPU CC_LINE < <(python3 -c '
-import json, shlex
-info = "meson-info/intro-"
-cpu = json.load(open(info + "machines.json"))["host"]["cpu_family"]
-print(cpu, shlex.join(json.load(open(info + "compilers.json"))["host"]["c"]["exelist"]))')
-eval "CC_ARGV=($CC_LINE)"
+HOST_CPU="$(jq -r .host.cpu_family meson-info/intro-machines.json)"
+eval "CC_ARGV=($(jq -r '.host.c.exelist | @sh' meson-info/intro-compilers.json))"
 case "$HOST_CPU" in
     aarch64) TCG_HOST=aarch64 ;;
     x86_64) TCG_HOST=i386 ;;
@@ -48,33 +44,23 @@ done
 
 # Take ninja's own link line so this cannot drift from the real build.
 ninja qemu-system-arm >/dev/null
-ninja -t commands qemu-system-arm-unsigned | tail -1 | python3 -c '
-import shlex, sys
-argv = shlex.split(sys.stdin.read())
-out = []
-skip = False
-for a in argv:
-    if skip:
-        skip = False
-        continue
-    if a == "-o":
-        skip = True                        # drop the executable name
-        continue
-    if a.endswith("system_main.c.o"):
-        out.append("qemu-ios-entry.o")     # main() -> qemu_ios_main()
-        out.append("qemu-ios-ui.o")        # frames out, touches in
-        out.append("qemu-macos-extras.o")  # keys, pinch, machine controls
-        continue
-    out.append(a)
-# @block.syms / @qemu.syms are exported-symbol response files for an
-# executable; a dylib must export our entry points instead.
-out = [a for a in out if not a.startswith("@")]
-out += ["-dynamiclib", "-o", "'"$OUT"'",
-        "-install_name", "@rpath/'"$LIBNAME"'",
-        "-Wl,-exported_symbols_list,'"$BUILD"'/macos-exports.syms",
-        "-Wl,-undefined,dynamic_lookup"]
-print(shlex.join(out))
-' > macos-link-dylib.sh
+eval "LINK=($(ninja -t commands qemu-system-arm-unsigned | tail -1))"
+ARGS=()
+skip=0
+for a in "${LINK[@]}"; do
+    if [ $skip = 1 ]; then skip=0; continue; fi
+    case "$a" in
+        -o) skip=1 ;;                                   # drop the executable name
+        *system_main.c.o)                               # main() -> qemu_ios_main(); frames out, touches in;
+            ARGS+=(qemu-ios-entry.o qemu-ios-ui.o qemu-macos-extras.o) ;;   # keys, pinch, machine controls
+        @*) ;;   # @block.syms / @qemu.syms export an executable's symbols; a dylib exports our entry points
+        *) ARGS+=("$a") ;;
+    esac
+done
+ARGS+=(-dynamiclib -o "$OUT" -install_name "@rpath/$LIBNAME"
+      "-Wl,-exported_symbols_list,$BUILD/macos-exports.syms" -Wl,-undefined,dynamic_lookup)
+printf '%q ' "${ARGS[@]}" > macos-link-dylib.sh
+echo >> macos-link-dylib.sh
 
 # Only what the app calls; everything else stays private.
 cat > macos-exports.syms <<'SYMS'
@@ -134,7 +120,7 @@ _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume
 SYMS
 
-sh macos-link-dylib.sh
+bash macos-link-dylib.sh
 codesign -f -s - "$OUT"
 echo "built $OUT"
 nm -gU "$OUT" | head -20

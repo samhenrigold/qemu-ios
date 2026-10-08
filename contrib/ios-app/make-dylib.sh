@@ -63,32 +63,22 @@ done
 
 # Take ninja's own link line so this cannot drift from the real build.
 ninja qemu-system-arm >/dev/null
-ninja -t commands qemu-system-arm-unsigned | tail -1 | python3 -c '
-import shlex, sys
-argv = shlex.split(sys.stdin.read())
-out = []
-skip = False
-for i, a in enumerate(argv):
-    if skip:
-        skip = False
-        continue
-    if a == "-o":
-        skip = True                       # drop the executable name
-        continue
-    if a.endswith("system_main.c.o"):
-        out.append("qemu-ios-entry.o")     # main() -> qemu_ios_main()
-        out.append("qemu-ios-ui.o")        # frames out, touches in
-        continue
-    out.append(a)
-# @block.syms / @qemu.syms are -exported_symbols_list style response files for
-# an executable; a dylib must export our entry point too, so replace them.
-out = [a for a in out if not a.startswith("@")]
-out += ["-dynamiclib", "-o", "'"$OUT"'",
-        "-install_name", "@rpath/'"$LIBNAME"'",
-        "-Wl,-exported_symbols_list,'"$BUILD"'/ios-exports.syms",
-        "-Wl,-undefined,dynamic_lookup"]
-print(shlex.join(out))
-' > ios-link-dylib.sh
+eval "LINK=($(ninja -t commands qemu-system-arm-unsigned | tail -1))"
+ARGS=()
+skip=0
+for a in "${LINK[@]}"; do
+    if [ $skip = 1 ]; then skip=0; continue; fi
+    case "$a" in
+        -o) skip=1 ;;                                       # drop the executable name
+        *system_main.c.o) ARGS+=(qemu-ios-entry.o qemu-ios-ui.o) ;;   # main() -> qemu_ios_main(); frames out, touches in
+        @*) ;;   # @block.syms / @qemu.syms export an executable's symbols; a dylib exports our entry point
+        *) ARGS+=("$a") ;;
+    esac
+done
+ARGS+=(-dynamiclib -o "$OUT" -install_name "@rpath/$LIBNAME"
+      "-Wl,-exported_symbols_list,$BUILD/ios-exports.syms" -Wl,-undefined,dynamic_lookup)
+printf '%q ' "${ARGS[@]}" > ios-link-dylib.sh
+echo >> ios-link-dylib.sh
 
 # Only what the app calls. Everything else stays private, which also keeps the
 # dylib from exporting symbols that collide with the host app process.
@@ -108,7 +98,7 @@ _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume
 SYMS
 
-sh ios-link-dylib.sh
+bash ios-link-dylib.sh
 codesign -f -s - "$OUT"
 echo "built $OUT"
 nm -gU "$OUT" | head

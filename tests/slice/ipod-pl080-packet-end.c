@@ -1,0 +1,38 @@
+/* A short peripheral packet must retain its untransferred DMA residue.
+ *
+ * SLICE hw/dma/pl080.c fn pl080_set_dma_last_request
+ */
+#include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
+#include <stdbool.h>
+#include <stdio.h>
+#include <inttypes.h>
+#include <assert.h>
+#define PL080_CCONF_H (1<<18)
+#define PL080_CCONF_E 1
+#define PL080_CCTRL_I (1u<<31)
+#define MEMTXATTRS_UNSPECIFIED 0
+#define QEMU_CLOCK_VIRTUAL 0
+static int64_t qemu_clock_get_ns(int clock) { return 0; }
+typedef struct { uint32_t src,dest,lli,ctrl,conf; } pl080_channel;
+typedef struct { int nchannels,trace_id,downstream_as; uint32_t tc_int; pl080_channel chan[2]; } PL080State;
+static int updates;
+static void pl080_run(PL080State *s) { /* Seven bytes already transferred. */ }
+static void pl080_update(PL080State *s) { updates++; }
+static bool it_dmac_trace_on(void) { return false; }
+static uint32_t address_space_ldl_le(int *as,uint32_t addr,int attr,void *result) { assert(0); return 0; }
+#include "slice.h"
+int main(void) {
+ PL080State s = {.nchannels=2};
+ s.chan[0] = (pl080_channel){.ctrl=PL080_CCTRL_I|2041, .conf=1|(2<<11)|(3<<1)};
+ s.chan[1] = (pl080_channel){.ctrl=PL080_CCTRL_I|2048, .conf=1|(2<<11)|(4<<1)};
+ pl080_set_dma_last_request(&s,3);
+ assert((s.chan[0].ctrl&0xfff)==2041);
+ assert(!(s.chan[0].conf&1));
+ assert(s.tc_int==1 && updates==1);
+ assert((s.chan[1].ctrl&0xfff)==2048 && (s.chan[1].conf&1));
+ pl080_set_dma_last_request(&s,3);
+ assert(s.tc_int==1 && (s.chan[0].ctrl&0xfff)==2041);
+ puts("PASS: short DMA packet preserves residue and completes only its channel");
+}

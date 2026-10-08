@@ -45,7 +45,7 @@ static void G_GNUC_PRINTF(1, 2) mrvl_trace(const char *fmt, ...)
     }
 }
 
-/* mrvl8686 core: begin (tests/ipod/test_mrvl8686.py compiles this part) */
+/* mrvl8686 core: begin (tests/slice/ipod-mrvl8686.c compiles this part) */
 
 static void mrvl_card_send(Mrvl8686Card *c, const uint8_t *frame, uint32_t len);
 

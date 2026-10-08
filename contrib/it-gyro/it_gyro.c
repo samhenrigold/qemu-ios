@@ -26,7 +26,7 @@ static void say(const char *fmt, ...)
     write(2, buf, n > 0 && n < (int)sizeof(buf) ? n : 0);
 }
 
-/* mkold.py enters _main with no crt1: main must not return. */
+/* machotool mkold enters _main with no crt1: main must not return. */
 int main(void)
 {
     void *objc = dlopen("/usr/lib/libobjc.A.dylib", RTLD_NOW);

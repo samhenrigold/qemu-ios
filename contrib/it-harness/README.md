@@ -7,7 +7,7 @@ bash contrib/it-harness/build.sh
 ```
 
 Requires the SDK configured in `contrib/armv6-toolchain/armv6.sh` (override with
-`ARMV6_SDK`), Xcode command-line tools, Python 3, `ldid`, and FFmpeg with libx264
+`ARMV6_SDK`), Xcode command-line tools, `ldid`, and FFmpeg with libx264
 and libmp3lame. No downloaded or copyrighted media: all six fixtures are generated.
 
 Drop `contrib/it-harness/build/Harness.ipa` into Light Touch's app installation UI.
@@ -54,27 +54,11 @@ The clipboard check restores the previous pasteboard items.
 “Media library: count songs” queries `MPMediaQuery songsQuery` and reports the
 count and first title. A missing response is reported as an unavailable service,
 not as zero songs. On 7E18 the service is hosted by Music; start Music before
-running this check. `tests/ipod/test_media_guest.py` drives it with generated
-AAC/MP3 imports in a disposable overlay.
+running this check.
 
-The host check validates packaging, not runtime behavior:
-
-```sh
-python3 contrib/it-harness/package.py --check contrib/it-harness/build/Harness.ipa
-```
-
-For real install/launch, storage, CPU/memory and GLES screenshot checks:
-
-```sh
-python3 contrib/it-harness/smoke.py \
-  --qemu build-native14/qemu-build/qemu-system-arm \
-  --base-nand /path/to/nand-ultimate --out /tmp/harness-new-run
-```
-
-This reuses `tests/ipod/regress.py`, stages the freshly built GLES bridge only
-in a disposable overlay, and requests native guest shutdown after exercising
-the app. It needs the same USB/SSH tools as the existing regression harness.
-Use a new output directory. Screenshots and guest results are retained there.
+The packaging check (`package.py`) and the install/launch smoke (`smoke.py`) are
+retired; see git history at 5508b504b8. Boots of prepared devices are
+LightTouchMac's `sessions single`.
 
 Verified on 2026-09-05 against `nand-ultimate`: installation, foreground launch,
 preferences, 1 MiB storage integrity, CPU/memory, GLES pixel readback and the
@@ -90,63 +74,13 @@ The demo initializes client vertices in resident stack memory. The current
 bridge cannot fault untouched file-backed guest constant pages in; initial
 testing with static vertices exposed failed host reads and a clear-only frame.
 
-## Explicit iOS 2 fixture
-
-The default remains the full iOS 3.1 Harness. To rebuild the legacy fixture
-against a locally supplied **actual iPhoneOS 2.0 SDK**, use:
-
-```sh
-ARMV6_SDK=/path/to/iPhoneOS2.0.sdk bash contrib/it-harness/build.sh --flavor ios2
-ARMV6_SDK=/path/to/iPhoneOS2.0.sdk bash contrib/it-gles/build.sh --flavor ios2
-```
-
-`--out DIR` isolates either legacy output further; default legacy outputs are
-`contrib/it-harness/build-ios2` and `contrib/it-gles/build-ios2`. SDK metadata must
-identify version 2.0. The compiler targets armv6/iOS 2.0, reserves r9, and uses
-the existing legacy crt1/relocation conversion. Modern ld still needs its
-temporary iOS 9.0 bootstrap target; audited `mkold.py` removes the incompatible
-commands. A temporary copy of the SDK link stub advertises ARMv7 to ld and is
-removed after the build; the SDK is neither modified nor included in the IPA.
-
-The legacy Harness uses SDK 2.0 AudioQueue PCM output on UIKit's current run
-loop. It checks buffer/enqueue/start/control/cleanup failures and retains queue
-ownership if disposal fails. Compressed audio, MPMediaQuery and UIPasteboard
-controls explicitly report unsupported legacy fixture coverage. The full
-Harness retains its AVAudioPlayer and media features. Other manual features
-still require qualification on the target guest.
-
-`binary-audit.json` records the actual binary and supplied SDK-stub hashes,
-static imports, legacy load commands and signature command. These audits and
-MinimumOSVersion 2.0 prove input eligibility, not dynamic API compatibility or
-successful rendering/audio. Qualify installation/listing/foreground, strict GL
-pixels, and measured stereo PCM output on the target guest before adopting
-artifacts as maintained defaults. No private prototype is selected automatically.
-
-Host failure and actual-binary audit gates:
+## PCM host check
 
 ```sh
 xcrun clang -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function \
   contrib/it-harness/test-pcm.c -o /tmp/test-pcm
 /tmp/test-pcm
-python3 contrib/it-harness/test-audit.py --sdk /path/to/iPhoneOS2.0.sdk \
-  --binary contrib/it-harness/build-ios2/Payload/Harness.app/Harness
 ```
 
-For prepared devices declaring iOS 2.x, the regression harness selects the
-`build-ios2` fixtures automatically. Build the selected flavor first; a missing
-legacy fixture fails preflight rather than falling back to the full Harness.
-Other versions retain the full defaults. Declared deployment eligibility does
-not establish runtime support: the maintained legacy Harness is currently
-qualified on N72/2.1.1. Each run records requested input identities separately
-in `fixture-inputs.json`.
-
-Use explicit selections for artifacts built outside the default directories,
-or to request the GLTest app instead of the default SpringBoard graphics leg:
-
-```sh
-python3 tests/ipod/regress.py --device /path/to/prepared-device \
-  --ipa contrib/it-harness/build-ios2/Harness.ipa \
-  --harness-ipa contrib/it-harness/build-ios2/Harness.ipa \
-  --gles-app contrib/it-gles/build-ios2/GLTest.app \
-  --gles-slotmap contrib/it-gles/slotmap.txt
-```
+The iOS 2.0 SDK flavor (`--flavor ios2`) and its binary audit are retired; see
+git history at 5508b504b8.

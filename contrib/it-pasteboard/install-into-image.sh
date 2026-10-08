@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Bake the pasteboard daemon into a NAND page image. Run through editimg.py,
-# which sets $MNT to the mounted guest volume:
+# Bake the pasteboard daemon into a NAND page image. Was run through editimg.py
+# (retired with setowner.py; see git history at 5508b504b8), which set $MNT to
+# the mounted guest volume:
 #
 #     cp -Rc <image> <image>-pb
 #     imgtools/editimg.py --nand <image>-pb --blocks 1835008 \

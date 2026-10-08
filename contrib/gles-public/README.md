@@ -10,14 +10,12 @@ releases: `docs/ipad1/gles-public-seam.md` has the survey (every symbol and sele
 behind the private pieces.
 
     ./build.sh [OUT]     # -> OpenGLES (default here); checks each slice exports exactly opengles.exports
-    ./build-apps.sh      # -> GLTest.app / GLTest2.app (imgtools/ipad1_rootfs.py build --gles)
 
 | file | role |
 |---|---|
 | `opengles.c` | the front end: a forwarder per export, 2.x's EGL, EAGL with every method any build has |
 | `opengles.exports` | every name any 2.2.1-5.1.1 OpenGLES exports (the union; dyld binds cached consumers by name) |
-| `seam_survey.py` | the survey tool behind the seam doc (shared caches and 2.x framework binaries) |
-| `gligen.py`, `glitsv.py` | the name table's generator and check, and the offline dispatch-layout reader |
+| `gligen.c`, `gligen.sh` | the name table check (`gligen.sh`; `--stamp` after a hand edit of gles-names.h) |
 
 ## What is found at run time
 
@@ -38,7 +36,7 @@ Nothing is chosen by build number:
 
 FirmwareKit's `FitCheck.glesFrontEnd` proves at prepare that each of these exists in the firmware, and a misfit fails
 the prepare. The first CoreAnimation use prints `[gles] CoreAnimation composites through the host (first …)`: the
-matrix `gl` column and `tests/ipad1/regress.py` require that line, because a software CoreAnimation draws the same
+matrix `gl` column requires that line, because a software CoreAnimation draws the same
 pictures.
 
 ## Linking

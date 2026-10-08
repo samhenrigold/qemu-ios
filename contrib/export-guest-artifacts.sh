@@ -35,7 +35,7 @@ export IPOD_SDK="$ARMV6_SDK"
 for sdk in ARMV6_SDK IPAD_SDK; do
     [ -f "${!sdk}/usr/lib/libSystem.dylib" ] || fail "no SDK at $sdk=${!sdk}"
 done
-for tool in python3 xcrun file lipo; do
+for tool in jq xcrun file lipo; do
     command -v "$tool" >/dev/null || fail "required tool not found: $tool"
 done
 LDID="$(command -v "${LDID:-ldid}")" || fail "guest signer not found: ${LDID:-ldid}"
@@ -51,7 +51,7 @@ OUT="$(cd "$OUT" && pwd)"
 B="$OUT/build"
 # Snapshot before copying/compiling, then compare before publication. Never
 # attribute output to sources or SDKs that changed while the build was running.
-python3 "$SRC/contrib/guest-package/build_inputs.py" > "$OUT/build-inputs.json"
+bash "$SRC/contrib/guest-package/build-inputs.sh" > "$OUT/build-inputs.json"
 
 echo "building the guest components and packages (contrib/guest-package/build.sh)"
 if ! bash "$SRC/contrib/guest-package/build.sh" "$B" >"$OUT/build.log" 2>&1; then
@@ -127,48 +127,38 @@ if [ -n "$QEMU_BUILD" ]; then
     cp -p "$QEMU_BUILD/libqemu-arm.dylib" "$OUT/dylib/"
 fi
 
-python3 - "$SRC" "$OUT" "$QEMU_BUILD" <<'PY'
-import hashlib, json, os, subprocess, sys
-from pathlib import Path
-
-src, out = Path(sys.argv[1]), Path(sys.argv[2])
-qemu_build = sys.argv[3] or None
-sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-def git(*args):
-    try:
-        return subprocess.check_output(["git", "-C", str(src), *args], text=True, stderr=subprocess.DEVNULL).strip()
-    except (subprocess.CalledProcessError, OSError):
-        return None
-commit = git("rev-parse", "HEAD")
-sys.path.insert(0, str(src / "contrib/guest-package"))
-import build_inputs
-before = json.loads((out / "build-inputs.json").read_text())
-current = {"inputs": build_inputs.sources(src), "build_context": build_inputs.context()}
-if before != current:
-    raise SystemExit("guest build inputs changed during compilation; discard this output and rebuild")
-inputs = before["inputs"]
-files = {}
-for d in ("guest-tools.incomplete", "ipad-guest-tools.incomplete", "macos-app", "include", "dylib"):
-    for f in sorted((out / d).rglob("*")):
-        if f.is_file():
-            files[str(f.relative_to(out)).replace(".incomplete/", "/", 1)] = sha(f)
-version = dict(l.split(None, 1) for l in (src / "contrib/guest-package/VERSION").read_text().splitlines() if l.strip())
-warnings = [l.strip() for l in (out / "build.log").read_text(errors="replace").splitlines() if "guest-package: warning" in l]
-manifest = {
-    "schema": 1,
-    "source": {"path": str(src), "commit": commit, "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
-               "dirty": bool(git("status", "--porcelain")) if commit else True},
-    "guest_package": {"serial": int(version["serial"]), "version": version["version"].strip()},
-    "sdk": {"armv6": os.environ["ARMV6_SDK"], "ipad": os.environ["IPAD_SDK"]},
-    "signer": os.environ["LDID"],
-    "qemu_build": qemu_build,
-    "warnings": warnings,
-    "inputs": inputs,
-    "build_context": before["build_context"],
-    "files": files,
-}
-(out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-PY
+bash "$SRC/contrib/guest-package/build-inputs.sh" > "$OUT/build-inputs.after.json"
+cmp -s "$OUT/build-inputs.json" "$OUT/build-inputs.after.json" ||
+    fail "guest build inputs changed during compilation; discard this output and rebuild"
+rm "$OUT/build-inputs.after.json"
+commit="$(git -C "$SRC" rev-parse HEAD 2>/dev/null)" || commit=""
+branch="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null)" || branch=""
+dirty=true
+if [ -n "$commit" ] && [ -z "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then dirty=false; fi
+serial="$(awk '$1 == "serial" { print $2 }' "$SRC/contrib/guest-package/VERSION")"
+version="$(awk '$1 == "version" { sub(/^[ \t]*version[ \t]+/, ""); sub(/[ \t\r]+$/, ""); print }' "$SRC/contrib/guest-package/VERSION")"
+# sha256 of every staged file, keyed by its path under OUT as published (without .incomplete)
+files="$(cd "$OUT" && for d in guest-tools.incomplete ipad-guest-tools.incomplete macos-app include dylib; do
+             if [ -d "$d" ]; then find "$d" -type f | LC_ALL=C sort; fi
+         done | while IFS= read -r f; do
+             printf '%s\t%s\n' "$f" "$(shasum -a 256 "$f" | cut -c1-64)"
+         done | sed 's|\.incomplete/|/|' | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}')"
+jq -n --arg path "$SRC" --arg commit "$commit" --arg branch "$branch" --argjson dirty "$dirty" \
+    --argjson serial "$serial" --arg version "$version" --arg armv6 "$ARMV6_SDK" --arg ipad "$IPAD_SDK" \
+    --arg signer "$LDID" --arg qemu "$QEMU_BUILD" \
+    --argjson warnings "$(grep 'guest-package: warning' "$OUT/build.log" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | jq -R . | jq -s .)" \
+    --slurpfile before "$OUT/build-inputs.json" --argjson files "$files" '
+    def orNull: if . == "" then null else . end;
+    {schema: 1,
+     source: {path: $path, commit: ($commit | orNull), branch: ($branch | orNull), dirty: $dirty},
+     guest_package: {serial: $serial, version: $version},
+     sdk: {armv6: $armv6, ipad: $ipad},
+     signer: $signer,
+     qemu_build: ($qemu | orNull),
+     warnings: $warnings,
+     inputs: $before[0].inputs,
+     build_context: $before[0].build_context,
+     files: $files}' > "$OUT/manifest.json"
 mv "$OUT/ipad-guest-tools.incomplete" "$OUT/ipad-guest-tools"
 mv "$OUT/guest-tools.incomplete" "$OUT/guest-tools"
-echo "exported to $OUT ($(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(len(m["files"]), "files, source", (m["source"]["commit"] or "no git")[:10], "dirty" if m["source"]["dirty"] else "clean")' "$OUT/manifest.json"))"
+echo "exported to $OUT ($(jq -r '"\(.files | length) files, source \((.source.commit // "no git")[:10]) \(if .source.dirty then "dirty" else "clean" end)"' "$OUT/manifest.json"))"

@@ -5,7 +5,7 @@
 #
 # ROOT is a host copy of the 1.0 root filesystem (the decrypted IPSW rootfs, mounted or copied): its own
 # UIKit, Foundation, CoreFoundation, CoreGraphics, GraphicsServices, libobjc and libSystem are the link
-# targets, through .tbd stubs (../armv6-toolchain/mktbd.py). Nothing from them is copied into the output.
+# targets, through .tbd stubs (machotool tbd, ../armv6-toolchain/machotool.c). Nothing from them is copied into the output.
 # Objective-C is compiled for the fragile ABI (the __OBJC segment 1.x's runtime reads); the executable
 # enters at crt1old.c's _start (LEGACY_LINK=1), as 1.x libSystem needs.
 set -eu
@@ -16,13 +16,14 @@ LEGACY_LINK=1
 . "$HERE/../armv6-toolchain/armv6.sh"
 STUBS="$OUT/stubs"
 mkdir -p "$STUBS"
-tbd() { python3 "$HERE/../armv6-toolchain/mktbd.py" "$ROOT" "$1" "$STUBS/$2" >/dev/null; }
+tbd() { machotool tbd "$ROOT" "$1" "$STUBS/$2" >/dev/null; }
 tbd /usr/lib/libSystem.B.dylib libSystem.tbd
 tbd /usr/lib/libobjc.A.dylib libobjc.tbd
 for f in UIKit Foundation CoreFoundation CoreGraphics GraphicsServices; do
     tbd /System/Library/Frameworks/$f.framework/$f $f.tbd
 done
 LEGACY_SYSTEM_STUB="$STUBS"
+xcrun clang -std=c11 -O2 -o "$OUT/icon" "$HERE/icon.c"
 for NAME in Hello Tilt; do
     APP="$OUT/$NAME.app"
     mkdir -p "$APP"
@@ -34,6 +35,7 @@ for NAME in Hello Tilt; do
     lower=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
     sed "s/@NAME@/$NAME/g; s/@ID@/$lower/g" "$HERE/Info.plist" > "$APP/Info.plist"
     printf 'APPL????' > "$APP/PkgInfo"
-    python3 "$HERE/icon.py" "$APP/icon.png" "$NAME"
+    "$OUT/icon" "$APP/icon.png" "$NAME"
     echo "$APP"
 done
+rm -f "$OUT/icon"

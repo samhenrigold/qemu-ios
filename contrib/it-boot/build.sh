@@ -23,4 +23,4 @@ for v in armv6:"$I6_SDK":1:armv6 armv7:"$I7_SDK":0:armv7 armv7:"$I6_SDK":1:armv7
     cp "$HERE/com.qemu.it-boot.plist" "$OUT/$dir/"
     file "$OUT/$dir/it_boot"
 done
-python3 "$HERE/../../tests/guest-package/test_it_boot.py"
+bash "$HERE/../../tests/guest-package/it-boot-test.sh"

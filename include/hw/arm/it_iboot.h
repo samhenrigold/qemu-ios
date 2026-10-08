@@ -8,7 +8,7 @@
  * Every finder is derived from what the image contains -- a string, the one
  * literal that references it, the Thumb `ldr rN, [pc, #imm]` that loads the
  * literal -- never from a build's offsets. Each returns 0 for absent,
- * ambiguous or out-of-window matches, and tests/ipod/test_iboot_literals.py
+ * ambiguous or out-of-window matches, and tests/slice/ipod-iboot-literals.c
  * pins the answer for every iPod touch 2G iBoot (2.1.1 .. 4.2.1).
  */
 

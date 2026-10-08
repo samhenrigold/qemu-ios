@@ -88,7 +88,7 @@ echo "embedded $(ls "$DEST"/*.dylib | wc -l | tr -d ' ') dylibs from $BUILD"
 #
 # The base NAND goes in as the packed single-file image: a directory of 128,000
 # page files would be both slower to read and painfully slow to install, and
-# the packed form is read ~27x faster (see imgtools/pack_nand.py).
+# the packed form is read ~27x faster (imgtools/pack_nand.py at 5508b504b8 makes it).
 #
 # These are ~520 MB and change roughly never, so each is copied only when the
 # source is newer -- otherwise every build would spend a minute re-copying half
@@ -99,7 +99,7 @@ PACKED="${PACKED:-$F/nand-grow7g.itnand}"
 
 if [ ! -f "$PACKED" ]; then
     echo "warning: no packed NAND at $PACKED; the app will have no device to boot" >&2
-    echo "note: make one with $QEMU_SRC/imgtools/pack_nand.py $F/nand-grow7g $PACKED" >&2
+    echo "note: make one with imgtools/pack_nand.py from qemu-ios 5508b504b8: $F/nand-grow7g $PACKED" >&2
 else
     mkdir -p "$IMAGES/ios3"
     install_if_newer() {

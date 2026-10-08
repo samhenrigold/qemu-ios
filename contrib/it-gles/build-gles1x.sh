@@ -7,8 +7,8 @@ export LEGACY_LINK=1 ARMV6_SDK="${ARMV6_SDK:-$HOME/Developer/ipod2g-re/OldSDK/iP
 OUT="${1:-$HERE/OpenGLES-1x}"
 GEN="$(mktemp -d /tmp/gles1x.XXXXXX)"
 trap 'rm -rf "$GEN"' EXIT
-python3 "$HERE/genstubs.py" "$HERE/gles_stubs.h" >/dev/null
-python3 "$HERE/gles2x_exports.py" gen "$HERE/opengles-1x.exports" \
+sh "$HERE/genstubs.sh" "$HERE/gles_stubs.h"
+sh "$HERE/gles-exports.sh" "$HERE/opengles-1x.exports" \
     "$HERE/../../include/hw/arm/guest-services/gles-names.h" "$GEN"
 cc6 "$HERE/gles1x.c" "$GEN/gles1x.o" -I"$GEN"
 link6 -dylib "$OUT" "$GEN/gles1x.o" -install_name /System/Library/Frameworks/OpenGLES.framework/OpenGLES \

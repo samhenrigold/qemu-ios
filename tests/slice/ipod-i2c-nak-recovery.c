@@ -1,0 +1,49 @@
+/* A NAKed absent device must not poison subsequent PMU transactions.
+ *
+ * SLICE include/hw/i2c/ipod_touch_i2c.h define I2C|IIC|S5L|SR_MODE|ST_MODE|MR_MODE|MT_MODE
+ * SLICE include/hw/i2c/ipod_touch_i2c.h typedef IPodTouchI2CState
+ * SLICE hw/i2c/ipod_touch_i2c.c fn s5l8900_i2c_start_addr s5l8900_i2c_set_ack s5l8900_i2c_update s5l8900_i2c_receive s5l8900_i2c_send ipod_touch_i2c_read ipod_touch_i2c_write
+ */
+#include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
+#include <stdbool.h>
+#include <assert.h>
+#include <stdio.h>
+typedef int SysBusDevice, MemoryRegion;
+typedef struct {const char *name;int address;int writes;int last;} I2CBus;
+typedef int *qemu_irq;
+typedef uint64_t hwaddr;
+#define BUS(s) (s)
+static bool i2c_trace(void) { return false; }
+static bool i2c_nak_enabled(void) { return true; }
+static void qemu_irq_raise(int *irq) { *irq=1; }
+static void qemu_irq_lower(int *irq) { *irq=0; }
+static int i2c_recv(I2CBus *bus) { return 0; }
+static int i2c_send(I2CBus *bus,int value) {
+    if(bus->address==0x73) { bus->writes++;bus->last=value; }
+    return 0;
+}
+static void i2c_end_transfer(I2CBus *bus) { bus->address=-1; }
+static int i2c_start_transfer(I2CBus *bus,int address,int read) { bus->address=address;return address!=0x73; }
+struct IPodTouchI2CState;
+static bool i2c_addr_is_claimed(struct IPodTouchI2CState *s,uint8_t addr) { return addr==0x73; }
+#include "slice.h"
+
+#define WR(a,v) ipod_touch_i2c_write(&s,a,v,4)
+int main(void) {
+    int irq=0;I2CBus bus={.name="i2c0",.address=-1};
+    IPodTouchI2CState s={.bus=&bus,.irq=&irq};
+    WR(I2CSTAT,0xd0); WR(I2CDS,0x52);WR(I2CSTAT,0xf0);
+    assert(s.active && s.cur_addr==0x29 && (s.status&1));
+    WR(I2CSTAT,0xd0);assert(!s.active);
+    WR(I2CDS,0xe6);assert(s.data==0xe6 && bus.writes==0);
+    WR(I2CSTAT,0xf0);assert(s.active && s.cur_addr==0x73 && !(s.status&1));
+    WR(I2CDS,0x40);assert(bus.writes==1 && bus.last==0x40);
+    WR(I2CDS,0x14);assert(bus.writes==2 && bus.last==0x14);
+    WR(I2CSTAT,0xd0);assert(!s.active);
+    /* Repeated START keeps the address even when the data register is an index. */
+    WR(I2CDS,0xe6);WR(I2CSTAT,0xf0);WR(I2CDS,0x41);
+    assert(s5l8900_i2c_start_addr(&s)==0x73);
+    puts("PASS: absent-device NAK followed by PMU address/data and repeated START");
+}

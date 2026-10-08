@@ -10,6 +10,6 @@ C interface for validated guest uploads. The wrapper handles little-endian,
 possibly unaligned input, compact legacy mip tails, and RGB's opaque alpha.
 The vendor's ETC function is unused; no SDK runtime or frameworks are required.
 
-`tests/ipod/test_pvrtc.py` uses independent golden hashes recorded before this
+`tests/slice/ipod-pvrtc.c` uses independent golden hashes recorded before this
 integration, checks modulation modes and rectangular grids, and runs with
 ASan/UBSan. Upload tests exercise guest-byte validation and the actual CGL path.

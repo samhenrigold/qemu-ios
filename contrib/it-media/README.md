@@ -122,20 +122,15 @@ so a library that has been opened by Music remains queryable after a reboot.
 It fails closed on database errors. This is duplicate reconciliation for the
 same staged file, not content-based deduplication across different locations.
 
-Native acceptance:
-
-```sh
-python3 tests/ipod/test_media_guest.py --base-nand /path/to/nand-agent-v3
-```
-
-The test imports generated AAC/MP3 and movie fixtures into a disposable overlay, rejects
-malformed requests, reconciles duplicates, checks Music's SQLite records and
-the public MediaPlayer song query in Harness, captures the Songs and playback
-screens, verifies stereo tones in host audio, and checks persistence and retry
-reconciliation after a cold boot. It checks the movie's database classification
+Native acceptance was `tests/ipod/test_media_guest.py` (retired; see git history
+at 5508b504b8). The test imported generated AAC/MP3 and movie fixtures into a disposable overlay, rejected
+malformed requests, reconciled duplicates, checked Music's SQLite records and
+the public MediaPlayer song query in Harness, captured the Songs and playback
+screens, verified stereo tones in host audio, and checked persistence and retry
+reconciliation after a cold boot. It checked the movie's database classification
 and duplicate reconciliation; movie playback is not covered. Compressed decoding is enabled to match Light
 Touch. On 7E18 the third-party MediaPlayer query connects to Music's MIG service;
-the test starts Music before requesting the Harness count.
+the test started Music before requesting the Harness count.
 
 ## Saved Photos helper
 
@@ -163,13 +158,13 @@ have saved the photo without recording completion. It preserves the staged
 image for inspection. Do not delete receipts to force a retry without checking
 Saved Photos first. Different staging IDs are independent imports.
 
-`tests/ipod/test_photo_guest.py` checks registration, thumbnail files, original
+`tests/ipod/test_photo_guest.py` (retired) checked registration, thumbnail files, original
 dimensions/colors, completed and uncertain receipts, malformed input, and cold
-persistence with two guest-confirmed shutdowns. It captures album/grid/full-size
-screens and checks grid colors. The new saved-path deletion/reimport behavior
+persistence with two guest-confirmed shutdowns. It captured album/grid/full-size
+screens and checked grid colors. The new saved-path deletion/reimport behavior
 has offline coverage; this cleanup did not run the native guest suite.
 
-`python3 tests/ipod/test_media_helpers.py` runs offline fixture checks for
+`tests/slice/ipod-media-helpers.c` runs offline fixture checks for
 completed, legacy, uncertain and malformed receipts, deleted originals/albums,
 invalid storage entries, and song/movie identity queries. It compiles the
 production receipt preflight and stops before calling native Photos, so it
@@ -201,5 +196,5 @@ from the native library under the import lock, rather than truncating a staging
 hash; repeat imports read the committed item's ID. Host covers are bounded
 JPEGs at artwork.jpg, at most 2 MiB; the cache directories must be real directories.
 Old imports with artwork ID zero require removal in Music and reimport.
-Native decoded-artwork and cold-reopen QA: tests/ipod/test_media_artwork.py.
-Deterministic schema error QA: tests/ipod/test_media_schema.py.
+Native decoded-artwork and cold-reopen QA was tests/ipod/test_media_artwork.py (retired).
+Deterministic schema error QA: tests/slice/ipod-media-schema.c.

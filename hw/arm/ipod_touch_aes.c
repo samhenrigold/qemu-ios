@@ -717,7 +717,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                                  aesop->inaddr, hex);
                     error_report("This firmware image is not in the built-in GID "
                                  "blob table or the gid-blobs file; a device made "
-                                 "by imgtools/device.py ships gid-blobs.bin.");
+                                 "by firmwarekit create ships gid-blobs.bin.");
                     exit(1);
                 }
 

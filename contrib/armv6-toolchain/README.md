@@ -32,12 +32,12 @@ fix, which is worth keeping straight because the symptoms overlap:
    is load-bearing: the default for this target is Thumb, and clang will happily
    emit Thumb-2, which the ARM1176 cannot execute. Targeting armv6 rather than
    armv7 also keeps `movw`/`movt` out of the output.
-2. `subtype.py <obj> 9` — rewrite the object's cpusubtype to armv7, because `ld`
+2. `machotool subtype <obj> 9` — rewrite the object's cpusubtype to armv7, because `ld`
    will not accept `-arch armv6` at all.
 3. `ld -arch armv7 -syslibroot <3.1.3 SDK> -lSystem` — the 3.1.3 SDK ships a fat
    `libSystem.B.dylib` with armv5/armv6/armv7 slices, so there is a real armv7
    stub to link against. The modern iOS SDK dropped armv7 and has nothing.
-4. `mkold.py <out>` — undo the parts of the output that postdate 2010:
+4. `machotool mkold <out>` — undo the parts of the output that postdate 2010:
    * strip `LC_VERSION_MIN_IPHONEOS`, `LC_SOURCE_VERSION`, `LC_ENCRYPTION_INFO`,
      `LC_UUID`, `LC_FUNCTION_STARTS`, `LC_DATA_IN_CODE`, `LC_BUILD_VERSION`
    * rewrite `LC_MAIN` (iOS 6) as the `LC_UNIXTHREAD` it would have been, with
@@ -118,7 +118,7 @@ Requires a QEMU built with `QC_GLES_PING` (see
 ## Linking against a firmware's own frameworks (1.x)
 
 There was no SDK before 2.0, so 1.x code that calls UIKit (or anything past libSystem) links against the
-firmware itself: `mktbd.py ROOT /System/Library/Frameworks/UIKit.framework/UIKit UIKit.tbd` writes a
+firmware itself: `machotool tbd ROOT /System/Library/Frameworks/UIKit.framework/UIKit UIKit.tbd` writes a
 text stub with the binary's install name, versions and exported symbols, declared for armv7 as link6
 links. Fragile-ABI classes go in as their `.objc_class_name_X` symbols. Pass the stubs to link6 as
 inputs, and point LEGACY_SYSTEM_STUB at a directory holding a `libSystem.tbd` made the same way so
