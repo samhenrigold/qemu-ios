@@ -164,7 +164,7 @@ machine still needs separate validation.
 
 ## Remaining work and deliberate limits
 
-- Media is enabled for ordinary LightTouch launches; standalone QEMU still uses
+- Media is enabled for ordinary Light Touch launches; standalone QEMU still uses
   the explicit media environment switches. Active decoder/graphics snapshot
   state is unfinished. Packaged-app playback and existing-device component
   upgrades are validated. AAC-LC, HE-AAC,

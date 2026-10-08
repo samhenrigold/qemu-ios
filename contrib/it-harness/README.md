@@ -10,10 +10,10 @@ Requires the SDK configured in `contrib/armv6-toolchain/armv6.sh` (override with
 `ARMV6_SDK`), Xcode command-line tools, Python 3, `ldid`, and FFmpeg with libx264
 and libmp3lame. No downloaded or copyrighted media: all six fixtures are generated.
 
-Drop `contrib/it-harness/build/Harness.ipa` into LightTouch's app installation UI.
+Drop `contrib/it-harness/build/Harness.ipa` into Light Touch's app installation UI.
 
 Use a prepared emulator with the GLES bridge installed. This app opens OpenGLES
-dynamically, like GLTest; the normal LightTouch package supplies the bridge. Standalone media decoding requires the switches documented in
+dynamically, like GLTest; the normal Light Touch package supplies the bridge. Standalone media decoding requires the switches documented in
 `docs/research/ipod-media.md`; unavailable device functions should produce failures or
 missing output, not be assumed supported because the app installed.
 

@@ -4,7 +4,7 @@ The iPod touch 1G's machine with the M68's board data (`hw/arm/ipod_touch_1g.c`:
 `-M iPhone-2G` is a subtype of `iPod-Touch-1G`). iPhone OS 1.0 (1A543a) boots through the S5L8900 bootrom
 stubs, iBoot-159, the kernel and the NAND root to SpringBoard. Touch works, lockdownd reports the phone
 Activated, and a clean power-off persists across boots. The shared baseband model (`ios-baseband`) sits on
-UART1: carrier "LightTouch" with full bars and EDGE, Wi-Fi up, SMS in, calls in and out.
+UART1: carrier "Light Touch" with full bars and EDGE, Wi-Fi up, SMS in, calls in and out.
 
 ## What runs
 
@@ -28,7 +28,7 @@ UART1: carrier "LightTouch" with full bars and EDGE, Wi-Fi up, SMS in, calls in 
 - GL: LayerKit composites through the host GL bridge (the 1.x front end matches 1.0's 186 OpenGLES exports),
   or software LayerKit on a device made with `gles_shim` off.
 - Modem: CommCenter brings up H5, the 27.010 mux (DLCI 0-7) and its init sequence; registration on the
-  001/01 test network, "LightTouch", five bars, EDGE; no "Repair Needed" (only an "iPhone is activated"
+  001/01 test network, "Light Touch", five bars, EDGE; no "Repair Needed" (only an "iPhone is activated"
   alert on the first boot). Incoming SMS (alert and Messages thread), incoming calls (ring, Answer, remote
   hang-up), outgoing calls from the keypad (`last-dialed`, `remote-answer` with `+COLP` so the in-call screen
   shows the number, End Call from the UI).

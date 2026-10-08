@@ -1,4 +1,4 @@
-// LightTouch AppSync: process-local installation hooks for iOS 2.x-6.x.
+// Light Touch AppSync: process-local installation hooks for iOS 2.x-6.x.
 // Injected only into installd or mobile_installation_proxy. Symbol-bound dyld
 // interposition preserves original signing information and valid certificates;
 // the legacy fallback supplies the two fields required by verify_signer_identity.

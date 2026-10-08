@@ -433,7 +433,7 @@ guest-origin shutdown pass. This guest run predates native H.264 session reuse;
 640x432 scaled video: all 360 decoded frames match, both complete native audio
 clips match within one S16 step, and clean shutdown passes.
 
-### Packaged LightTouch integration
+### Packaged Light Touch integration
 
 An isolated Release build at `/tmp/it-media-app-build/Build/Products/Release/LightTouchMac.app`
 embeds the updated emulator, guest engine and minimal FFmpeg closure. Packaging
@@ -452,7 +452,7 @@ Do not substitute ffmpeg pixel equality for the MPEG-4 check: native MPEG-4
 reconstruction differs slightly from ffmpeg, unlike the tested H.264 fixtures.
 
 Normal app termination also exposed a lost SSH stdout acknowledgment: sshd
-can close before the halt marker is delivered. LightTouch now waits for the
+can close before the halt marker is delivered. Light Touch now waits for the
 authoritative PMU event even when that acknowledgment is absent. The repeat
 logs `guest confirmed power-off — volume unmounted` and exits zero. Artifacts
 are under `/tmp/it-media-app-home`; `/tmp/it-test-media-app.py` performs playback,
@@ -479,9 +479,9 @@ edge extension remains relative to the supplied crop; physical edge/rounding
 comparison is still outstanding. All 795,253 stereo audio frames and all
 decoded NV12 bytes in the 18-second zoom fixture pass their references.
 
-### Existing-device upgrade in LightTouch
+### Existing-device upgrade in Light Touch
 
-With the media flags enabled, LightTouch now waits for USB readiness before
+With the media flags enabled, Light Touch now waits for USB readiness before
 accepting input, compares the bundled graphics engine with the guest's copy,
 and enables only `CA_ENABLE_OGL`/`LK_ENABLE_OGL` in the existing SpringBoard job.
 Foundation preserves XML/binary plist format and unrelated keys; malformed
