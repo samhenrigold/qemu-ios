@@ -32,7 +32,7 @@
  * IPSW-agnostic: each key name is confirmed in the binary that reads it first;
  * if an IPSW does not carry it, the job logs that and leaves that key alone.
  *
- * Plain C with CoreFoundation dlopen'd, like it_ethlink; built by
+ * Plain C with CoreFoundation dlopen'd; built by
  * contrib/ipad1-guest/build.sh (the iPad's packages), and for the iPod by
  * build-ipod.sh with IT_PREFS_NO_LOCATION (no Wi-Fi location there) for the
  * n72 packages. Both run from the package's com.qemu.guest-prefs job; iPods

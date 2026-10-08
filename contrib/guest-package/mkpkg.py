@@ -55,9 +55,8 @@ PREFS_JOB = "contrib/it-prefs/com.qemu.it-prefs.plist"
 IPOD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", PREFS_JOB]
 # it_agent (armv7, contrib/ipad1-guest/build.sh) replaces it_pbd from serial 2: the same pasteboard, plus the
 # foreground app, lock state, launch and sync that no stock service answers. Two pasteboard daemons would race.
-IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_ethlink", "it_prefs")}
-IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", "contrib/it-ethlink/com.qemu.it-ethlink.plist",
-             PREFS_JOB]
+IPAD_BIN = {n: "build/ipad1-guest/" + n for n in ("it_agent", "it_prefs")}
+IPAD_JOBS = ["contrib/it-agent/com.qemu.it-agent.plist", PREFS_JOB]
 # it_msmquiet: the mounter has already loaded the previous shim when the hook changes, and a respring does not
 # drop a notice SpringBoard already holds (tested on 4.2.1), so the next boot's mounter is the one that changes.
 IPAD_HOOKS = [("build/ipad1-guest/it_msmquiet.dylib", "/usr/local/lib/it_msmquiet.dylib", False),

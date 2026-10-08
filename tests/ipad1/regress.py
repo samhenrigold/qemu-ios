@@ -36,7 +36,6 @@ host). Checks run in parallel, each on its own QEMU.
   prefs    (opt-in) a device it_prefs has not run on before: Brightness at maximum and Auto-Lock Never,
            read back over the agent, and its once-only marker (see check_prefs)
   nocharge (opt-in) usb-charger=off over the bridge: connected, not charge-capable, not charging; AFC works
-  net-usb  (opt-in) the same fetch over USB Ethernet: en1, usbmuxd's slirp, it_ethlink in the image
   shadow   (opt-in) Safari's Bookmarks popover casts a soft drop shadow (an A008 surface), not a solid box
   appinstall, applaunch
            SKIP: stock installd rejects apps not validly signed for this device
@@ -938,11 +937,6 @@ def check_net(cfg, r):
     safari_fetch(cfg, r, "net", "Wi-Fi en0 (QEMU slirp)", usb=False)
 
 
-def check_net_usb(cfg, r):
-    """Opt-in: USB Ethernet, en1 on usbmuxd's slirp (needs it_ethlink in the image)."""
-    safari_fetch(cfg, r, "net-usb", "USB Ethernet en1 (usbmuxd slirp)", wifi=False)
-
-
 def dhcp_acked(pcap):
     """A DHCPACK (option 53 = 5) from slirp in a filter-dump capture."""
     try:
@@ -1205,7 +1199,7 @@ def check_nocharge(cfg, r):
 
 
 CHECKS = {"boot": check_boot, "gles": check_gles, "shadow": check_shadow, "usbmux": check_usbmux, "afc": check_afc,
-          "persist": check_persist, "net": check_net, "net-usb": check_net_usb, "wifi": check_wifi,
+          "persist": check_persist, "net": check_net, "wifi": check_wifi,
           "wifi-early": check_wifi_early, "audio": check_audio, "prefs": check_prefs, "nocharge": check_nocharge,
           "app": check_app}
 

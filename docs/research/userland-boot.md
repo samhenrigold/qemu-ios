@@ -58,7 +58,7 @@ MobileStorageMounter's UNSUPPORTED_FAILURE notice ("The attached USB device is n
 usb-kbd raises on every boot and which, while up, keeps SpringBoard from locking (contrib/it-msmquiet):
 
 ```
-contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_ethlink,it_prefs,it_seal,it_msmquiet.dylib}
+contrib/ipad1-guest/build.sh                            # -> build/ipad1-guest/{it_pbd,it_prefs,it_seal,it_msmquiet.dylib}
 contrib/ipad1-gles/build.sh                             # the GLI shim: GL CoreAnimation is the default
 imgtools/ipad1_rootfs.py build --base pristine --out W  # W: a private dir; FILES/userland/pristine is shared
 imgtools/ipad1_rootfs.py bake W/pristine --seal         # helpers + their com.qemu.* jobs, root-owned; BTServer Disabled

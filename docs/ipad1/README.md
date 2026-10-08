@@ -16,7 +16,7 @@ in `../archive/ipad1-PLAN.md`; what follows are the parts of it that still gover
 | `ios4.md` | The declared-inputs pipeline across a major version (8C148) |
 | `ios5.md` | The iOS 5 / 4.3 spike: what each build expects, the blockers by fidelity class (IOP mailbox v3, security epoch 2) |
 | `location.md` | Location without GPS: the network location service answered by the proxy |
-| `guest-services.md` | What guest code the iPad carries and why (AppSync dylib, `it_ethlink`, pasteboard) |
+| `guest-services.md` | What guest code the iPad carries and why (AppSync dylib, pasteboard) |
 | `app-compat.md`, `app-compat-results.md` | The app-compatibility inventory and results (3.2.2 and 4.2.1) |
 | `addresses-7B500.md` | Firmware addresses re-derived for 7B500 |
 | `gli-dispatch-7B500.tsv`, `gli-dispatch-8C148.tsv` | GL dispatch layouts derived offline (`contrib/ipad1-gles/glitsv.py`): the reference the shim's runtime discovery was checked against, no longer a build input |
@@ -43,18 +43,18 @@ supported" alert, is recorded in LightTouchMac `docs/sweep/PLAN.md`.)
 When this fans out to many iOS versions, no version may need hand work. So guest changes are only:
 boot-args, or helpers/dylibs baked in by the image builder that find what they need by stable API or symbol
 name at runtime (IOKit properties, dlsym/interposing). No byte patches at hand-found offsets. That rules out
-the --usb-eth-link kernel patch long-term: it is being replaced by the it_ethlink helper (sets
-LinkStatus=1 through IOKit, as USBEthernetSharing does). AppSync on the iPad is an injected dylib that
+the --usb-eth-link kernel patch long-term. AppSync on the iPad is an injected dylib that
 interposes MISValidateSignature, not an installd patch.
 
-(The `--usb-eth-link` patch has since been deleted; `it_ethlink` is the baked helper, `guest-services.md`.)
+(The `--usb-eth-link` patch has since been deleted, and so has the `it_ethlink` helper that replaced it.)
 
 ## Network: Wi-Fi is the default, stock kernel (Sam, 2026-09-27)
 The ipad1 machine has `wifi=on` by default: an emulated BCM4329 behind the IOP SDIO ring
 (`wifi.md`), bridged to QEMU user networking (`type=user,id=wifi0` is created when no `wifi0`
 netdev is given). Stock AppleBCMWLAN joins the open BSS "qemu-ios" on its own, DHCPs, and Safari and the
-rest of the system use it, with no kernel patch and no guest helper. `wifi=off` opts out. USB Ethernet
-remains as a secondary path: stock kernel plus the baked `it_ethlink` helper.
+rest of the system use it, with no kernel patch and no guest helper. `wifi=off` opts out. The USB
+Ethernet function stays modeled but is not bridged: the `it_ethlink` helper that raised its link was
+removed (2026-10-07) because traffic over it bypassed the Local Network and restrict settings.
 
 ## Definition of done (Sam, 2026-09-27)
 

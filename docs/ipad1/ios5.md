@@ -237,7 +237,7 @@ power-off, no rescan); activated 8C148 and 7B500 `regress.py --checks gles,shado
 
 ## The guest package on 5.x (branch `pkg-ios5`, serial 8)
 
-`k48-ios5` (builds `9*`) ships exactly `k48-ios4`'s payloads: it_agent v3, it_ethlink, it_prefs and their
+`k48-ios5` (builds `9*`) ships exactly `k48-ios4`'s payloads: it_agent v3, it_prefs and their
 jobs, the GLEngine shim and the gld plugin as hooks, and it_msmquiet (plus appsync's hook when the manifest
 bakes it). `firmwarekit create --id k48ap-9B206` seeds it (lock `guest_package.family`
 `k48-ios5`). A 9B206 boot reports `report 8 0 ... seed 8`, and the agent answers `it_agent v3` (frontmost,

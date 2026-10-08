@@ -46,7 +46,7 @@ unsigned-machos.txt: every Mach-O on the system volume and in the stash whose co
 blob (ldid ad-hoc: sshd, bash, apt, Cydia, Substrate) or none at all. Those are what
 `amfi_allow_any_signature=1` has to forgive at exec; Apple's own binaries carry a (possibly empty) CMS slot.
 
-`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_ethlink, it_prefs,
+`bake` installs this machine's guest helpers (docs/ipad1/guest-services.md): it_pbd, it_prefs,
 it_msmquiet, root-owned via the catalog, and the guest-package loader + seed package (contrib/guest-package
 mkpkg.seed, from the armv7.itpack contrib/guest-package/build.sh makes): /usr/local/bin/it_boot and its job,
 /usr/local/lighttouch/{pkgs/<serial>,current,state}, the hook targets the package keeps (the GL shim only if
@@ -206,12 +206,12 @@ USB_ETH_IF = {"Active": True, "BSD Name": "en1", "IOBuiltin": False, "IOInterfac
                              "AppleUSBEthernetDevice/IOEthernetInterface"}
 MOBILE_TOP = ("mobile", "ea")                # uid 501 on the real unit; everything else under /var is root
 # guest tool -> (install path on the system volume, mode); the job comes from contrib/it-pasteboard
-TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755), "it_ethlink": ("usr/local/bin/it_ethlink", 0o755),
+TOOLS = {"it_pbd": ("usr/local/bin/it_pbd", 0o755),
          "it_prefs": ("usr/local/bin/it_prefs", 0o755),
          "it_msmquiet.dylib": ("usr/local/lib/it_msmquiet.dylib", 0o755)}
 # Apple job that loads it_msmquiet (hides the USB "not supported" notice; contrib/it-msmquiet)
 MSM_JOB = "System/Library/LaunchDaemons/com.apple.mobile.storage_mounter.plist"
-# launchd job, installed path -> source under contrib/. The helpers' own jobs (it-pbd, it-ethlink,
+# launchd job, installed path -> source under contrib/. The helpers' own jobs (it-pbd,
 # it-prefs) are the seed package's, loaded by it_boot; only the one-shots below are baked.
 JOBS = {}
 GUEST_PACKAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../build/guest-package/armv7.itpack")
