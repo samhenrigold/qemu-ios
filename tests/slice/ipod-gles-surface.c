@@ -340,10 +340,22 @@ int main(void)
         tracked = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(third));
         assert(tracked && tracked->npages == 0);
         unmapped_lo = unmapped_hi = 0;
+        /* Memory the process no longer maps is not the surface's: its next owner's writes
+         * stay out of the texture, which keeps the surface's last pixels (issue 47). */
+        assert(!gles_bind_surface(NULL, none, 0)); gles_surface_forget(GL_TEXTURE_RECTANGLE_ARB);
+        memset(ram + 8192, 0x33, 8192);
+        assert(!gles_bind_surface(NULL, c, 0) && gles_refresh_surfaces(NULL));
+        unmapped_lo = 0x10000000 + 8192; unmapped_hi = unmapped_lo + 8192;
+        memset(ram + 8192, 0x44, 8192);
+        assert(gles_refresh_surfaces(NULL));
+        glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+        assert(got[0] == 0x33 && got[16] == 0x33);
+        assert(!g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(third)));
+        unmapped_lo = unmapped_hi = 0;
         glDisable(GL_TEXTURE_RECTANGLE_ARB);
     }
     munmap(fault_pages,16384);
     g_hash_table_destroy(gh.surfaces);
     CGLSetCurrentContext(NULL);CGLDestroyContext(context);
-    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, deferred FBO writeback, ES 2.0 refresh and bounds, dirty-page refresh, detached copies, IOSurface page records");
+    puts("PASS: IOSurface page faults and ABI, native textured draw, NV12 ranges, deferred FBO writeback, ES 2.0 refresh and bounds, dirty-page refresh, detached copies, IOSurface page records, unmapped surfaces keep their pixels");
 }

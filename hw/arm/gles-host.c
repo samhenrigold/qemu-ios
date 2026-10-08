@@ -4301,6 +4301,25 @@ static void gles_surface_fetch(GLESSurface *s, uint8_t *pixels)
     }
 }
 
+/*
+ * Whether the calling process still maps `s`'s memory where it was bound. A refresh
+ * re-reads a surface's pages when they are written, but the pages were found at the
+ * bind: once the guest frees the surface's memory or gives it back (6.x CoreAnimation
+ * leaves the texture of an icon or label bound, and the binding process no longer maps
+ * it), the next owner's writes mark them changed, and reading them put that memory in
+ * the texture: noise in place of the icons, labels and wallpaper, spreading the longer
+ * the device ran (issue 47). Its last page is checked, as at the bind (4.x keeps only
+ * the page touched last mapped).
+ */
+static bool gles_surface_mapped(CPUState *cpu, const GLESSurface *s)
+{
+    unsigned last = s->npages - 1;
+    ram_addr_t now;
+
+    return gles_page_ram(cpu, (s->base & TARGET_PAGE_MASK) + (vaddr)last * TARGET_PAGE_SIZE, &now) &&
+        now == s->pages[last];
+}
+
 /* A tracked surface's changed memory into its (bound) texture. */
 static int gles_surface_reload(GLESSurface *s)
 {
@@ -4703,7 +4722,13 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
             GLESSurface *surface = g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(name));
             if (!surface || surface->dirty || surface->detached) continue;
             if (surface->npages) {      /* re-read only memory written since its upload */
-                if (gles_surface_changed(surface) && gles_surface_reload(surface)) { ok = false; break; }
+                if (!gles_surface_changed(surface)) continue;
+                if (!gles_surface_mapped(cpu, surface)) {
+                    /* The memory is no longer the surface's: the texture keeps its pixels. */
+                    g_hash_table_remove(gh.surfaces, GUINT_TO_POINTER(name));
+                    continue;
+                }
+                if (gles_surface_reload(surface)) { ok = false; break; }
                 continue;
             }
             uint32_t a[] = { targets[t] | (surface->window ? GLES_SURFACE_WINDOW_ORDER : 0), surface->base, surface->stride,
