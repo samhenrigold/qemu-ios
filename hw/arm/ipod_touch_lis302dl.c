@@ -5,6 +5,8 @@
 #include "qapi/visitor.h"
 #include "hw/arm/ipod-attitude.h"
 #include "hw/core/qdev-properties.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * The host-facing vector (attitude, QOM x/y/z, shake) is in 1/64 g. That is
@@ -26,11 +28,7 @@ static int lis302dl_counts(const LIS302DLState *s, int v)
 
 static bool lis302dl_debug(void)
 {
-    static int cached = -1;
-    if (cached < 0) {
-        cached = getenv("IPOD_ACCEL_DEBUG") != NULL;
-    }
-    return cached;
+    return trace_event_get_state_backends(TRACE_LIS302DL_LOG);
 }
 
 bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool flat)
@@ -77,7 +75,7 @@ void lis302dl_apply_orientation(LIS302DLState *s, uint32_t o)
     s->orientation = o;
     it_display_set_orientation(o);
     if (lis302dl_debug()) {
-        printf("lis302dl: orientation=%u -> x=%d y=%d z=%d\n",
+        TRACE_PRINTF(trace_lis302dl_log, "lis302dl: orientation=%u -> x=%d y=%d z=%d\n",
                o, s->base_x, s->base_y, s->base_z);
     }
 }
@@ -120,16 +118,16 @@ static void lis302dl_sample(LIS302DLState *s, int64_t now)
 
 static void lis302dl_trace_poll(LIS302DLState *s, int64_t now)
 {
-    static int enabled = -1;
-    if (enabled < 0) enabled = getenv("IT_ACCEL_TRACE") != NULL;
-    if (!enabled) return;
+    if (!trace_event_get_state_backends(TRACE_LIS302DL_POLL_LOG)) {
+        return;
+    }
     if (s->trace_last_poll_ns >= 0 && now > s->trace_last_poll_ns) {
         s->trace_poll_sum_ns += now - s->trace_last_poll_ns;
         s->trace_polls++;
     }
     s->trace_last_poll_ns = now;
     if (now - s->trace_last_report_ns >= 1000000000LL && s->trace_polls) {
-        fprintf(stderr, "[IT_ACCEL] OUT_X polls=%u mean_interval_ms=%.3f\n",
+        TRACE_PRINTF(trace_lis302dl_poll_log, "[IT_ACCEL] OUT_X polls=%u mean_interval_ms=%.3f\n",
                 s->trace_polls, s->trace_poll_sum_ns / (s->trace_polls * 1000000.0));
         s->trace_last_report_ns = now;
         s->trace_poll_sum_ns = 0;
@@ -228,13 +226,13 @@ static uint8_t lis302dl_recv(I2CSlave *i2c)
             break;
         default:
             if (lis302dl_debug()) {
-                printf("%s: unknown register 0x%02x\n", __func__, reg);
+                TRACE_PRINTF(trace_lis302dl_log, "%s: unknown register 0x%02x\n", __func__, reg);
             }
             ret = 0;
             break;
     }
     if (lis302dl_debug()) {
-        printf("lis302dl: read reg 0x%02x -> 0x%02x\n", reg, ret);
+        TRACE_PRINTF(trace_lis302dl_log, "lis302dl: read reg 0x%02x -> 0x%02x\n", reg, ret);
     }
     /* honor the multi-byte / auto-increment read the driver uses to slurp
      * OUT_X/Y/Z in one burst */
@@ -275,7 +273,7 @@ static int lis302dl_send(I2CSlave *i2c, uint8_t data)
         case ACCEL_CTRL_REG3: s->ctrl_reg3 = data; break;
         default:
             if (lis302dl_debug()) {
-                printf("%s: write 0x%02x to reg 0x%02x\n", __func__, data, s->cmd);
+                TRACE_PRINTF(trace_lis302dl_log, "%s: write 0x%02x to reg 0x%02x\n", __func__, data, s->cmd);
             }
             break;
     }

@@ -12,6 +12,8 @@ for name in ['sha1_trace','sha1_publish','sha1_clear_irq','sha1_run']:
  functions.append(re.search(r'^(?:static )?(?:bool|void) '+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)[0])
 code=r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

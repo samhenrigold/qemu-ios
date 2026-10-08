@@ -12,6 +12,8 @@
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static uint32_t adm_read_be32(S5L8900ADMState *s, hwaddr addr)
 {
@@ -99,8 +101,8 @@ static void adm_run_command(S5L8900ADMState *s)
     /* The firmware's completion mailbox (ADM +0x30..+0x3C, which the driver
      * copies after the interrupt): class, completion code, per-page status. */
     memset(s->result, 0, sizeof(s->result));
-    if (getenv("IT_FMC_TRACE")) {
-        fprintf(stderr, "[adm] command 0x%x, %u pages, ce %u, first bank %u page %u\n", cmd, num_pages,
+    if (trace_event_get_state_backends(TRACE_S5L8900_ADM_LOG)) {
+        TRACE_PRINTF(trace_s5l8900_adm_log, "[adm] command 0x%x, %u pages, ce %u, first bank %u page %u\n", cmd, num_pages,
                 adm_read_u8(s, cmdblk + ADM_CMD_CE), adm_read_u8(s, cmdblk + ADM_CMD_BANKS),
                 adm_read_be32(s, cmdblk + pages));
     }

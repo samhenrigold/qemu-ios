@@ -31,20 +31,17 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "hw/arm/mrvl8686.h"
-
-static int mrvl_trace_enabled = -1;
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static void G_GNUC_PRINTF(1, 2) mrvl_trace(const char *fmt, ...)
 {
-    if (mrvl_trace_enabled < 0) {
-        const char *v = getenv("MRVL_TRACE");
-        mrvl_trace_enabled = v && *v && *v != '0';
-    }
-    if (mrvl_trace_enabled) {
+    if (trace_event_get_state_backends(TRACE_MRVL8686_LOG)) {
         va_list ap;
         va_start(ap, fmt);
-        vprintf(fmt, ap);
+        g_autofree char *msg = g_strdup_vprintf(fmt, ap);
         va_end(ap);
+        trace_mrvl8686_log(g_strchomp(msg));
     }
 }
 

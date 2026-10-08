@@ -4,15 +4,13 @@
 #include "system/runstate.h"
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
-/* IT_WDT_TRACE: every register write with virtual time, plus reset provenance. */
+/* -trace ipod_touch_wdt_log: every register write with virtual time, plus reset provenance. */
 static bool wdt_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_WDT_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_WDT_LOG);
 }
 
 /*
@@ -42,7 +40,7 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
     IPodTouchWDTState *s = (IPodTouchWDTState *)opaque;
 
     if (wdt_trace()) {
-        fprintf(stderr, "[WDT] t=%" PRId64 " reg=0x%02" HWADDR_PRIx " value=0x%08x\n",
+        TRACE_PRINTF(trace_ipod_touch_wdt_log, "[WDT] t=%" PRId64 " reg=0x%02" HWADDR_PRIx " value=0x%08x\n",
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), addr, (uint32_t)val);
     }
     switch (addr) {
@@ -52,11 +50,11 @@ static void ipod_touch_wdt_write(void *opaque, hwaddr addr, uint64_t val, unsign
                 if (wdt_trace()) {
                     if (current_cpu) {
                         ARMCPU *ac = ARM_CPU(current_cpu);
-                        fprintf(stderr, "%s: reset command (val=0x%08x) from "
+                        TRACE_PRINTF(trace_ipod_touch_wdt_log, "%s: reset command (val=0x%08x) from "
                                 "PC=0x%08x LR=0x%08x\n", __func__,
                                 (uint32_t)val, ac->env.regs[15], ac->env.regs[14]);
                     } else {
-                        fprintf(stderr, "%s: reset command (val=0x%08x)\n",
+                        TRACE_PRINTF(trace_ipod_touch_wdt_log, "%s: reset command (val=0x%08x)\n",
                                 __func__, (uint32_t)val);
                     }
                 }

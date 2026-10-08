@@ -11,7 +11,7 @@ import tempfile
 root=Path(__file__).resolve().parents[2]
 header=(root/'include/hw/arm/ipod_touch_tcp_usb.h').read_text()
 header=re.sub(r'^#include.*\n','',header,flags=re.M)
-source=(root/'hw/arm/ipod_touch_tcp_usb.c').read_text().replace('#include "hw/arm/ipod_touch_tcp_usb.h"','')
+source=(root/'hw/arm/ipod_touch_tcp_usb.c').read_text().replace('#include "hw/arm/ipod_touch_tcp_usb.h"','').replace('#include "trace.h"','').replace('#include "hw/trace-printf.h"','')
 code=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -25,6 +25,9 @@ code=r'''
 #include <sys/socket.h>
 #define USB_DIR_IN 0x80
 #define g_free free
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
+#define trace_ipod_touch_tcp_usb_log(msg) ((void)(msg))
 #define g_malloc0(n) calloc(1,n)
 static void qemu_set_fd_handler(int fd,void (*r)(void *),void (*w)(void *),void *arg) {}
 static ssize_t fragmented_read(int fd,void *p,size_t n) { return read(fd,p,n<=5?(n>2?2:n):(n>127?127:n)); }

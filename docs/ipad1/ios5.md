@@ -182,8 +182,8 @@ build met on the core, with the fix and its class (LightTouchMac `docs/fidelity-
 | 4.2.1 | checkpoint restore, then no power-off | no vmstate for the core's firmware mapping or the H2FMI, CDMA's stalled/sinking chains not migrated | migrated (CDMA vmstate 4, older streams still load) | R |
 
 Ring 1 (IOP->AP) carries the firmware's console only ('tty ' records in the 'cnfg' message buffer); the
-kernel prints them. `IOP_RING_TRACE=1` (core only) logs control and FMI commands at both doorbells, checks
-every read's DMA segments against the store and prints ring-1 records; `H2FMI_TRACE=1` logs the controller.
+kernel prints them. `-trace s5l8930_iop_ring_log` (core only) logs control and FMI commands at both doorbells, checks
+every read's DMA segments against the store and prints ring-1 records; `-trace s5l8930_h2fmi_log` logs the controller.
 
 Gates on this branch (rebased on ipad1 464fd1215f), core default: `fresh-device.sh` 7B500 and 8C148 (devices
 prepared on the core) PASS; `regress.py` boot, usbmux, afc, persist, wifi, net, audio PASS (one check at a

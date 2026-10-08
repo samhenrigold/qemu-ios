@@ -110,7 +110,7 @@ and a write's FIFOs fill while control is still 5 from the previous page, before
 With the property a control 3 takes any CE whose latched page no transfer has taken, and only a control-5
 write arms a write transfer. Without it, every 8-page READ_MULTIPLE timed out (2 s, status 0x8000001c, the
 last page's meta never sent) and single-page writes were captured against the stale CE and dropped
-("Failed Index read" panic). `IOP_RING_TRACE=1` compares every READ/WRITE_MULTIPLE page with the store.
+("Failed Index read" panic). `-trace s5l8930_iop_ring_log` compares every READ/WRITE_MULTIPLE page with the store.
 
 ## Gates run (2026-10-05, branch n88 after merging ipad1 at 235d0d170b)
 

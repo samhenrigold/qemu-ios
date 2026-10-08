@@ -13,6 +13,8 @@ query = s[s.index('    case GLES_SLOT_GET_RB_PARAMETERIV:'):s.index('    case GL
 code = r'''
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/OpenGL.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
 #include <glib.h>

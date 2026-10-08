@@ -15,6 +15,8 @@
 #include "hw/intc/pl192.h"
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 extern CPUState *getMainCpuEnv(void);
 
@@ -289,10 +291,10 @@ static void pl192_write(void *opaque, hwaddr offset, uint64_t value, unsigned si
     PL192State *s = (PL192State *) opaque;
 
     if ((offset == PL192_INTENABLE || offset == PL192_INTENCLEAR) &&
-        getenv("VIC_TRACE")) {
+        trace_event_get_state_backends(TRACE_PL192_LOG)) {
         uint64_t pc = current_cpu ?
             CPU_GET_CLASS(current_cpu)->get_pc(current_cpu) : 0;
-        fprintf(stderr, "VIC_CTL %s reg=%x val=%08x pc=%08" PRIx64
+        TRACE_PRINTF(trace_pl192_log, "VIC_CTL %s reg=%x val=%08x pc=%08" PRIx64
                 " raw=%x current=%u highest=%u priority=%u depth=%d time=%" PRId64 "\n",
                 memory_region_name(&s->iomem), (unsigned)offset, (unsigned)value,
                 pc, s->rawintr, s->current, s->current_highest, s->priority,
@@ -332,16 +334,16 @@ static void pl192_write(void *opaque, hwaddr offset, uint64_t value, unsigned si
             break;
         case PL192_INTENABLE:
             s->intenable |= value;
-            if (getenv("VIC_TRACE")) {
-                fprintf(stderr, "[VIC] %s enable  += 0x%08x  now 0x%08x\n",
+            if (trace_event_get_state_backends(TRACE_PL192_LOG)) {
+                TRACE_PRINTF(trace_pl192_log, "[VIC] %s enable  += 0x%08x  now 0x%08x\n",
                         memory_region_name(&s->iomem), (uint32_t)value,
                         s->intenable);
             }
             break;
         case PL192_INTENCLEAR:
             s->intenable &= ~value;
-            if (getenv("VIC_TRACE")) {
-                fprintf(stderr, "[VIC] %s disable -= 0x%08x  now 0x%08x\n",
+            if (trace_event_get_state_backends(TRACE_PL192_LOG)) {
+                TRACE_PRINTF(trace_pl192_log, "[VIC] %s disable -= 0x%08x  now 0x%08x\n",
                         memory_region_name(&s->iomem), (uint32_t)value,
                         s->intenable);
             }

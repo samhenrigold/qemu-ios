@@ -13,6 +13,8 @@ message = bytes((i * 31 + (i >> 19)) & 255 for i in range(length))
 expected = ','.join(str(x) for x in hashlib.sha1(message).digest())
 code = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

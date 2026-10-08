@@ -10,6 +10,8 @@ source = (root / 'hw/arm/ipod_touch_wdt.c').read_text()
 header = (root / 'include/hw/arm/ipod_touch_wdt.h').read_text()
 code = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <inttypes.h>

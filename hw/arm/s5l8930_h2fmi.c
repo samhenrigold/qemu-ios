@@ -45,6 +45,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 
@@ -162,8 +164,8 @@ struct S5L8930H2FMIState {
     H2FMIBus bus[H2FMI_BUSES];
 };
 
-#define HT(...) do { static int on_ = -1; if (on_ < 0) on_ = getenv("H2FMI_TRACE") != NULL; \
-                     if (on_) qemu_log(__VA_ARGS__); } while (0)
+#define HT(...) do { if (trace_event_get_state_backends(TRACE_S5L8930_H2FMI_LOG)) { \
+                     TRACE_PRINTF(trace_s5l8930_h2fmi_log, __VA_ARGS__); } } while (0)
 
 /*
  * The page format in the A4 layout (FMI +0x34: bits 0-7 sectors, 19-24 meta
@@ -339,8 +341,8 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
         if ((cmds & 0xff) == 0x60) {
             /* NAND block erase has no column address. The three row bytes
              * start at ADDR0 byte0; ADDR1 can still contain a previous read. */
-            if (getenv("NAND_TRACE")) {
-                fprintf(stderr, "NAND erase address a0=%x a1=%x count=%x\n",
+            if (trace_event_get_state_backends(TRACE_S5L8930_NAND_LOG)) {
+                TRACE_PRINTF(trace_s5l8930_nand_log, "NAND erase address a0=%x a1=%x count=%x\n",
                         b->fmc[FMC_ADDR0 / 4], b->fmc[FMC_ADDR1 / 4], b->fmc[0x20 / 4]);
             }
             b->row = b->fmc[FMC_ADDR0 / 4] & 0xffffff;

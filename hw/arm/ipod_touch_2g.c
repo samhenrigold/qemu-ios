@@ -24,6 +24,8 @@
 #include "net/util.h"
 #include "ui/input.h"
 #include "ui/clipboard.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 // The D1759 PMU raises this GPIO IRQ when a wake button (hold/menu) is pressed.
 // It lands in the same GPIO interrupt group the button code already drives.
@@ -2427,8 +2429,8 @@ static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
 		if (ch && nms->osk_enabled) {
 			/* Type by tapping iOS's own on-screen keyboard. */
 			ipod_touch_osk_enqueue(nms, ch);
-			if (getenv("IT_KBD_TRACE")) {
-				fprintf(stderr, "[KBD] osk 0x%04x '%c'\n", ch,
+			if (trace_event_get_state_backends(TRACE_IPOD_TOUCH_KBD_LOG)) {
+				TRACE_PRINTF(trace_ipod_touch_kbd_log, "[KBD] osk 0x%04x '%c'\n", ch,
 				        (ch >= 0x20 && ch < 0x7f) ? ch : '.');
 			}
 			return;
@@ -2437,8 +2439,8 @@ static void ipod_touch_kbd_event(DeviceState *dev, QemuConsole *src,
 			ipod_touch_kbd_enqueue(nms, ch);
 			/* Injection into _GSPostSyntheticKeyEvent is wired up separately;
 			 * for now the queue is the interface the drain will consume. */
-			if (getenv("IT_KBD_TRACE")) {
-				fprintf(stderr, "[KBD] queued 0x%04x '%c'\n", ch,
+			if (trace_event_get_state_backends(TRACE_IPOD_TOUCH_KBD_LOG)) {
+				TRACE_PRINTF(trace_ipod_touch_kbd_log, "[KBD] queued 0x%04x '%c'\n", ch,
 				        (ch >= 0x20 && ch < 0x7f) ? ch : '.');
 			}
 		}
@@ -2650,7 +2652,7 @@ void ipod_touch_press_button(IPodTouchButton button, bool down)
 static void ipod_touch_powerdown_tick(void *opaque)
 {
 	IPodTouchMachineState *nms = opaque;
-	bool trace = getenv("IT_PWROFF_TRACE") != NULL;
+	bool trace = trace_event_get_state_backends(TRACE_IPOD_TOUCH_PWROFF_LOG);
 
 	switch (nms->pwroff_phase) {
 	case PWROFF_HOME:
@@ -2664,7 +2666,7 @@ static void ipod_touch_powerdown_tick(void *opaque)
 
 	case PWROFF_HOME_UP:
 		if (trace) {
-			fprintf(stderr, "[PWROFF] home pressed; holding the hold button\n");
+			TRACE_PRINTF(trace_ipod_touch_pwroff_log, "[PWROFF] home pressed; holding the hold button\n");
 		}
 		if (s_kbd_mt) {
 			ipod_touch_key_event(s_kbd_mt, KEY_P_DOWN);
@@ -2688,7 +2690,7 @@ static void ipod_touch_powerdown_tick(void *opaque)
 		 * step would follow the knob we are ourselves dragging. */
 		nms->pwroff_knob_y = pwroff_knob_row();
 		if (trace) {
-			fprintf(stderr, "[PWROFF] knob row %d\n", nms->pwroff_knob_y);
+			TRACE_PRINTF(trace_ipod_touch_pwroff_log, "[PWROFF] knob row %d\n", nms->pwroff_knob_y);
 		}
 		ipod_touch_synth_touch(nms, PWROFF_KNOB_X, nms->pwroff_knob_y, 1);
 		nms->pwroff_phase = PWROFF_DRAGGING;
@@ -2718,7 +2720,7 @@ static void ipod_touch_powerdown_tick(void *opaque)
 			nms->pwroff_phase = PWROFF_DARK;
 			ipod_touch_powerdown_arm(nms, PWROFF_DARK_POLL_MS);
 			if (trace) {
-				fprintf(stderr, "[PWROFF] slider released; "
+				TRACE_PRINTF(trace_ipod_touch_pwroff_log, "[PWROFF] slider released; "
 				                "waiting for the guest to halt\n");
 			}
 		}
@@ -2732,7 +2734,7 @@ static void ipod_touch_powerdown_tick(void *opaque)
 			break;
 		}
 		if (trace) {
-			fprintf(stderr, "[PWROFF] screen dark; unplugging the cable\n");
+			TRACE_PRINTF(trace_ipod_touch_pwroff_log, "[PWROFF] screen dark; unplugging the cable\n");
 		}
 		ipod_touch_set_usb_attached(OBJECT(nms), false, NULL);
 		nms->pwroff_phase = PWROFF_IDLE;
@@ -2755,8 +2757,8 @@ static void ipod_touch_powerdown_req(Notifier *n, void *opaque)
 	if (nms->pwroff_phase != PWROFF_IDLE && nms->pwroff_phase != PWROFF_DARK) {
 		return;   /* a sequence is already running */
 	}
-	if (getenv("IT_PWROFF_TRACE")) {
-		fprintf(stderr, "[PWROFF] home first, to get SpringBoard in front\n");
+	if (trace_event_get_state_backends(TRACE_IPOD_TOUCH_PWROFF_LOG)) {
+		TRACE_PRINTF(trace_ipod_touch_pwroff_log, "[PWROFF] home first, to get SpringBoard in front\n");
 	}
 	/*
 	 * Clear the USB-cable bit while powering down.
@@ -3008,8 +3010,8 @@ static void ipod_touch_osk_tick(void *opaque)
 	y = nms->osk_tapy[nms->osk_t_head];
 	nms->osk_t_head = (nms->osk_t_head + 1) % ARRAY_SIZE(nms->osk_tapx);
 
-	if (getenv("IT_OSK_TRACE")) {
-		fprintf(stderr, "[OSK] tap (%d,%d)\n", x, y);
+	if (trace_event_get_state_backends(TRACE_IPOD_TOUCH_OSK_LOG)) {
+		TRACE_PRINTF(trace_ipod_touch_osk_log, "[OSK] tap (%d,%d)\n", x, y);
 	}
 	nms->osk_last_x = x;
 	nms->osk_last_y = y;

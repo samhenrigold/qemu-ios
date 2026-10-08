@@ -1,6 +1,8 @@
 #include "hw/arm/ipod_touch_timer.h"
 #include "migration/vmstate.h"
 #include "hw/core/qdev-properties.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * freq_out is 10 MHz here while the tick counter at TIMER_TICKSHIGH/LOW runs at
@@ -33,11 +35,7 @@
  */
 static bool timer_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_TIMER_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_TIMER_LOG);
 }
 
 /* Dilation scales timer-4 interrupt intervals, preserving the existing counter
@@ -50,7 +48,7 @@ static void s5l8900_st_update(IPodTouchTimerState *s)
     s->tick_interval *= s->dilation;
     s->next_planned_tick = 0;
     if (timer_trace()) {
-        fprintf(stderr, "[TIMER] update: bcount1=%u bcount2=%u freq_out=%u "
+        TRACE_PRINTF(trace_ipod_touch_timer_log, "[TIMER] update: bcount1=%u bcount2=%u freq_out=%u "
                 "-> tick_interval=%" PRIu64 " ns (%.3f Hz)\n",
                 s->bcount1, s->bcount2, s->freq_out, s->tick_interval,
                 s->tick_interval ? 1e9 / (double)s->tick_interval : 0.0);
@@ -73,7 +71,7 @@ static void s5l8900_st_tick(void *opaque)
 
     if (s->status & TIMER_STATE_START) {
         if (timer_trace()) {
-            fprintf(stderr, "[TIMER] fire at %" PRId64 " ns (planned %" PRIu64 ")\n",
+            TRACE_PRINTF(trace_ipod_touch_timer_log, "[TIMER] fire at %" PRId64 " ns (planned %" PRIu64 ")\n",
                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->next_planned_tick + s->base_time);
         }
         qemu_irq_raise(s->irq);
@@ -162,7 +160,7 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
     IPodTouchTimerState *s = (struct IPodTouchTimerState *) opaque;
 
     if (timer_trace() && addr != s->irqlatch) {
-        fprintf(stderr, "[TIMER] W 0x%03x <- 0x%08x at %" PRId64 " ns\n",
+        TRACE_PRINTF(trace_ipod_touch_timer_log, "[TIMER] W 0x%03x <- 0x%08x at %" PRId64 " ns\n",
                 (unsigned)addr, (unsigned)value, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
     /* The interrupt-latch register moved between SoCs ("irqlatch" property:
@@ -224,7 +222,7 @@ static void s5l8900_timer1_write(void *opaque, hwaddr addr, uint64_t value, unsi
 }
 
 /*
- * IT_TIMER_TRACE: is the guest's 64-bit counter read ever torn?
+ * -trace ipod_touch_timer_log: is the guest's 64-bit counter read ever torn?
  *
  * TIMER_TICKSHIGH latches BOTH halves as a side effect of reading high, so a
  * guest that reads LOW first and HIGH second recombines two words sampled at
@@ -255,7 +253,7 @@ static void timer_count_order(bool high)
     }
     prev_high = high;
     if (((nhigh + nlow) % 20000) == 0) {
-        fprintf(stderr, "[TIMER] tickshigh=%" PRIu64 " tickslow=%" PRIu64
+        TRACE_PRINTF(trace_ipod_touch_timer_log, "[TIMER] tickshigh=%" PRIu64 " tickslow=%" PRIu64
                 " torn=%" PRIu64 "\n", nhigh, nlow, torn);
     }
 }

@@ -40,20 +40,18 @@
 #include <netinet/tcp.h>
 #include <sys/un.h>
 #include <netdb.h>
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static bool tcp_usb_debug(void)
 {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *e = getenv("IT_USB_TCP_DEBUG");
-		cached = (e && *e && *e != '0') ? 1 : 0;
-	}
-	return cached == 1;
+	return trace_event_get_state_backends(TRACE_IPOD_TOUCH_TCP_USB_LOG);
 }
 
 #define debug_printf(...) \
-	do { if (tcp_usb_debug()) fprintf(stderr, __VA_ARGS__); } while (0)
+	do { if (tcp_usb_debug()) TRACE_PRINTF(trace_ipod_touch_tcp_usb_log, __VA_ARGS__); } while (0)
 
+/* The title, then one line of up to eight bytes each. */
 static void debug_hexdump(const char *_title, const void *_data, size_t _amt)
 {
 	if (!tcp_usb_debug() || !_data) {
@@ -61,14 +59,14 @@ static void debug_hexdump(const char *_title, const void *_data, size_t _amt)
 	}
 
 	const unsigned char *ptr = _data;
-	fprintf(stderr, "%s", _title);
-	for (size_t i = 0; i < _amt; i++) {
-		if ((i % 8) == 0) {
-			fprintf(stderr, "\n\t");
+	trace_ipod_touch_tcp_usb_log(_title);
+	for (size_t i = 0; i < _amt; i += 8) {
+		char row[8 * 3 + 2] = "\t";
+		for (size_t j = i; j < _amt && j < i + 8; j++) {
+			snprintf(row + 1 + 3 * (j - i), 4, "%02x ", ptr[j]);
 		}
-		fprintf(stderr, "%02x ", ptr[i]);
+		trace_ipod_touch_tcp_usb_log(row);
 	}
-	fprintf(stderr, "\n");
 }
 
 void tcp_usb_init(tcp_usb_state_t *_state, tcp_usb_callback_t _cb, tcp_usb_closed_t _closed, void *_arg)

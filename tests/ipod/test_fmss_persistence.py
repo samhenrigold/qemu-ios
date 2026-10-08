@@ -21,6 +21,8 @@ for name in ("find_bit_index", "fmss_block_key", "fmss_key_compare",
 
 harness = r'''
 #include <glib.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <glib/gstdio.h>
 #include <assert.h>
 #include <errno.h>

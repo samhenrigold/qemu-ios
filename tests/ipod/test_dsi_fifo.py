@@ -12,6 +12,8 @@ for name in ('dsi_lane_mask','dsi_note_dcs','dsi_panel_read','ipod_touch_mipi_ds
     funcs.append(re.search(r'^static [^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S).group())
 pre=r'''
 #include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>

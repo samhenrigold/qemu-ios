@@ -8,28 +8,25 @@
 #include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "net/checksum.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * Every register access and every command is worth seeing while the dongle
  * emulation is being built, and is pure noise once it works - and the volume
- * is high enough to slow the guest down measurably. Set IPOD_SDIO_TRACE=1.
+ * is high enough to slow the guest down measurably. Use -trace ipod_touch_sdio_log.
  */
-static int sdio_trace_enabled = -1;
-
 static void G_GNUC_PRINTF(1, 2) trace_sdio(const char *fmt, ...)
 {
-    if (sdio_trace_enabled < 0) {
-        const char *v = getenv("IPOD_SDIO_TRACE");
-        sdio_trace_enabled = (v && *v && *v != '0');
-    }
-    if (!sdio_trace_enabled) {
+    if (!trace_event_get_state_backends(TRACE_IPOD_TOUCH_SDIO_LOG)) {
         return;
     }
 
     va_list ap;
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    g_autofree char *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
+    trace_ipod_touch_sdio_log(g_strchomp(msg));
 }
 
 /* Little-endian 24-bit CIS pointer, as the CCCR and FBRs store them. */

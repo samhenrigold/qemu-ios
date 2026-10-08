@@ -23,6 +23,8 @@
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "migration/vmstate.h"
 #include "system/runstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* ---- controller ---- */
 
@@ -82,8 +84,8 @@ static void i2c_do_transfer(S5L8930I2CState *s, bool write)
         s->rx_len = nak ? 0 : n;
     }
     i2c_end_transfer(s->bus);
-    if (getenv("S5L8930_I2C_TRACE")) {
-        fprintf(stderr, "[I2C%d] %s addr 0x%02x sub 0x%02x len %u%s\n",
+    if (trace_event_get_state_backends(TRACE_S5L8930_I2C_LOG)) {
+        TRACE_PRINTF(trace_s5l8930_i2c_log, "[I2C%d] %s addr 0x%02x sub 0x%02x len %u%s\n",
                 (int)((s->iomem.addr >> 20) & 0xf) - 2,
                 write ? "W" : "R", s->addr & 0x7f, s->subaddr & 0xff, n,
                 nak ? " NAK" : "");
@@ -375,8 +377,8 @@ static void d1815_adc_done(void *opaque)
             v = val;
         }
     }
-    if (getenv("S5L8930_I2C_TRACE")) {
-        fprintf(stderr, "[ADC] mux %u -> 0x%03x\n", mux, v);
+    if (trace_event_get_state_backends(TRACE_S5L8930_I2C_LOG)) {
+        TRACE_PRINTF(trace_s5l8930_i2c_log, "[ADC] mux %u -> 0x%03x\n", mux, v);
     }
 
     s->regs[PMU_ADC_RES] = v & 0xf;

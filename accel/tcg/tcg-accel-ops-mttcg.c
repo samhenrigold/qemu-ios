@@ -40,6 +40,8 @@
 
 #ifdef CONFIG_DARWIN
 #include <pthread/qos.h>
+#include "trace.h"
+#include "hw/trace-printf.h"
 #endif
 
 typedef struct MttcgForceRcuNotifier {
@@ -90,10 +92,10 @@ static void mttcg_request_performance_core(void)
     if (qos != QOS_CLASS_USER_INTERACTIVE) {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     }
-    if (getenv("IT_QOS_TRACE")) {
+    if (trace_event_get_state_backends(TRACE_MTTCG_VCPU_QOS_LOG)) {
         qos_class_t now = QOS_CLASS_UNSPECIFIED;
         pthread_get_qos_class_np(pthread_self(), &now, &relpri);
-        fprintf(stderr, "[qos] vcpu thread: was %d, now %d "
+        TRACE_PRINTF(trace_mttcg_vcpu_qos_log, "[qos] vcpu thread: was %d, now %d "
                 "(USER_INTERACTIVE=%d)\n",
                 (int)qos, (int)now, (int)QOS_CLASS_USER_INTERACTIVE);
     }

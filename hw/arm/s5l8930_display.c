@@ -25,6 +25,8 @@
 #include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 #define PIPE_WORDS          (S5L8930_DISP_PIPE0_SIZE / 4)
 #define CLCD_WORDS          (S5L8930_CLCD_SIZE / 4)
@@ -592,11 +594,11 @@ static void front_latch(S5L8930DisplayState *s)
     size_t need;
 
     panel_size(s, &w, &h);
-    if (getenv("IT_DISP_TRACE")) {
+    if (trace_event_get_state_backends(TRACE_S5L8930_DISPLAY_LOG)) {
         static unsigned n;
         uint32_t *r = s->pipe[0].regs;
         if (n++ < 200) {
-            fprintf(stderr, "[disp] swap %u: layers=%08x %ux%u "
+            TRACE_PRINTF(trace_s5l8930_display_log, "[disp] swap %u: layers=%08x %ux%u "
                     "(raw %08x/%08x) ui0=%08x ui1=%08x\n", s->pipe[0].swap_id,
                     r[DP_LAYERS / 4], w, h,
                     r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4], r[(DP_UI_BASE(1) + DP_UI_STRIDE) / 4],

@@ -1,14 +1,12 @@
 #include "hw/arm/ipod_touch_cd3272_mikey.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
-/* IT_MIKEY_TRACE=1 logs every register read; it was unconditional. */
+/* -trace cd3272_mikey_log logs every register read; it was unconditional. */
 static bool mikey_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_MIKEY_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_CD3272_MIKEY_LOG);
 }
 
 static int cd3272_mikey_event(I2CSlave *i2c, enum i2c_event event)
@@ -20,7 +18,7 @@ static uint8_t cd3272_mikey_recv(I2CSlave *i2c)
 {
     CD3272MikeyState *s = CD3272MIKEY(i2c);
     if (mikey_trace()) {
-        fprintf(stderr, "Reading mikey register %d\n", s->cmd);
+        TRACE_PRINTF(trace_cd3272_mikey_log, "Reading mikey register %d\n", s->cmd);
     }
 
     int res = 0;

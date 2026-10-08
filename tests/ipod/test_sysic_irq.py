@@ -16,6 +16,8 @@ for name in ('sysic_update_gpio_irq','sysic_gpio_irq_input','ipod_touch_sysic_re
     functions.append(match.group())
 prelude=r'''
 #include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>

@@ -43,6 +43,8 @@ typedef uint64_t ram_addr_t;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include "hw/arm/guest-services/gles.h"
 ''' + src[src.index('#include <TargetConditionals.h>'):src.index('/* Old guest engines retain')] + r'''
 static GLESHost gh_legacy;

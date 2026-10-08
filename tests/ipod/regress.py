@@ -436,6 +436,7 @@ class Device:
                 "-audio", ("driver=wav,path=" + audio_wav if audio_wav else "driver=none"),
                 "-serial", "file:" + self.serial,
                 "-qmp", "tcp:127.0.0.1:%d,server=on,wait=off" % cfg.qmp_port]
+        argv += getattr(cfg, "qemu_extra", [])   # e.g. ["-trace", "lis302dl_poll_log"]
         if cfg.wifi:
             proxy_option = ""
             if getattr(cfg, "web_proxy_config", None):

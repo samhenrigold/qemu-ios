@@ -1,15 +1,13 @@
 #include "hw/arm/ipod_touch_usb_phys.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
-/* Temporary diagnostic for the 3.1.3 USB bring-up; gated by IT_USB_TRACE. */
+/* Temporary diagnostic for the 3.1.3 USB bring-up; -trace ipod_touch_usb_phys_log. */
 static bool usb_phys_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_USB_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_USB_PHYS_LOG);
 }
 
 static uint64_t ipod_touch_usb_phys_read(void *opaque, hwaddr addr, unsigned size)
@@ -17,7 +15,7 @@ static uint64_t ipod_touch_usb_phys_read(void *opaque, hwaddr addr, unsigned siz
     IPodTouchUSBPhysState *s = (IPodTouchUSBPhysState *) opaque;
 
     if (usb_phys_trace()) {
-        fprintf(stderr, "[USBPHY] R 0x%03x\n", (unsigned)addr);
+        TRACE_PRINTF(trace_ipod_touch_usb_phys_log, "[USBPHY] R 0x%03x\n", (unsigned)addr);
     }
 
     switch(addr)
@@ -42,7 +40,7 @@ static void ipod_touch_usb_phys_write(void *opaque, hwaddr addr, uint64_t val, u
     IPodTouchUSBPhysState *s = (IPodTouchUSBPhysState *) opaque;
 
     if (usb_phys_trace()) {
-        fprintf(stderr, "[USBPHY] W 0x%03x = 0x%08x\n", (unsigned)addr, (unsigned)val);
+        TRACE_PRINTF(trace_ipod_touch_usb_phys_log, "[USBPHY] W 0x%03x = 0x%08x\n", (unsigned)addr, (unsigned)val);
     }
 
     switch(addr)

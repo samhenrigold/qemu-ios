@@ -25,6 +25,8 @@
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * Phase 0 diagnostics. This model was written against openiBoot, so the iOS
@@ -33,32 +35,22 @@
  * it impossible to observe what the driver actually wants; they now log via
  * LOG_UNIMP (visible with -d unimp) and return 0.
  *
- * Set IT_USB_TRACE=1 in the environment for a full read/write trace.
+ * -trace ipod_touch_usb_otg_log gives a full read/write trace.
  */
 static bool synopsys_usb_trace_enabled(void)
 {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *e = getenv("IT_USB_TRACE");
-		cached = (e && *e && *e != '0') ? 1 : 0;
-	}
-	return cached == 1;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_USB_OTG_LOG);
 }
 
 /*
  * Separate, finer-grained switch for the device->host (IN) path: every endpoint
  * arm the guest performs and every transaction the host pulls, with the first
- * bytes of the data actually read out of guest memory. IT_USB_TRACE is too
+ * bytes of the data actually read out of guest memory. ipod_touch_usb_otg_log is too
  * coarse (and too noisy) to answer where a bulk IN transfer's bytes come from.
  */
 static bool synopsys_usb_in_debug(void)
 {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *e = getenv("IT_USB_IN_DEBUG");
-		cached = (e && *e && *e != '0') ? 1 : 0;
-	}
-	return cached == 1;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_USB_OTG_IN_LOG);
 }
 
 static void synopsys_usb_update_irq(synopsys_usb_state *_state)
@@ -326,13 +318,13 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			 * flag; keep this consistent so a bulk transfer runs quietly.
 			 */
 			if (synopsys_usb_trace_enabled())
-				fprintf(stderr, "[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTCP] IN  ep%d %zu bytes\n", ep, amtDone);
 			if (synopsys_usb_in_debug()) {
 				static unsigned long in_seq;
 				uint8_t head[16] = {0};
 				const uint8_t *b = head;
 				memcpy(head, _buffer, MIN(amtDone, sizeof(head)));
-				fprintf(stderr,
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_in_log,
 				        "[USBIN] #%lu ep%d dma=0x%08x armed=%zu req=%zu got=%zu left=%zu "
 				        "head=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
 				        ++in_seq, ep, dma_before, sz, hdr_len, amtDone, remaining,
@@ -342,7 +334,7 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 			ret = amtDone;
 		} else {
 			if (synopsys_usb_trace_enabled())
-				fprintf(stderr, "[USBTCP] NAK IN  ep%d ctl=0x%08x tsiz=0x%08x "
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTCP] NAK IN  ep%d ctl=0x%08x tsiz=0x%08x "
 				        "gintsts=0x%08x gintmsk=0x%08x dcfg=0x%08x\n",
 				        ep, eps->control, eps->tx_size,
 				        state->gintsts, state->gintmsk, state->dcfg);
@@ -394,7 +386,7 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 					memcpy(sent, _buffer, n);
 					cpu_physical_memory_read(dma_before, back, n);
 				}
-				fprintf(stderr,
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_log,
 				        "[USBDMA] OUT ep%d hdr_len=%zu armed=%zu got=%zu dma 0x%08x"
 				        "%s sent=%02x%02x%02x%02x%02x%02x%02x%02x "
 				        "back=%02x%02x%02x%02x%02x%02x%02x%02x %s\n",
@@ -455,7 +447,7 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 				             | ((sz - amtDone) & DEPTSIZ_XFERSIZ_MASK)
 				             | ((pkts - amtDone / mps) << DEPTSIZ_PKTCNT_SHIFT);
 				if (synopsys_usb_trace_enabled())
-					fprintf(stderr, "[USBTCP] OUT ep%d %zu bytes (transfer continues)\n", ep, amtDone);
+					TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTCP] OUT ep%d %zu bytes (transfer continues)\n", ep, amtDone);
 				synopsys_usb_update_irq(state);
 				return amtDone;
 			}
@@ -496,12 +488,12 @@ static int synopsys_usb_tcp_callback(tcp_usb_state_t *_state, void *_arg,
 
 			/* Gated for the same reason as the IN path above. */
 			if (synopsys_usb_trace_enabled())
-				fprintf(stderr, "[USBTCP] OUT ep%d %zu bytes%s\n", ep, amtDone,
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTCP] OUT ep%d %zu bytes%s\n", ep, amtDone,
 				        (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "");
 			ret = amtDone;
 		} else {
 			if (synopsys_usb_trace_enabled())
-				fprintf(stderr, "[USBTCP] NAK OUT ep%d%s ctl=0x%08x tsiz=0x%08x "
+				TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTCP] NAK OUT ep%d%s ctl=0x%08x tsiz=0x%08x "
 				        "gintsts=0x%08x gintmsk=0x%08x dcfg=0x%08x pcgcctl=0x%08x\n",
 				        ep, (_hdr->flags & tcp_usb_setup) ? " (SETUP)" : "",
 				        eps->control, eps->tx_size,
@@ -658,7 +650,7 @@ static uint64_t synopsys_usb_read(void *opaque, hwaddr _addr, unsigned size)
 {
 	uint64_t v = synopsys_usb_read_reg(opaque, _addr, size);
 	if (synopsys_usb_trace_enabled())
-		fprintf(stderr, "[USBTRACE] R 0x%04x -> 0x%08x (size %u)\n", (unsigned)_addr, (unsigned)v, size);
+		TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTRACE] R 0x%04x -> 0x%08x (size %u)\n", (unsigned)_addr, (unsigned)v, size);
 	return v;
 }
 
@@ -789,7 +781,7 @@ static void synopsys_usb_in_ep_write(synopsys_usb_state *_state, int _ep, hwaddr
 		_state->in_eps[_ep].control = (_val & ~USB_EPCON_NAKSTS)
 		                            | (_state->in_eps[_ep].control & USB_EPCON_NAKSTS);
 		if (_ep && synopsys_usb_in_debug() && (_val & USB_EPCON_ENABLE)) {
-			fprintf(stderr, "[USBIN] arm ep%d DIEPCTL=0x%08x dma=0x%08x tsiz=0x%08x "
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_in_log, "[USBIN] arm ep%d DIEPCTL=0x%08x dma=0x%08x tsiz=0x%08x "
 			        "(xfer=%u pktcnt=%u)\n", _ep, (uint32_t)_val,
 			        (uint32_t)_state->in_eps[_ep].dma_address,
 			        _state->in_eps[_ep].tx_size,
@@ -837,7 +829,7 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 	case 0x00:
         _state->out_eps[_ep].control = _val;
 		if (synopsys_usb_trace_enabled()) {
-			fprintf(stderr, "[USBDMA] guest DOEPCTL[%d] = 0x%08x (dma 0x%08x tsiz 0x%08x)\n",
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPCTL[%d] = 0x%08x (dma 0x%08x tsiz 0x%08x)\n",
 			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address,
 			        _state->out_eps[_ep].tx_size);
 		}
@@ -855,7 +847,7 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 
     case 0x14:
 		if (synopsys_usb_trace_enabled()) {
-			fprintf(stderr, "[USBDMA] guest DOEPDMA[%d] = 0x%08x (was 0x%08x)\n",
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPDMA[%d] = 0x%08x (was 0x%08x)\n",
 			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address);
 		}
         _state->out_eps[_ep].dma_address = _val;
@@ -877,7 +869,7 @@ static void synopsys_usb_write(void *opaque, hwaddr _addr, uint64_t _val, unsign
 	synopsys_usb_state *state = (synopsys_usb_state *)opaque;
 
 	if (synopsys_usb_trace_enabled())
-		fprintf(stderr, "[USBTRACE] W 0x%04x = 0x%08x (size %u)\n",
+		TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBTRACE] W 0x%04x = 0x%08x (size %u)\n",
 		        (unsigned)_addr, (unsigned)_val, size);
 
 	switch(_addr)
@@ -1278,7 +1270,7 @@ static void synopsys_host_tick(void *opaque)
 	}
 	if (now > s->host_deadline) {
 		if (synopsys_usb_trace_enabled())
-			fprintf(stderr, "[USBHOST] phase %d timed out; restarting\n", s->host_phase);
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBHOST] phase %d timed out; restarting\n", s->host_phase);
 		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
 		return;
 	}
@@ -1395,7 +1387,7 @@ static void synopsys_host_tick(void *opaque)
 	}
 	if (r < 0) {
 		if (synopsys_usb_trace_enabled())
-			fprintf(stderr, "[USBHOST] phase %d failed (%d); restarting\n", s->host_phase, r);
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBHOST] phase %d failed (%d); restarting\n", s->host_phase, r);
 		synopsys_host_go(s, HP_RESET, HOST_RESTART_MS);
 		return;
 	}

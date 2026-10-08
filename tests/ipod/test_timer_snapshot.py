@@ -18,11 +18,12 @@ with tempfile.TemporaryDirectory(prefix='it-snapshot-modes-') as temporary:
                     f'iPod-Touch,bootrom={files}/bootrom_240_4,nand={files}/nand,nor={files}/nor_n72ap.bin,nandrw={out}/overlay,{option}={mode}',
                     '-m', '128M', '-display', 'none', '-serial', 'null', '-monitor', 'none',
                     '-qmp', f'unix:{qpath},server=on,wait=off',
-                    '-qtest', f'unix:{tpath},server=on,wait=off', '-qtest-log', str(out / 'qtest.log')]
+                    '-qtest', f'unix:{tpath},server=on,wait=off', '-qtest-log', str(out / 'qtest.log'),
+                    '-trace', 'ipod_touch_timer_log']
                 if phase: argv += ['-incoming', 'file:' + str(out / 'state')]
                 with (out / 'qemu.log').open('w') as log:
                     child = subprocess.Popen(argv, stdout=log, stderr=log,
-                        env={k:v for k,v in os.environ.items() if not k.startswith('IT_')} | {'IT_TIMER_TRACE':'1'})
+                        env={k:v for k,v in os.environ.items() if not k.startswith('IT_')})
                     q = None
                     try:
                         if phase == 2:

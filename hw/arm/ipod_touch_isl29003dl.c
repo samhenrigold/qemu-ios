@@ -1,14 +1,14 @@
 #include "hw/arm/ipod_touch_isl29003dl.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static bool lightsensor_trace(void)
 {
-    static int enabled = -1;
-    if (enabled < 0) enabled = getenv("IT_LIGHTSENSOR_TRACE") != NULL;
-    return enabled;
+    return trace_event_get_state_backends(TRACE_ISL29003DL_LOG);
 }
 #define LIGHT_TRACE(...) do { if (lightsensor_trace()) { \
-    fprintf(stderr, __VA_ARGS__); } } while (0)
+    TRACE_PRINTF(trace_isl29003dl_log, __VA_ARGS__); } } while (0)
 
 static int isl29003dl_event(I2CSlave *i2c, enum i2c_event event)
 {

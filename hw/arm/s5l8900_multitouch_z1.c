@@ -27,21 +27,19 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/arm/s5l8900_multitouch_z1.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 #define Z1_MAX_PACKET 0x294        /* the Zephyr2 model's, which its frames fit */
 
-/* MT_TRACE=1: bootloader and protocol events; 2: every transaction. */
+/* -trace s5l8900_z1_log: bootloader and protocol events; s5l8900_z1_xfer_log: every transaction. */
 static int z1_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("MT_TRACE");
-        on = e ? MAX(atoi(e), 1) : 0;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_S5L8900_Z1_XFER_LOG) ? 2 :
+           trace_event_get_state_backends(TRACE_S5L8900_Z1_LOG);
 }
 #define Z1T(fmt, ...) do { if (z1_trace()) { \
-    fprintf(stderr, "[Z1 %.3f] " fmt "\n", \
+    TRACE_PRINTF(trace_s5l8900_z1_log, "[Z1 %.3f] " fmt, \
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, ##__VA_ARGS__); } } while (0)
 
 static void (*z1_parent_realize)(SSIPeripheral *dev, Error **errp);
@@ -183,7 +181,9 @@ static void z1_finish(S5L8900MultitouchZ1State *s)
         for (unsigned i = 0; i < MIN(s->out_len, 8u); i++) {
             sprintf(rx + 3 * i, " %02x", s->out[i]);
         }
-        Z1T("xfer cmd %02x len %u tx%s | rx%s%s", s->cmd, s->index, hex, rx, s->streaming ? " (stream)" : "");
+        TRACE_PRINTF(trace_s5l8900_z1_xfer_log, "[Z1 %.3f] xfer cmd %02x len %u tx%s | rx%s%s",
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, s->cmd, s->index, hex, rx,
+                     s->streaming ? " (stream)" : "");
     }
     switch (s->cmd) {
     case 0xC2:

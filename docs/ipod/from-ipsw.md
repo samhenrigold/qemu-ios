@@ -188,7 +188,7 @@ display`, then GLTest's `GLESBindView` and `present tally: ok=600 failed=0`. 7E1
 Two 4.2.1 platform bugs from the 20260928c test, both in the card/PMU models, both fixed at the register the
 driver reads rather than per version (branch `ipod-421-platform`).
 
-**"No Wi-Fi".** With `IPOD_SDIO_TRACE=1` the 4.2.1 driver enumerates the card, enables function 1, sets the
+**"No Wi-Fi".** With `-trace ipod_touch_sdio_log` the 4.2.1 driver enumerates the card, enables function 1, sets the
 backplane window to 0x18000000, reads chipcommon ChipID (CMD53, 4 bytes) and then re-enumerates from CMD5, in a
 loop, with no firmware download and nothing on serial. `AppleBCMWLANChipManager::withDriver` (8C148 0x80779998)
 takes `chipInfo & 0xffff`: 0x4325 -> rev 5 "BCMWLAN revision D0" / 6 "D1", 0x4329 -> B0/B1/C0, anything else
@@ -198,7 +198,7 @@ the same revision (`include/hw/arm/ipod_touch_sdio.h`). Then: 256 KiB firmware d
 ready", the `ver`/`cap`/`event_msgs`/... CDC set, association, DHCP (`regress.py --checks boot,wifi`: PASS,
 "Link Up on en0, 2 DHCP reply/replies"). 3.1.3 accepts the same value (its SDIO trace is unchanged).
 
-**Lock only dims.** PMU trace (`IT_PMU_TRACE=1`) at Hold: 4.2.1 writes 0x30=0x26, 0x31=0x00 (the dim), then
+**Lock only dims.** PMU trace (`-trace pcf50633_pmu_log`) at Hold: 4.2.1 writes 0x30=0x26, 0x31=0x00 (the dim), then
 0x1d=0x12 and 0x10 0xe0 -> 0xa0; at wake 0x1d=0x12, 0x10 -> 0xe0, then 0x30=0xd2, 0x31=0x05. 3.1.3 writes
 0x30=0x01, 0x30=0x00, 0x31=0x00 and leaves 0x10 at 0xe0. So 4.2.1's `function-backlight_enable`
 (`AppleD1759PMUBacklightEnableFunction`, the DT `backlight` node's PMU function) is bit 6 of 0x10, the
@@ -231,7 +231,7 @@ Both are iBoot-385.49, Restore.plist SCEP 2, SEPO 2 on LLB and iBoot. Two findin
 
 The hold button does nothing on 2.x (2.1.1 too): no power sheet, no lock, so the machine's powerdown sequence never
 completes. 2.x's DeviceTree has no `function-button_hold` (3.x: GPIO 0xC02), only `function-wake_button_hold` (PMU
-STAT 0x191). With IT_GPIO_TRACE/IT_PMU_TRACE the guest acks the hold GPIO edge (group 3 bit 26) and never reads the
+STAT 0x191). With `-trace ipod_touch_sysic_gpio_log -trace pcf50633_pmu_log` the guest acks the hold GPIO edge (group 3 bit 26) and never reads the
 PMU; awake, the kernel unmasks only EVENT_C bits 2/4/6 (masks 0x95/0xdf/0xab), while the model latches hold at
 EVENT_C bit 1 on the press only. The hold's 2.x PMU event path is unmodeled (LightTouchMac docs/smoke.md #12).
 
@@ -516,7 +516,7 @@ What it took, each found on the device:
   (SpringBoard SIGSEGV in `glFinishTextureAPPLE`). The host now also unbinds a deleted bound framebuffer, as
   GL does (the next bind asked the default framebuffer for COLOR_ATTACHMENT0: INVALID_ENUM).
 
-Measured on 5F138 (`IT_LCD_FRAMETRACE` presents in each gesture's window, three passes each, same host
+Measured on 5F138 (`-trace ipod_touch_lcd_frame_log` presents in each gesture's window, three passes each, same host
 minutes; the host had other emulators running, load 9-15 on 16 cores). "cores" is QEMU's host CPU over the
 window.
 
@@ -612,7 +612,7 @@ What it took, each found on the device:
   sysctl is empty. The same binary runs on 1.x, 2.x and 3.x, and `n45-ios1` has its loader like every
   family.
 
-Measured on 3A101a, `IT_LCD_FRAMETRACE` presents (a present writes the scanout base twice, 0 then the
+Measured on 3A101a, `-trace ipod_touch_lcd_frame_log` presents (a present writes the scanout base twice, 0 then the
 buffer; the non-zero writes are counted) in each gesture's window, three passes each, same host minutes (load
 2-5 on 16 cores). "cores" is QEMU's host CPU over the window. Settings is the app (the one with a list; 1.1's
 home screen has one page, so no page swipe).
@@ -1054,7 +1054,7 @@ event waits and synthetic completion remain separate compatibility behavior.
 Research QMP MMIO capture must distinguish implemented readback from default
 zero: only D28 and D4C currently expose these parameter latches through CPU MMIO.
 Zero reads of C04/D08/D0C/D10/D18/D1C/D20/D30 do not establish stored latch values.
-Known Dxx CPU writes are not generally logged by FMSS_TRACE. Exact sequencer
+Known Dxx CPU writes are not generally logged by `-trace ipod_touch_fmss_log`. Exact sequencer
 operands need a separate diagnostic trace or host debugger; adding fake hardware
 readback solely to inspect model state would be the wrong fix.
 
@@ -1067,7 +1067,7 @@ not full ISA, parameter-bank, NAND operation or completion fidelity.
 
 ### Bounded FMSS command investigation
 
-`FMSS_SCRIPT_TRACE=1` enables an observational, process-wide sequencer trace.
+`-trace ipod_touch_fmss_script_log` enables an observational, process-wide sequencer trace.
 It records CPU parameter/start writes, the fetched instruction words and
 program-relative PCs, controller writes, register-read operands, descriptor
 read addresses and sequencer store addresses. `fmc_write_unmodeled` explicitly

@@ -21,6 +21,8 @@ header = (ROOT / "include/hw/arm/ipod_touch_fmss.h").read_text()
 
 pre = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

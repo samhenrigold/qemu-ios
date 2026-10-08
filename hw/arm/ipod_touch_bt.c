@@ -19,7 +19,7 @@
  * ponytail: command-complete only, no ACL/SCO data path and no link control.
  * Add those the day something in the guest actually needs to talk to a remote
  * device; every command below is here because the guest was observed sending
- * it (IT_BT_TRACE=1 prints the ones we still answer blind).
+ * it (-trace ipod_touch_bt_log prints the ones we still answer blind).
  */
 
 #include "qemu/osdep.h"
@@ -31,6 +31,8 @@
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/ipod_touch_1g.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* chardev_new() asserts on the prefix; every chardev type carries it. */
 #define TYPE_CHARDEV_IT_BT "chardev-ipodtouch-bt-hci"
@@ -92,11 +94,7 @@ DECLARE_INSTANCE_CHECKER(ItBtChardev, IT_BT_CHARDEV, TYPE_CHARDEV_IT_BT)
 
 static int bt_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_BT_TRACE") ? 1 : 0;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_BT_LOG);
 }
 
 /*
@@ -268,7 +266,7 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
         } else {
             memcpy(bt->bd_addr, bt->cmd + 4, sizeof(bt->bd_addr));
             if (bt_trace()) {
-                fprintf(stderr, "[BT] programmed address %02x:%02x:%02x:"
+                TRACE_PRINTF(trace_ipod_touch_bt_log, "[BT] programmed address %02x:%02x:%02x:"
                         "%02x:%02x:%02x\n", bt->bd_addr[5], bt->bd_addr[4],
                         bt->bd_addr[3], bt->bd_addr[2], bt->bd_addr[1],
                         bt->bd_addr[0]);
@@ -281,7 +279,7 @@ static void bt_command_complete(ItBtChardev *bt, uint16_t opcode)
     }
 
     if (!ret && !bt_is_write_command(opcode) && bt_trace()) {
-        fprintf(stderr, "[BT] answering opcode 0x%04x status-only; if the "
+        TRACE_PRINTF(trace_ipod_touch_bt_log, "[BT] answering opcode 0x%04x status-only; if the "
                 "guest expected return parameters, add it to "
                 "bt_ret_params()\n", opcode);
     }
@@ -339,7 +337,7 @@ static void bt_csr_bccmd(ItBtChardev *bt)
     }
     uint16_t varid = p[6] | p[7] << 8;
     if (bt_trace()) {
-        fprintf(stderr, "[BT] BCCMD type %u varid 0x%04x\n", p[0] | p[1] << 8, varid);
+        TRACE_PRINTF(trace_ipod_touch_bt_log, "[BT] BCCMD type %u varid 0x%04x\n", p[0] | p[1] << 8, varid);
     }
     if (varid == 0x4001 || varid == 0x4002) {
         return;
@@ -377,7 +375,7 @@ static int bt_chr_write(Chardev *chr, const uint8_t *buf, int len)
              * connection this model can never report.
              */
             if (bt_trace() && buf[i] != H4_ACL && buf[i] != H4_SCO) {
-                fprintf(stderr, "[BT] unexpected H4 indicator 0x%02x\n", buf[i]);
+                TRACE_PRINTF(trace_ipod_touch_bt_log, "[BT] unexpected H4 indicator 0x%02x\n", buf[i]);
             }
             continue;
         }
@@ -389,7 +387,7 @@ static int bt_chr_write(Chardev *chr, const uint8_t *buf, int len)
             uint16_t opcode = bt->cmd[1] | (bt->cmd[2] << 8);
 
             if (bt_trace()) {
-                fprintf(stderr, "[BT] cmd ogf=0x%02x ocf=0x%03x (0x%04x) "
+                TRACE_PRINTF(trace_ipod_touch_bt_log, "[BT] cmd ogf=0x%02x ocf=0x%03x (0x%04x) "
                         "plen=%u\n", opcode >> 10, opcode & 0x3ff, opcode,
                         bt->cmd[3]);
             }

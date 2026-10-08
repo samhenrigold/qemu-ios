@@ -1,14 +1,12 @@
 #include "hw/arm/ipod_touch_tethered.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
-/* IT_TETHERED_TRACE=1 logs every I2C access to the simulated demo card. */
+/* -trace ipod_touch_tethered_log logs every I2C access to the simulated demo card. */
 static bool tethered_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_TETHERED_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_TETHERED_LOG);
 }
 
 static int ipod_touch_tethered_event(I2CSlave *i2c, enum i2c_event event)
@@ -22,7 +20,7 @@ static uint8_t ipod_touch_tethered_recv(I2CSlave *i2c)
     uint8_t res = IT_TETHERED_MAGIC; /* identification byte the kext requires */
 
     if (tethered_trace()) {
-        fprintf(stderr, "[tethered] read reg 0x%02x -> 0x%02x\n", s->cmd, res);
+        TRACE_PRINTF(trace_ipod_touch_tethered_log, "[tethered] read reg 0x%02x -> 0x%02x\n", s->cmd, res);
     }
     s->cmd += 1;
     return res;
@@ -32,7 +30,7 @@ static int ipod_touch_tethered_send(I2CSlave *i2c, uint8_t data)
 {
     IPodTouchTetheredState *s = IPOD_TOUCH_TETHERED(i2c);
     if (tethered_trace()) {
-        fprintf(stderr, "[tethered] write 0x%02x (prev reg 0x%02x)\n", data, s->cmd);
+        TRACE_PRINTF(trace_ipod_touch_tethered_log, "[tethered] write 0x%02x (prev reg 0x%02x)\n", data, s->cmd);
     }
     s->cmd = data;
     return 0;

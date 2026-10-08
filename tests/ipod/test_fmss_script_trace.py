@@ -21,7 +21,7 @@ prelude = prelude.replace('    assert(n == 4 || n == 8);',
                           '    reads++; assert(n == 4 || n == 8);')
 prelude = prelude.replace('    if ((uint64_t)a + n > sizeof(mem)) return MEMTX_DECODE_ERROR;',
                           '    writes++; if ((uint64_t)a + n > sizeof(mem)) return MEMTX_DECODE_ERROR;')
-prelude += '\n#include <stdlib.h>\nstatic bool enabled;\nstatic bool fmss_script_trace_on(void) { return enabled; }\n'
+prelude += '\n#include <stdlib.h>\n#define TRACE_PRINTF(fn, ...) fprintf(stderr, __VA_ARGS__)\nstatic bool enabled;\nstatic bool fmss_script_trace_on(void) { return enabled; }\n'
 functions = []
 for name in ('fmss_script_trace', 'fmss_var_read', 'fmss_run_script'):
     match = re.search(r'^static [^\n]*\b' + name + r'\([^)]*\)\s*\{.*?^}', source, re.M | re.S)

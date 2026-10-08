@@ -21,6 +21,8 @@ for name in ('pmgr_modeled','pmgr_ticks','evt_remaining','evt_arm','evt_expire',
     functions.append(m.group())
 prelude = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

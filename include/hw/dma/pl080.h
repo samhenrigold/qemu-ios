@@ -79,10 +79,10 @@ struct PL080State {
     MemoryRegion *downstream;
     AddressSpace downstream_as;
 
-    /* IT_DMAC_TRACE: which controller this is, in instantiation order, purely
+    /* pl080_dmac_log: which controller this is, in instantiation order, purely
      * so a trace of two identical devices can be told apart. */
     int trace_id;
-    /* IT_DMAC_TRACE: last logged level of the combined interrupt line. */
+    /* pl080_dmac_log: last logged level of the combined interrupt line. */
     int last_level;
     /*
      * Source address of the element currently in flight, on whichever channel

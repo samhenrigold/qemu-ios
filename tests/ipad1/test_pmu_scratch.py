@@ -13,6 +13,8 @@ body = src[src.index('OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State'):src.index('
 body = body.replace('OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)', 'typedef struct S5L8930D1815State S5L8930D1815State;')
 pre = r'''
 #include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>

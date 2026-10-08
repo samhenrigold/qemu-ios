@@ -20,6 +20,8 @@
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "qemu/timer.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 #define PL080_CONF_E    0x1
 #define PL080_CONF_M1   0x2
@@ -85,11 +87,11 @@ static const unsigned char pl081_id[] =
 { 0x81, 0x10, 0x04, 0x0a, 0x0d, 0xf0, 0x05, 0xb1 };
 
 /*
- * IT_DMAC_TRACE=1 -- log every PL080 register access with the guest PC.
+ * -trace pl080_dmac_log -- log every PL080 register access with the guest PC.
  *
  * Why this exists: on the iPod touch 2G, AppleARMIISAudio builds and submits a
  * well-formed 61440-byte DMA request to AppleARMPL080DMAC and no channel is
- * ever pointed at the I2S TX FIFO (0x3ca00010). IT_DMA_TRACE only shows channel
+ * ever pointed at the I2S TX FIFO (0x3ca00010). pl080_dma_log only shows channel
  * STARTS, so it cannot distinguish "the DMAC kext never looked at the hardware"
  * from "it looked, did not like an answer, and gave up". This shows the whole
  * conversation, with the PC that made each access, which is the only way to
@@ -125,14 +127,9 @@ static const char *pl080_regname(hwaddr offset)
     }
 }
 
-bool it_dmac_trace_on(void);
-bool it_dmac_trace_on(void)
+static bool it_dmac_trace_on(void)
 {
-    static int cached = -1;
-    if (cached < 0) {
-        cached = getenv("IT_DMAC_TRACE") != NULL;
-    }
-    return cached;
+    return trace_event_get_state_backends(TRACE_PL080_DMAC_LOG);
 }
 
 static void pl080_trace(PL080State *s, hwaddr offset, uint32_t val, bool write)
@@ -147,7 +144,7 @@ static void pl080_trace(PL080State *s, hwaddr offset, uint32_t val, bool write)
     if (current_cpu && CPU_GET_CLASS(current_cpu)->get_pc) {
         pc = CPU_GET_CLASS(current_cpu)->get_pc(current_cpu);
     }
-    fprintf(stderr, "[dmac%d] %c %03x %-14s %08x  pc=%08x t=%" PRId64 "\n",
+    TRACE_PRINTF(trace_pl080_dmac_log, "[dmac%d] %c %03x %-14s %08x  pc=%08x t=%" PRId64 "\n",
             s->trace_id, write ? 'W' : 'R', (unsigned)offset,
             pl080_regname(offset), val, (uint32_t)pc,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -196,7 +193,7 @@ static void pl080_update(PL080State *s)
     errlevel = (s->err_int & s->err_mask);
 
     /*
-     * IT_DMAC_TRACE also shows every transition of the combined interrupt line,
+     * pl080_dmac_log also shows every transition of the combined interrupt line,
      * with the pending mask. Both iPod touch DMACs are wired to the same VIC
      * number and s5l8900_get_irq() hands out the SAME qemu_irq for it, so
      * whichever controller drives it last wins -- and the register trace alone
@@ -205,7 +202,7 @@ static void pl080_update(PL080State *s)
      */
     if (it_dmac_trace_on() && s->last_level != (int)(errlevel || tclevel)) {
         s->last_level = errlevel || tclevel;
-        fprintf(stderr, "[dmac%d] IRQ %s  tc_int=%02x tc_mask=%02x t=%" PRId64
+        TRACE_PRINTF(trace_pl080_dmac_log, "[dmac%d] IRQ %s  tc_int=%02x tc_mask=%02x t=%" PRId64
                 "\n", s->trace_id, s->last_level ? "HIGH" : "low ",
                 s->tc_int, s->tc_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
@@ -389,7 +386,7 @@ again:
                                                    MEMTXATTRS_UNSPECIFIED,
                                                    NULL);
                     if (it_dmac_trace_on()) {
-                        fprintf(stderr, "[dmac%d] LLI ch%d -> src=%08x "
+                        TRACE_PRINTF(trace_pl080_dmac_log, "[dmac%d] LLI ch%d -> src=%08x "
                                 "ctrl=%08x next=%08x t=%" PRId64 "\n",
                                 s->trace_id, c, ch->src, ch->ctrl, ch->lli,
                                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -499,7 +496,7 @@ void pl080_set_dma_last_request(PL080State *s, int id)
             s->tc_int |= 1 << c;
         }
         if (it_dmac_trace_on()) {
-            fprintf(stderr, "[dmac%d] LAST req%d ch%d residue=%u t=%" PRId64
+            TRACE_PRINTF(trace_pl080_dmac_log, "[dmac%d] LAST req%d ch%d residue=%u t=%" PRId64
                     "\n", s->trace_id, id, c, ch->ctrl & 0xfff,
                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         }
@@ -646,14 +643,10 @@ static void pl080_write(void *opaque, hwaddr offset,
         case 4: /* Configuration */
             //printf("%s: setting configuration of channel %d to 0x%08x\n", __func__, i, value);
             s->chan[i].conf = value;
-            /* IT_DMA_TRACE=1: one line per channel start, which is how you see
-             * whether anything is ever pointed at a peripheral FIFO. */
-            static int trace = -1;
-            if (trace < 0) {
-                trace = getenv("IT_DMA_TRACE") != NULL;
-            }
-            if (trace) {
-                fprintf(stderr, "[dma] ch%d src=%08x dst=%08x ctrl=%08x "
+            /* -trace pl080_dma_log: one line per channel start, which is how you
+             * see whether anything is ever pointed at a peripheral FIFO. */
+            if (trace_event_get_state_backends(TRACE_PL080_DMA_LOG)) {
+                TRACE_PRINTF(trace_pl080_dma_log, "[dma] ch%d src=%08x dst=%08x ctrl=%08x "
                         "conf=%08x\n", i, s->chan[i].src, s->chan[i].dest,
                         s->chan[i].ctrl, (uint32_t)value);
             }

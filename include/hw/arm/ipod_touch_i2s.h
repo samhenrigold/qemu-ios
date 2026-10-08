@@ -201,7 +201,7 @@ typedef struct IPodTouchI2SState {
     uint64_t pace_fraction;   /* fractional bytes, denominator 1e9 */
     uint32_t pace_debt;       /* bytes the drain still owes after a host stall */
     bool pushed_since_tick;   /* any PL080 delivery since the last pace tick */
-    int64_t last_push_ns;     /* IT_I2S_STALLDBG: when the FIFO last saw data */
+    int64_t last_push_ns;     /* ipod_touch_i2s_stall_log: when the FIFO last saw data */
 
     FILE *dump;           /* IT_I2S_DUMP: raw s16le stereo tap of the FIFO */
     uint64_t total_bytes; /* lifetime PCM bytes seen at the FIFO (debug) */

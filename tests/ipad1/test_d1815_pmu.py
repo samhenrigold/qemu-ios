@@ -40,6 +40,8 @@ for name in ('d1815_halt_reason', 'd1815_update_irq', 'd1815_adc_done', 's5l8930
 
 prelude = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

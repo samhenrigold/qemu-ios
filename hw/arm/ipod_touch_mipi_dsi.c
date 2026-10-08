@@ -2,15 +2,13 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "hw/core/qdev-properties.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* Cache opt-in tracing; lane/reset state belongs to the physical DSIM. */
 static bool dsi_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_DSI_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_MIPI_DSI_LOG);
 }
 
 static uint32_t dsi_lane_mask(IPodTouchMIPIDSIState *s)
@@ -35,7 +33,7 @@ static void dsi_panel_read(IPodTouchMIPIDSIState *s, uint32_t header)
 static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned size)
 {
     if (addr != 0x00000 && dsi_trace()) {
-        fprintf(stderr, "%s: read from location 0x%08" PRIx64 "\n", __func__, addr);
+        TRACE_PRINTF(trace_ipod_touch_mipi_dsi_log, "%s: read from location 0x%08" PRIx64 "\n", __func__, addr);
     }
 
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
@@ -122,7 +120,7 @@ static void ipod_touch_mipi_dsi_write(void *opaque, hwaddr addr, uint64_t val, u
 {
     IPodTouchMIPIDSIState *s = (IPodTouchMIPIDSIState *)opaque;
     if (dsi_trace()) {
-        fprintf(stderr, "%s: writing 0x%08" PRIx64 " to 0x%08" PRIx64 "\n", __func__, val, addr);
+        TRACE_PRINTF(trace_ipod_touch_mipi_dsi_log, "%s: writing 0x%08" PRIx64 " to 0x%08" PRIx64 "\n", __func__, val, addr);
     }
 
     switch(addr)

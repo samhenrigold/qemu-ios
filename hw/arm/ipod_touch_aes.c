@@ -5,6 +5,8 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* Bound host scratch storage, not the hardware transfer length. Stock iBSS
  * decrypts restore ramdisks larger than 16 MiB in one contiguous request. */
@@ -31,16 +33,10 @@
  */
 #define IT_AES_GID_BLOB_SIZE 32
 
-/* Debug chatter is opt-in via IT_AES_DEBUG=1 in the environment. */
+/* Debug chatter is opt-in: -trace ipod_touch_aes_log. */
 static bool it_aes_debug(void)
 {
-    static int cached = -1;
-
-    if (cached < 0) {
-        const char *e = getenv("IT_AES_DEBUG");
-        cached = (e && *e && *e != '0') ? 1 : 0;
-    }
-    return cached == 1;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_AES_LOG);
 }
 
 typedef struct ITGidBlob {
@@ -575,7 +571,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
         memset(s->ivec, 0, sizeof(s->ivec));
     }
     if (it_aes_debug()) {
-        fprintf(stderr, "ipodtouch.aes: custom %s go=%u status=0x%x left=%u\n",
+        TRACE_PRINTF(trace_ipod_touch_aes_log, "ipodtouch.aes: custom %s go=%u status=0x%x left=%u\n",
                 enc ? "enc" : "dec", go, s->status, s->remaining);
     }
     aes_update_irq(s);
@@ -693,7 +689,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
 
             buf = g_malloc(IT_AES_DMA_CHUNK);
             if (it_aes_debug()) {
-                fprintf(stderr, "ipodtouch.aes: type=%d in=0x%08x/%u out=0x%08x\n",
+                TRACE_PRINTF(trace_ipod_touch_aes_log, "ipodtouch.aes: type=%d in=0x%08x/%u out=0x%08x\n",
                         aesop->keytype, aesop->inaddr, aesop->insize, aesop->outaddr);
             }
 
@@ -726,7 +722,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                 }
 
                 if (it_aes_debug()) {
-                    fprintf(stderr, "ipodtouch.aes: GID KBAG matched \"%s\"\n", blob->name);
+                    TRACE_PRINTF(trace_ipod_touch_aes_log, "ipodtouch.aes: GID KBAG matched \"%s\"\n", blob->name);
                 }
 
                 memset(buf, 0, IT_AES_DMA_CHUNK);

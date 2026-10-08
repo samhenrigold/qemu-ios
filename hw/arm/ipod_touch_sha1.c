@@ -2,6 +2,8 @@
 #include "hw/arm/sha1_compress.h"
 #include "exec/cpu-common.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* Bound host scratch storage, not the full-width DMA length register. */
 #define IT_SHA1_DMA_CHUNK (64 * 1024)
@@ -35,11 +37,7 @@ static const uint32_t sha1_iv[5] = {
 
 static bool sha1_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_SHA1_DEBUG") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_SHA1_LOG);
 }
 
 bool ipod_touch_sha1_last_hash(IPodTouchSHA1State *s, uint8_t out[20])
@@ -126,12 +124,11 @@ static void sha1_run(IPodTouchSHA1State *s, bool notify)
     sha1_publish(s);
 
     if (sha1_trace()) {
-        printf("[SHA1] state=");
+        char hex[41];
         for (int i = 0; i < 20; i++) {
-            printf("%02x", s->last_hash[i]);
+            snprintf(hex + 2 * i, 3, "%02x", s->last_hash[i]);
         }
-        printf("\n");
-        fflush(stdout);
+        TRACE_PRINTF(trace_ipod_touch_sha1_log, "[SHA1] state=%s", hex);
     }
 
     if (notify && s->int_enable) {
@@ -147,7 +144,7 @@ static uint64_t ipod_touch_sha1_read(void *opaque, hwaddr offset, unsigned size)
 	IPodTouchSHA1State *s = (IPodTouchSHA1State *)opaque;
 
     if (sha1_trace() && (offset < SHA_HASHOUT || offset > SHA_HASHOUT_END)) {
-        printf("[SHA1] RD %#04x\n", (unsigned)offset);
+        TRACE_PRINTF(trace_ipod_touch_sha1_log, "[SHA1] RD %#04x\n", (unsigned)offset);
         fflush(stdout);
     }
 
@@ -184,7 +181,7 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
     IPodTouchSHA1State *s = (IPodTouchSHA1State *)opaque;
 
     if (sha1_trace() && (offset < SHA_HWBUF || offset > SHA_HWBUF_END)) {
-        printf("[SHA1] WR %#04x <- %#010llx\n", (unsigned)offset,
+        TRACE_PRINTF(trace_ipod_touch_sha1_log, "[SHA1] WR %#04x <- %#010llx\n", (unsigned)offset,
                (unsigned long long)value);
         fflush(stdout);
     }
@@ -199,7 +196,7 @@ static void ipod_touch_sha1_write(void *opaque, hwaddr offset, uint64_t value, u
 			if (value & 0x2)
 			{
                 if (sha1_trace()) {
-                    printf("[SHA1] GO config=%#llx memory_mode=%u start=%#x "
+                    TRACE_PRINTF(trace_ipod_touch_sha1_log, "[SHA1] GO config=%#llx memory_mode=%u start=%#x "
                            "insize=%#x hw_dirty=%d int_en=%u\n",
                            (unsigned long long)value,
                            s->memory_mode, s->memory_start, s->insize,

@@ -5,15 +5,12 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-clock.h"
 #include "trace.h"
+#include "hw/trace-printf.h"
 
-/* IT_CLOCK_TRACE=1: every clock-controller access with a host timestamp. */
+/* -trace ipod_touch_clock_log: every clock-controller access with a host timestamp. */
 static bool clock_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_CLOCK_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_CLOCK_LOG);
 }
 
 /* S5L8720 register encoding is corroborated by OpeniBoot's hardware/clock.h
@@ -66,7 +63,7 @@ static void ipod_touch_clock_update(IPodTouchClockState *s)
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     if (clock_trace()) {
-        fprintf(stderr, "[CLOCK %.3f] W %p 0x%03x <- 0x%08x\n",
+        TRACE_PRINTF(trace_ipod_touch_clock_log, "[CLOCK %.3f] W %p 0x%03x <- 0x%08x\n",
                 g_get_monotonic_time() / 1e6, opaque, (unsigned)addr, (unsigned)val);
     }
     IPodTouchClockState *s = (struct IPodTouchClockState *) opaque;
@@ -155,7 +152,7 @@ static uint64_t s5l8900_clock_read(void *opaque, hwaddr addr, unsigned size)
 {
     uint64_t v = s5l8900_clock_read_reg(opaque, addr, size);
     if (clock_trace()) {
-        fprintf(stderr, "[CLOCK %.3f] R %p 0x%03x -> 0x%08x\n",
+        TRACE_PRINTF(trace_ipod_touch_clock_log, "[CLOCK %.3f] R %p 0x%03x -> 0x%08x\n",
                 g_get_monotonic_time() / 1e6, opaque, (unsigned)addr, (unsigned)v);
     }
     return v;

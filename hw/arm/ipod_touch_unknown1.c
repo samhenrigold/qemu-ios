@@ -1,19 +1,17 @@
 #include "hw/arm/ipod_touch_unknown1.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
-/* IT_UNKNOWN1_TRACE=1 logs every read; it was unconditional and per-access. */
+/* -trace ipod_touch_unknown1_log logs every read; it was unconditional and per-access. */
 static bool unknown1_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_UNKNOWN1_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_UNKNOWN1_LOG);
 }
 
 static uint64_t ipod_touch_unknown1_read(void *opaque, hwaddr addr, unsigned size)
 {
     if (unknown1_trace()) {
-        fprintf(stderr, "%s: offset = 0x%08x\n", __func__, (unsigned)addr);
+        TRACE_PRINTF(trace_ipod_touch_unknown1_log, "%s: offset = 0x%08x\n", __func__, (unsigned)addr);
     }
 
     switch (addr) {

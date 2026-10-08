@@ -2,6 +2,8 @@
 #include "hw/arm/ipod_touch_guard.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * The declared frame length, the buffer size and the checksum position all have
@@ -24,12 +26,10 @@ static MTFrame *mt_build_frame(IPodTouchMultitouchState *s,
 
 static bool mt_trace(void)
 {
-    static int on = -1;
-    if (on < 0) { on = getenv("MT_TRACE") != NULL; }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_MULTITOUCH_LOG);
 }
 #define MTT(fmt, ...) do { if (mt_trace()) { \
-    fprintf(stderr, "[MT %.3f] " fmt "\n", \
+    TRACE_PRINTF(trace_ipod_touch_multitouch_log, "[MT %.3f] " fmt, \
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, ##__VA_ARGS__); } } while (0)
 
 /* Saturate a computed finger velocity into the int16_t the frame carries. */

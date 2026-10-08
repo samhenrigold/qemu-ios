@@ -28,3 +28,6 @@ store_atom16_fallback(uint32_t memop, uintptr_t ra) "mop:0x%"PRIx32", ra:0x%"PRI
 
 # tb-maint.c
 tb_flush(void) ""
+
+# qemu-ios debug logs (formerly getenv-gated fprintf)
+mttcg_vcpu_qos_log(const char *msg) "%s"

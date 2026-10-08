@@ -1,6 +1,8 @@
 #include "hw/arm/ipod_touch_sysic.h"
 #include "migration/vmstate.h"
 #include "hw/core/qdev-properties.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * Cached: consulted on every GPIO interrupt-status access, and the guest polls
@@ -8,11 +10,7 @@
  */
 static bool sysic_gpio_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_GPIO_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_SYSIC_GPIO_LOG);
 }
 
 
@@ -127,7 +125,7 @@ static uint64_t ipod_touch_sysic_read(void *opaque, hwaddr addr, unsigned size)
             uint8_t group = (addr - GPIO_INTSTAT) / 4;
             uint32_t v = group < GPIO_NUMINTGROUPS ? s->gpio_int_status[group] : 0;
             if (v && sysic_gpio_trace()) {
-                fprintf(stderr, "[gpio] STAT  group %u -> %08x\n", group, v);
+                TRACE_PRINTF(trace_ipod_touch_sysic_gpio_log, "[gpio] STAT  group %u -> %08x\n", group, v);
             }
             return v;
         }
@@ -187,7 +185,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
             if (group < GPIO_NUMINTGROUPS) {
                 uint32_t was = sysic_pad_match(s, group);
                 if (sysic_gpio_trace()) {
-                    fprintf(stderr, "[gpio] LEVEL group %u <- %08x\n", group, (uint32_t)val);
+                    TRACE_PRINTF(trace_ipod_touch_sysic_gpio_log, "[gpio] LEVEL group %u <- %08x\n", group, (uint32_t)val);
                 }
                 s->gpio_int_level[group] = val;
                 sysic_pad_eval(s, group, was);
@@ -211,7 +209,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
              */
             if (group < GPIO_NUMINTGROUPS) {
                 if (sysic_gpio_trace()) {
-                    fprintf(stderr, "[gpio] ACK   group %u <- %08x "
+                    TRACE_PRINTF(trace_ipod_touch_sysic_gpio_log, "[gpio] ACK   group %u <- %08x "
                             "(stat %08x -> %08x)\n", group, (uint32_t)val,
                             s->gpio_int_status[group],
                             s->gpio_int_status[group] & ~(uint32_t)val);
@@ -229,14 +227,14 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
             uint8_t group = (addr - GPIO_INTEN) / 4;
             if (group < GPIO_NUMINTGROUPS) {
                 /*
-                 * IT_GPIO_TRACE=1: which GPIO interrupt sources the guest arms,
+                 * -trace ipod_touch_sysic_gpio_log: which GPIO interrupt sources the guest arms,
                  * and when. Answering "does the driver actually enable the
                  * source it then sleeps on" needs this; a source that is never
                  * armed and one that is armed but never asserted look identical
                  * from the driver's side.
                  */
                 if (sysic_gpio_trace()) {
-                    fprintf(stderr, "[gpio] INTEN group %u <- %08x "
+                    TRACE_PRINTF(trace_ipod_touch_sysic_gpio_log, "[gpio] INTEN group %u <- %08x "
                             "(was %08x, stat %08x)\n", group, (uint32_t)val,
                             s->gpio_int_enabled[group],
                             s->gpio_int_status[group]);
@@ -255,7 +253,7 @@ static void ipod_touch_sysic_write(void *opaque, hwaddr addr, uint64_t val, unsi
             if (group < GPIO_NUMINTGROUPS) {
                 uint32_t was = sysic_pad_match(s, group);
                 if (sysic_gpio_trace()) {
-                    fprintf(stderr, "[gpio] TYPE  group %u <- %08x\n", group, (uint32_t)val);
+                    TRACE_PRINTF(trace_ipod_touch_sysic_gpio_log, "[gpio] TYPE  group %u <- %08x\n", group, (uint32_t)val);
                 }
                 s->gpio_int_type[group] = val;
                 sysic_pad_eval(s, group, was);

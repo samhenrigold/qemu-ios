@@ -56,6 +56,8 @@
 #include "migration/vmstate.h"
 #include "system/dma.h"
 #include "qemu/timer.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 
@@ -865,9 +867,9 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     CDMAChannel *c = &s->ch[ch];
-    if (getenv("S5L8930_CDMA_TRACE") && c->fifo >= CDMA_PACED_LO &&
+    if (trace_event_get_state_backends(TRACE_S5L8930_CDMA_LOG) && c->fifo >= CDMA_PACED_LO &&
         c->fifo < CDMA_PACED_HI) {
-        fprintf(stderr, "[CDMA] ch 0x%x W +%02x <- 0x%x (ctrl 0x%x paced %d)\n",
+        TRACE_PRINTF(trace_s5l8930_cdma_log, "[CDMA] ch 0x%x W +%02x <- 0x%x (ctrl 0x%x paced %d)\n",
                 ch, (unsigned)reg, v, c->ctrl, s->paced[ch]);
     }
     switch (reg) {
@@ -900,8 +902,8 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
             cdma_paced_stop(s, ch);
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
-            if (getenv("S5L8930_CDMA_TRACE")) {
-                fprintf(stderr, "[CDMA] %.4f go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
+            if (trace_event_get_state_backends(TRACE_S5L8930_CDMA_LOG)) {
+                TRACE_PRINTF(trace_s5l8930_cdma_log, "[CDMA] %.4f go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
                         "desc 0x%x\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
                         ch, v, c->settings, c->fifo, c->desc);
             }

@@ -8,24 +8,20 @@
 #include "system/address-spaces.h"
 #include "hw/core/qdev-properties.h"
 #include "qemu/bswap.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
- * MMIO trace, off unless MBX_TRACE=1 is in the emulator's environment.
+ * MMIO trace, off unless -trace ipod_touch_mbx_log.
  *
  * The guest PC is logged with every access: AppleMBX.kext is carved out at
  * ~/Developer/ipod2g-re/kexts/com.apple.driver.AppleMBX.macho with
  * __text at 0xc04e4000, so a PC in that range maps straight onto a disassembly
  * line and tells you which driver routine touched the register.
  */
-static int mbx_trace = -1;
-
 static bool mbx_tracing(void)
 {
-    if (mbx_trace < 0) {
-        const char *v = getenv("MBX_TRACE");
-        mbx_trace = (v && *v && *v != '0') ? 1 : 0;
-    }
-    return mbx_trace == 1;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_MBX_LOG);
 }
 
 static uint32_t mbx_guest_pc(void)
@@ -39,7 +35,7 @@ static uint32_t mbx_guest_pc(void)
 #define MBX_TRACE(fmt, ...)                                                    \
     do {                                                                       \
         if (mbx_tracing()) {                                                    \
-            fprintf(stderr, "[MBX] pc=0x%08x " fmt "\n", mbx_guest_pc(),        \
+            TRACE_PRINTF(trace_ipod_touch_mbx_log, "[MBX] pc=0x%08x " fmt, mbx_guest_pc(), \
                     ##__VA_ARGS__);                                             \
         }                                                                      \
     } while (0)

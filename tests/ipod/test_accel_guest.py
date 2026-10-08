@@ -7,13 +7,12 @@ import regress as r
 root=Path(__file__).resolve().parents[2]
 f=str(root.parent/'qemu-ios-files')
 os.environ['PATH']=str(root.parent/'qemu-ios-deps12/bin')+':'+os.environ['PATH']
-os.environ['IT_ACCEL_TRACE']='1'
 out=tempfile.mkdtemp(prefix='it-accel-guest-')
 cfg=SimpleNamespace(out=out,files=f,base_nand=f+'/nand-agent-v2',nor=f+'/ios3/nor_7E18.bin',
  overlay=out+'/overlay',qemu=str(root/'build-native14/qemu-build/qemu-system-arm'),
  usbmuxd=str(root/'build-native14/build/usbmuxd/src/usbmuxd'),usbmuxd_ok=True,
  usb_port=r.free_port(1520,1539),mux_port=r.free_port(27400,27419),qmp_port=r.free_port(28200,28219),
- wifi=False,cpu=None,mem='128M',kernel_console=True,install_timeout=420,proxy_lo=28460,proxy_hi=28479)
+ wifi=False,cpu=None,qemu_extra=['-trace','lis302dl_poll_log'],mem='128M',kernel_console=True,install_timeout=420,proxy_lo=28460,proxy_hi=28479)
 r.START=time.time();p=r.Procs();d=r.Device(cfg,p,'device')
 print('OUTPUT',out,flush=True)
 try:

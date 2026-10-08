@@ -32,7 +32,7 @@ with working touch; lockdownd reports the device activated.
   firmware it carries (block CRCs checked), reads the card's EEPROM, scans, and joins the model's open "qemu-ios";
   frames go to `-netdev ...,id=wifi0` (user networking when none is given). A FirmwareKit n45 device has Wi-Fi on
   and qemu-ios known: 1.1.5 (4B1) joins at boot, 1.1 (3A101a) after one tap on the network in Settings
-  (LightTouchMac smoke #61). Safari loads pages from the host at 10.0.2.2. `MRVL_TRACE=1` logs commands.
+  (LightTouchMac smoke #61). Safari loads pages from the host at 10.0.2.2. `-trace mrvl8686_log` logs commands.
 - Buttons: `qemu_ios_ui_button` Home and Hold drive the same pads as the Cmd chords
   (`ipod_touch_1g_press_button`); the 1G has no volume buttons. `system_powerdown` is the user's gesture,
   as on the 2G and the iPad: Home, Hold 6 s (1.1 raises the sheet 3-4 s into a hold, later on the first), drag the "slide to power off" knob (65,68 -> 295);
@@ -78,7 +78,7 @@ A GL device: `firmwarekit create --catalog CATALOG --id n45ap-3A101a --ipsw
 with those in place of the set's files, or `tests/ipod/regress.py --device OUT --checks boot,gles`. Keep the
 guest awake in a test (a tap on an empty spot every 15-20 s): it does not wake from sleep yet.
 
-Traces: `LCD_TRACE`, `MT_TRACE`, `IT_FMC_TRACE`, `IT_TIMER_TRACE`, `IT_CLOCK_TRACE`.
+Traces (`-trace NAME`): `ipod_touch_lcd_log`, `ipod_touch_multitouch_log`, `s5l8900_fmc_log`, `s5l8900_adm_log`, `ipod_touch_timer_log`, `ipod_touch_clock_log`.
 
 ## Models: reused, varied, ported, new
 

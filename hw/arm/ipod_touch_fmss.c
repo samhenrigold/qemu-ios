@@ -8,6 +8,8 @@
 #include "system/address-spaces.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * Cached env lookups.
@@ -33,16 +35,24 @@
         return on;                                                            \
     }
 
-FMSS_ENV_FLAG(fmss_rtrace,    "FMSS_RTRACE")
 FMSS_ENV_FLAG(fmss_erase_on,  "FMSS_ERASE")
 FMSS_ENV_FLAG(fmss_usedspare, "FMSS_USEDSPARE")
 FMSS_ENV_FLAG(fmss_basespare, "FMSS_BASESPARE")
 FMSS_ENV_FLAG(fmss_legacy_on, "FMSS_LEGACY")
-FMSS_ENV_FLAG(fmss_dump_on,   "FMSS_DUMP")
 FMSS_ENV_FLAG(fmss_physical,  "FMSS_PHYSICAL")
-FMSS_ENV_FLAG(fmss_trace_on,  "FMSS_TRACE")
-FMSS_ENV_FLAG(fmss_stats_on,  "FMSS_STATS")
-FMSS_ENV_FLAG(fmss_script_trace_on, "FMSS_SCRIPT_TRACE")
+
+/* The tracing switches are trace events now: -trace 'ipod_touch_fmss_*'. */
+#define FMSS_TRACE_FLAG(fn, id)                                               \
+    static bool fn(void)                                                      \
+    {                                                                         \
+        return trace_event_get_state_backends(id);                            \
+    }
+
+FMSS_TRACE_FLAG(fmss_rtrace,    TRACE_IPOD_TOUCH_FMSS_READ_LOG)
+FMSS_TRACE_FLAG(fmss_dump_on,   TRACE_IPOD_TOUCH_FMSS_DUMP_LOG)
+FMSS_TRACE_FLAG(fmss_trace_on,  TRACE_IPOD_TOUCH_FMSS_LOG)
+FMSS_TRACE_FLAG(fmss_stats_on,  TRACE_IPOD_TOUCH_FMSS_STATS_LOG)
+FMSS_TRACE_FLAG(fmss_script_trace_on, TRACE_IPOD_TOUCH_FMSS_SCRIPT_LOG)
 
 /* Observational only: no additional guest memory/MMIO reads. This bounded
  * process-wide diagnostic records instructions and transfer addresses, never
@@ -67,7 +77,7 @@ static void fmss_script_trace(const char *event, uint32_t program, uint32_t pc,
             unsigned long long parsed = strtoull(text, &end, 0);
             if (*text < '0' || *text > '9' || *end || parsed > UINT32_MAX) {
                 selector = 2;
-                fprintf(stderr, "FMSS_SCRIPT_TRACE invalid CSGENRC selector; "
+                TRACE_PRINTF(trace_ipod_touch_fmss_script_log, "FMSS_SCRIPT_TRACE invalid CSGENRC selector; "
                                 "tracing disabled\n");
             } else {
                 selected_command = parsed;
@@ -79,17 +89,17 @@ static void fmss_script_trace(const char *event, uint32_t program, uint32_t pc,
         return;
     }
     if (records++ == FMSS_SCRIPT_TRACE_LIMIT) {
-        fprintf(stderr, "FMSS_SCRIPT_TRACE truncated limit=%u\n",
+        TRACE_PRINTF(trace_ipod_touch_fmss_script_log, "FMSS_SCRIPT_TRACE truncated limit=%u\n",
                 FMSS_SCRIPT_TRACE_LIMIT);
         return;
     }
-    fprintf(stderr, "FMSS_SCRIPT_TRACE %u %s program=%08x pc=%04x "
+    TRACE_PRINTF(trace_ipod_touch_fmss_script_log, "FMSS_SCRIPT_TRACE %u %s program=%08x pc=%04x "
                     "arg=%08x value=%08x\n",
             records, event, program, pc, arg, value);
 }
 
 /*
- * FMSS_STATS: how many pages the guest reads, and how long the host spends
+ * -trace ipod_touch_fmss_stats_log: how many pages the guest reads, and how long the host spends
  * serving them.
  *
  * The page-in cost of a large app is the leading hypothesis for why big apps
@@ -116,7 +126,7 @@ static void fmss_stats_report(void)
     if ((fmss_stats.reads & 0xff) != 0) {
         return;
     }
-    fprintf(stderr,
+    TRACE_PRINTF(trace_ipod_touch_fmss_stats_log,
             "[FMSS] reads=%llu base=%llu ovl=%llu recall=%llu blank=%llu "
             "shadowed=%llu read_ms=%.1f\n",
             (unsigned long long)fmss_stats.reads,
@@ -827,7 +837,7 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
     if (fmss_recall_physical(s, cs, page_nr, data, spare)) {
         fmss_stats.recall++;
         if (fmss_rtrace()) {
-            printf("RP cs=%u page=%u\n", cs, page_nr); fflush(stdout);
+            TRACE_PRINTF(trace_ipod_touch_fmss_read_log, "RP cs=%u page=%u", cs, page_nr);
         }
         return;
     }
@@ -841,7 +851,7 @@ static void fmss_load_page_inner(IPodTouchFMSSState *s, uint32_t cs,
         from_overlay = (f != NULL);
         if (from_overlay) { fmss_stats.overlay++; }
         if (f && fmss_rtrace()) {
-            printf("RH cs=%u page=%u\n", cs, page_nr); fflush(stdout);
+            TRACE_PRINTF(trace_ipod_touch_fmss_read_log, "RH cs=%u page=%u", cs, page_nr);
         }
     }
     bool known_erased = !f &&
@@ -1130,13 +1140,13 @@ static bool fmss_store_page(IPodTouchFMSSState *s, uint32_t cs, uint32_t page_nr
      * break the invariant the cache exists for -- the FTL must read back
      * what it programmed at an address, and a different logical block now
      * living there on disk is not that. So: count it, and only act if a
-     * real session ever hits it. IT_FMSS_SHADOW=1 prints each one.
+     * real session ever hits it. -trace ipod_touch_fmss_shadow_log prints each one.
      */
     if (s->phys_pages &&
         g_tree_lookup(s->phys_pages, fmss_block_key(cs, page_nr))) {
         fmss_stats.shadowed++;
-        if (getenv("IT_FMSS_SHADOW")) {
-            fprintf(stderr, "[fmss] store cs=%u page=%u lands on a page this "
+        if (trace_event_get_state_backends(TRACE_IPOD_TOUCH_FMSS_SHADOW_LOG)) {
+            TRACE_PRINTF(trace_ipod_touch_fmss_shadow_log, "[fmss] store cs=%u page=%u lands on a page this "
                     "session programmed there (%llu so far)\n",
                     cs, page_nr, (unsigned long long)fmss_stats.shadowed);
         }
@@ -1375,9 +1385,8 @@ static void write_nand_pages(IPodTouchFMSSState *s)
                 uint32_t d0 = 0, d1 = 0;
                 memcpy(&d0, s->page_buffer, 4);
                 memcpy(&d1, s->page_buffer + half, 4);
-                printf("WE i=%2d cmd=%08x cs=%u page=%6u src=%08x/%08x data=%08x/%08x spare=%08x %08x %08x\n",
+                TRACE_PRINTF(trace_ipod_touch_fmss_dump_log, "WE i=%2d cmd=%08x cs=%u page=%6u src=%08x/%08x data=%08x/%08x spare=%08x %08x %08x\n",
                        i, cmd, cs, page_nr, src0, src1, d0, d1, sp[0], sp[1], sp[2]);
-                fflush(stdout);
             }
         }
 
@@ -1411,7 +1420,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
             uint32_t rcs, rpage;
             if (!fmss_generated_layout(s, logical, &rcs, &rpage)) {
                 if (fmss_rtrace()) {
-                    printf("SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
+                    TRACE_PRINTF(trace_ipod_touch_fmss_read_log, "SKIP logical=%u (cs=%u page=%u)\n", logical, cs, page_nr);
                     fflush(stdout);
                 }
                 /* FTL bookkeeping is intentionally session-only. */
@@ -1420,7 +1429,7 @@ static void write_nand_pages(IPodTouchFMSSState *s)
                 continue;
             }
             if (fmss_rtrace()) {
-                printf("KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
+                TRACE_PRINTF(trace_ipod_touch_fmss_read_log, "KEEP logical=%u -> cs=%u page=%u\n", logical, rcs, rpage);
                 fflush(stdout);
             }
             cs = rcs;
@@ -1497,7 +1506,7 @@ static void fmss_complete(void *opaque)
 {
     IPodTouchFMSSState *s = opaque;
     if (fmss_trace_on()) {
-        fprintf(stderr, "FMSS_DONE ctrl=%x pending=%x mask=%x time=%" PRId64 "\n",
+        TRACE_PRINTF(trace_ipod_touch_fmss_log, "FMSS_DONE ctrl=%x pending=%x mask=%x time=%" PRId64 "\n",
                 s->reg_cs_ctrl, s->reg_cs_irq_bit, s->reg_cs_irq_mask,
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
@@ -1513,7 +1522,7 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
 
     if (fmss_trace_on() && (addr == 0xc00 || addr == 0xc04 ||
                             addr == 0xc0c || addr == 0xc10)) {
-        fprintf(stderr, "FMSS_CTL %03x=%08x pending=%x mask=%x time=%" PRId64 "\n",
+        TRACE_PRINTF(trace_ipod_touch_fmss_log, "FMSS_CTL %03x=%08x pending=%x mask=%x time=%" PRId64 "\n",
                 (unsigned)addr, (unsigned)val, s->reg_cs_irq_bit,
                 s->reg_cs_irq_mask, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
@@ -1591,10 +1600,9 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
         case FMSS_SCRIPT_PARAM_D38:
             s->reg_script_param_d38 = val;
             if (fmss_trace_on() && s->reg_csgenrc != 0xa01 && s->reg_csgenrc != 0xa02) {
-                printf("FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
+                TRACE_PRINTF(trace_ipod_touch_fmss_log, "FMSS_OP csgenrc=%08x d0c=%08x d10=%08x d18=%08x\n",
                        s->reg_csgenrc, s->reg_pages_in_addr,
                        s->reg_cs_buf_addr, s->reg_num_pages);
-                fflush(stdout);
             }
             if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
             else if(s->reg_csgenrc == 0xa02) { write_nand_pages(s); }
@@ -1609,8 +1617,8 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
                 static uint8_t seen[0x1000];
                 if (addr < 0x1000 && !seen[addr]) {
                     seen[addr] = 1;
-                    printf("FMSS_W %04x = %08x (first)\n", (unsigned)addr, (unsigned)val);
-                    fflush(stdout);
+                    TRACE_PRINTF(trace_ipod_touch_fmss_log, "FMSS_W %04x = %08x (first)",
+                                 (unsigned)addr, (unsigned)val);
                 }
             }
             break;

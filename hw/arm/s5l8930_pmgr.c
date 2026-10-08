@@ -18,6 +18,8 @@
 #include "migration/vmstate.h"
 #include "hw/core/qdev-properties.h"
 #include "system/runstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930PMGRState, S5L8930_PMGR)
 
@@ -342,8 +344,8 @@ static void s5l8930_pmgr_write(void *opaque, hwaddr off, uint64_t val64,
         return;
     }
 
-    if (getenv("S5L8930_PMGR_TRACE") && off < GATE_START) {
-        fprintf(stderr, "[PMGR] W %04x <- %08x\n", (unsigned)off, val);
+    if (trace_event_get_state_backends(TRACE_S5L8930_PMGR_LOG) && off < GATE_START) {
+        TRACE_PRINTF(trace_s5l8930_pmgr_log, "[PMGR] W %04x <- %08x\n", (unsigned)off, val);
     }
     if (off < PLL_END && !(off & 4)) {
         val &= ~PLL_CON0_UPDATE;

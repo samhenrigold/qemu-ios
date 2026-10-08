@@ -39,6 +39,8 @@ for name in (
 
 code = r'''
 #include <glib.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <glib/gstdio.h>
 #include <stdint.h>
 #include <stdbool.h>

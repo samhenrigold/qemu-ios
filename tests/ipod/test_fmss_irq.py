@@ -17,6 +17,8 @@ for name in ('ipod_touch_fmss_read', 'fmss_update_irq', 'fmss_complete',
     functions.append(match.group())
 prelude = r'''
 #include <assert.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -1,15 +1,15 @@
 #include "hw/arm/ipod_touch_tvout.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static bool tvout_trace(void)
 {
-    static int on = -1;
-    if (on < 0) { on = getenv("IT_TVOUT_DEBUG") != NULL; }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_TVOUT_LOG);
 }
 #define TVT(fmt, ...) do { if (tvout_trace()) { \
-    printf("[TVOUT] " fmt "\n", ##__VA_ARGS__); fflush(stdout); } } while (0)
+    TRACE_PRINTF(trace_ipod_touch_tvout_log, "[TVOUT] " fmt, ##__VA_ARGS__); } } while (0)
 
 /* Any register touch retires the vblank pulse, so the line cannot stick. */
 static void tvout_ack_vblank(IPodTouchTVOutState *s)

@@ -38,7 +38,7 @@ table can be reused as they are. The transport underneath is new:
    `bcm -B` (baud, 0xfc18); `bcm -m` (reading the module id; the script branches on it); `bcm -w`
    (patchram download, 0xfc2e then a stream of 0xfc4c writes then 0xfc4e launch); `bcm -a` (BD_ADDR,
    0xfc01); `bcm -f`, `-s` (sleep mode 0xfc27), `-p` (PCM route 0xfc1c). Each gets a status-only
-   Command Complete. The opcodes are the usual Broadcom ones; confirm them with `IT_BT_TRACE=1`.
+   Command Complete. The opcodes are the usual Broadcom ones; confirm them with `-trace ipod_touch_bt_log`.
 
 ## What a keyboard needs beyond command-complete
 
@@ -81,7 +81,7 @@ table can be reused as they are. The transport underneath is new:
 | Host input → interrupt-channel reports (reuse `MAC_TO_HID`) | 0.5 day |
 | **Total** | **~1.5-2.5 weeks**, versus 1-2 days for hidbridge |
 
-Debugging is guest-blind: BTServer logs little. Enabling `IT_BT_TRACE` and adding an HCI/L2CAP packet
+Debugging is guest-blind: BTServer logs little. Enabling `-trace ipod_touch_bt_log` and adding an HCI/L2CAP packet
 log on the QEMU side from day one makes most of the event-ordering problems visible.
 
 It also buys the iPod touch 2G the same capability, since that stack is 2.x BTServer with the same

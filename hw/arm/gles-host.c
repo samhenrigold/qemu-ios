@@ -37,6 +37,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/arm/ipod_touch_2g.h"
 #include "hw/arm/guest-services/general.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * TWO HOSTS, ONE RENDERER.
@@ -1004,7 +1006,7 @@ static bool gles_host_init(void)
     gh.drawable_height = GLES_FB_HEIGHT;
     gh.readback = g_malloc0((size_t)GLES_FB_WIDTH * GLES_FB_HEIGHT * 4);
     gh.inited = true;
-    if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] initialized %p legacy=%d\n", (void *)gh_current, gh_current == &gh_legacy);
+    if (trace_event_get_state_backends(TRACE_GLES_CONTEXT_LOG)) TRACE_PRINTF(trace_gles_context_log, "[gles-context] initialized %p legacy=%d\n", (void *)gh_current, gh_current == &gh_legacy);
 
 
     fprintf(stderr, "[gles] host GL up: %s / %s, present by %s\n",
@@ -3396,7 +3398,7 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
      * which is indistinguishable from a frozen renderer unless you are
      * watching the addresses. Report the rotation and every new base once.
      */
-    if (getenv("IT_GLES_SURFACE_TRACE")) {
+    if (trace_event_get_state_backends(TRACE_GLES_SURFACE_LOG)) {
         static uint32_t seen[8];
         static unsigned n_seen;
         static uint32_t last_base;
@@ -3409,14 +3411,14 @@ static int gles_present_to_surface(CPUState *cpu, uint32_t base, uint32_t stride
         }
         if (i == n_seen && n_seen < ARRAY_SIZE(seen)) {
             seen[n_seen++] = base;
-            fprintf(stderr, "[gles] CA surface #%u: base=0x%08x stride=%u "
+            TRACE_PRINTF(trace_gles_surface_log, "[gles] CA surface #%u: base=0x%08x stride=%u "
                     "%ux%u fmt=0x%08x\n", n_seen, base, stride, width, height,
                     format);
         }
         if (base != last_base) {
             last_base = base;
         } else if ((gh.presents % 120) == 0) {
-            fprintf(stderr, "[gles] CA handed the SAME surface 0x%08x twice "
+            TRACE_PRINTF(trace_gles_surface_log, "[gles] CA handed the SAME surface 0x%08x twice "
                     "in a row at frame %" PRIu64 "\n", base, gh.presents);
         }
     }
@@ -4516,7 +4518,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
     return 0;
 }
 
-/* IT_GLES_OBJ_STATS: host microseconds spent moving IOSurface pixels. */
+/* -trace gles_obj_log: host microseconds spent moving IOSurface pixels. */
 static int64_t gles_us_sync, gles_us_refresh, gles_us_call;
 static int gles_obj_stats = -1;
 
@@ -4606,11 +4608,11 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
             pixels[i * 2 + 1] = value >> 8;
         }
     }
-    if (getenv("IT_GLES_SURFACE_TRACE")) {
+    if (trace_event_get_state_backends(TRACE_GLES_SURFACE_LOG)) {
         static unsigned traced;
         uint64_t sum = 0;
         for (size_t i = 0; i < (size_t)s->width * s->height * bpp; i += 97) sum += pixels[i];
-        if (traced++ < 40) fprintf(stderr, "[gles] sync surface tex %d -> %08x %ux%u sample-sum %" PRIu64 "\n",
+        if (traced++ < 40) TRACE_PRINTF(trace_gles_surface_log, "[gles] sync surface tex %d -> %08x %ux%u sample-sum %" PRIu64 "\n",
                                    texture, s->base, s->width, s->height, sum);
     }
     /*
@@ -7377,7 +7379,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         state->pvrtc = group->pvrtc;
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
-        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] created %08x %p api=%u\n", handle, (void *)state, state->api_version);
+        if (trace_event_get_state_backends(TRACE_GLES_CONTEXT_LOG)) TRACE_PRINTF(trace_gles_context_log, "[gles-context] created %08x %p api=%u\n", handle, (void *)state, state->api_version);
         return handle;
     }
     if (slot == GLES_OP_DELETE_CONTEXT) {
@@ -7386,7 +7388,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         if (!state) return -1;
         g_hash_table_remove(gles_contexts, GUINT_TO_POINTER(ctx));
         gles_end_context();
-        if (getenv("IT_GLES_CONTEXT_TRACE")) fprintf(stderr, "[gles-context] deleted %08x %p initialized=%d\n", ctx, (void *)state, state->inited);
+        if (trace_event_get_state_backends(TRACE_GLES_CONTEXT_LOG)) TRACE_PRINTF(trace_gles_context_log, "[gles-context] deleted %08x %p initialized=%d\n", ctx, (void *)state, state->inited);
         gles_context_free(state);
         return 0;
     }
@@ -7524,14 +7526,14 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     if (st0) gles_us_call += g_get_monotonic_time() - st0;
     {
         /*
-         * IT_GLES_OBJ_STATS=1: every 10 s of host time, the live counts of the
+         * -trace gles_obj_log: every 10 s of host time, the live counts of the
          * GL objects the guest created (gen minus delete, all contexts) and the
          * calls/draws/flushes since the last line. For soak tests: a count that
          * only grows is a leak, a flush rate that stalls is a stuck compositor.
          */
         static int64_t tex, fbo, rb, buf, prog, next;
         static uint64_t calls, draws, flushes;
-        if (gles_obj_stats < 0) gles_obj_stats = getenv("IT_GLES_OBJ_STATS") != NULL;
+        gles_obj_stats = trace_event_get_state_backends(TRACE_GLES_OBJ_LOG);
         if (gles_obj_stats) {
             int64_t now = g_get_monotonic_time();
             calls++;
@@ -7551,7 +7553,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
             }
             if (now >= next) {
                 if (next) {
-                    fprintf(stderr, "[gles-obj] live tex=%" PRId64 " fbo=%" PRId64
+                    TRACE_PRINTF(trace_gles_obj_log, "[gles-obj] live tex=%" PRId64 " fbo=%" PRId64
                             " rb=%" PRId64 " buf=%" PRId64 " shader+prog=%" PRId64
                             " | 10s: calls=%" PRIu64 " draws=%" PRIu64
                             " flush=%" PRIu64 " call-ms=%" PRId64 " sync-ms=%" PRId64

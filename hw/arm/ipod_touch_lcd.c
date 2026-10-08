@@ -7,6 +7,8 @@
 #include "exec/cpu-common.h"
 #include "qemu/log.h"
 #include "hw/arm/guest-services/gles.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static int lcd_brightness = 255;
 
@@ -38,7 +40,7 @@ static bool lcd_panel_is_native(const IPodTouchLCDState *s)
 }
 
 /*
- * IT_LCD_FRAMETRACE: one line per frame-pipeline event, with both clocks.
+ * -trace ipod_touch_lcd_frame_log: one line per frame-pipeline event, with both clocks.
  *
  * Frame timing on this machine has three stages and they are paced by three
  * different things, so a trace that only records one of them cannot tell a
@@ -53,17 +55,13 @@ static bool lcd_panel_is_native(const IPodTouchLCDState *s)
  */
 static int lcd_frametrace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_LCD_FRAMETRACE") ? 1 : 0;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_LCD_FRAME_LOG);
 }
 
 /*
  * The same caching for the two flags consulted from the MMIO handlers. Both
  * sit on paths the guest hits constantly -- IT_LCD_READY guards registers this
- * file's own comment describes as "polled thousands of times", and LCD_TRACE is
+ * file's own comment describes as "polled thousands of times", and LCD_TRACE was
  * read on every single register write -- and getenv() is a linear scan of
  * environ each time, run synchronously on the vCPU thread. None of these are
  * meant to be togglable mid-run.
@@ -79,11 +77,7 @@ static int lcd_ready_hack(void)
 
 static int lcd_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("LCD_TRACE") ? 1 : 0;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_LCD_LOG);
 }
 
 
@@ -124,11 +118,7 @@ static int lcd_vsync_legacy(void)
 
 static int lcd_vsync_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_LCD_VSYNC_TRACE") ? 1 : 0;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_LCD_VSYNC_LOG);
 }
 
 static void lcd_ft(const char *ev, uint32_t arg)
@@ -136,7 +126,7 @@ static void lcd_ft(const char *ev, uint32_t arg)
     if (!lcd_frametrace()) {
         return;
     }
-    fprintf(stderr, "[FT] %s %" PRId64 " %" PRId64 " 0x%08x\n", ev,
+    TRACE_PRINTF(trace_ipod_touch_lcd_frame_log, "[FT] %s %" PRId64 " %" PRId64 " 0x%08x\n", ev,
             qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), arg);
 }
@@ -408,7 +398,7 @@ static void ipod_touch_lcd_write(void *opaque, hwaddr addr, uint64_t val, unsign
     // printf("%s: writing 0x%08x to 0x%08x\n", __func__, val, addr);
 
     if (lcd_trace()) {
-        fprintf(stderr, "[LCD] wr [0x%04x] <- 0x%08x\n", (unsigned)addr, (unsigned)val);
+        TRACE_PRINTF(trace_ipod_touch_lcd_log, "[LCD] wr [0x%04x] <- 0x%08x\n", (unsigned)addr, (unsigned)val);
     }
 
     if (!(addr & 3) && addr < sizeof(s->plane_regs)) s->plane_regs[addr / 4] = val;
@@ -458,7 +448,7 @@ void lcd_changebrightness(int brightness)
 {
     qatomic_set(&lcd_brightness, brightness & 0xFF);
     if (lcd_trace()) {
-        fprintf(stderr, "[LCD] brightness <- %d\n", lcd_brightness);
+        TRACE_PRINTF(trace_ipod_touch_lcd_log, "[LCD] brightness <- %d\n", lcd_brightness);
     }
 }
 
@@ -492,7 +482,7 @@ void it_display_set_orientation(uint32_t orientation)
     if (rot != it_display_rotation_req) {
         it_display_rotation_req = rot;
         if (lcd_trace()) {
-            fprintf(stderr, "[LCD] orientation %u -> window rotation %d\n",
+            TRACE_PRINTF(trace_ipod_touch_lcd_log, "[LCD] orientation %u -> window rotation %d\n",
                     orientation, rot);
         }
     }
@@ -1167,7 +1157,7 @@ static void refresh_timer_tick(void *opaque)
         static uint64_t enabled, masked;
         if (s->irq_enable & 1) enabled++; else masked++;
         if ((enabled + masked) % 300 == 0) {
-            fprintf(stderr, "[LCDV] vsync: %" PRIu64 " enabled, %" PRIu64
+            TRACE_PRINTF(trace_ipod_touch_lcd_vsync_log, "[LCDV] vsync: %" PRIu64 " enabled, %" PRIu64
                     " masked (enable=%08x pending=%08x)\n",
                     enabled, masked, s->irq_enable, s->irq_status);
         }
@@ -1254,7 +1244,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
         /*
          * fb-base: a machine that boots the kernel without iBoot (kboot)
          * gets the controller as iBoot leaves it for a 320x480 32 bpp
-         * panel, window 1 at fb-base (the S5L8720 iBoot's writes, LCD_TRACE).
+         * panel, window 1 at fb-base (the S5L8720 iBoot's writes, ipod_touch_lcd_log).
          * AppleM2CLCD sizes its default framebuffer from them ("default
          * framebuffer size is zero" otherwise).
          */
@@ -1293,7 +1283,7 @@ static void ipod_touch_lcd_reset(DeviceState *dev)
     it_display_rotation_req = 0;
     s->next_vsync = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LCD_VSYNC_PERIOD_NS;
     if (lcd_trace()) {
-        fprintf(stderr, "[LCD] ==== reset ====\n");
+        TRACE_PRINTF(trace_ipod_touch_lcd_log, "[LCD] ==== reset ====\n");
     }
 }
 

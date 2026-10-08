@@ -127,6 +127,8 @@
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 #ifdef IT_HAVE_AVCODEC
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
@@ -136,15 +138,11 @@
 
 static bool amc_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_AMC_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_AMC_LOG);
 }
 
 #define AMCT(fmt, ...) do { if (amc_trace()) { \
-    fprintf(stderr, "[AMC] " fmt "\n", ##__VA_ARGS__); } } while (0)
+    TRACE_PRINTF(trace_ipod_touch_amc_log, "[AMC] " fmt, ##__VA_ARGS__); } } while (0)
 
 #ifdef IT_HAVE_AVCODEC
 /* ponytail: HLE of the 7E18 AAC-LC/HE-AAC, MP3 and ALAC decoder programs. Other DE

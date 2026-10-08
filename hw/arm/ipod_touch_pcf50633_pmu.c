@@ -6,9 +6,11 @@
 #include "hw/core/cpu.h"
 #include "target/arm/cpu.h"
 #include "system/runstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
- * IT_PMU_TRACE=1 logs every PMU register access in hex together with the guest
+ * -trace pcf50633_pmu_log logs every PMU register access in hex together with the guest
  * PC/LR that made it. That caller pair is what identifies which driver routine
  * a register belongs to -- the D1759 kext is unsymbolized, so the register map
  * is only recoverable by correlating writes with the kernel's own serial
@@ -16,11 +18,7 @@
  */
 static bool pmu_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_PMU_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_PCF50633_PMU_LOG);
 }
 
 static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
@@ -32,7 +30,7 @@ static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val)
         pc = env->regs[15];
         lr = env->regs[14];
     }
-    fprintf(stderr, "[PMU] %s reg 0x%02x val 0x%02x  pc=0x%08x lr=0x%08x\n",
+    TRACE_PRINTF(trace_pcf50633_pmu_log, "[PMU] %s reg 0x%02x val 0x%02x  pc=0x%08x lr=0x%08x\n",
             what, reg, val, pc, lr);
 }
 
@@ -290,7 +288,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
     pcf50633_update_battery(s);
     uint8_t reg = s->curreg & 0xff;
     if (pmu_trace()) {
-        fprintf(stderr, "Reading PMU register %d\n", reg);
+        TRACE_PRINTF(trace_pcf50633_pmu_log, "Reading PMU register %d\n", reg);
     }
 
     int res = 0;
@@ -418,7 +416,7 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
     s->regs[reg] = data;
     s->cmd = data;
     if (pmu_trace()) {
-        fprintf(stderr, "Writing PMU register cmd %d reg %d\n", data, reg);
+        TRACE_PRINTF(trace_pcf50633_pmu_log, "Writing PMU register cmd %d reg %d\n", data, reg);
     }
     if (pmu_trace()) {
         pmu_trace_access("write", reg, data);

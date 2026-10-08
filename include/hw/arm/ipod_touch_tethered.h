@@ -40,7 +40,7 @@
  * false.  Note that flipping IT_I2C_NAK on by default therefore turns demo mode
  * OFF, and the device will begin auto-locking, dimming and idle-sleeping.
  *
- * Only instantiated when IT_TETHERED=1.  IT_TETHERED_TRACE=1 logs every access.
+ * Only instantiated when IT_TETHERED=1.  -trace ipod_touch_tethered_log logs every access.
  */
 
 #define IT_TETHERED_MAGIC 0x82

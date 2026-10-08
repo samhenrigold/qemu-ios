@@ -22,14 +22,12 @@
 
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static bool i2c_trace(void)
 {
-    static int enabled = -1;
-    if (enabled < 0) {
-        enabled = getenv("IT_I2C_TRACE") != NULL;
-    }
-    return enabled;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_I2C_LOG);
 }
 
 /*
@@ -188,7 +186,7 @@ static uint64_t ipod_touch_i2c_read(void *opaque, hwaddr offset, unsigned size)
     IPodTouchI2CState *s = (IPodTouchI2CState *)opaque;
 
     if (i2c_trace()) {
-        fprintf(stderr, "[I2C] %s read %02x con=%02x stat=%02x data=%02x "
+        TRACE_PRINTF(trace_ipod_touch_i2c_log, "[I2C] %s read %02x con=%02x stat=%02x data=%02x "
                 "active=%d addr=%02x flags=%04x\n", BUS(s->bus)->name,
                 (unsigned)offset, s->control, s->status, s->data,
                 s->active, s->cur_addr, s->iicreg20);
@@ -230,7 +228,7 @@ static void ipod_touch_i2c_write(void *opaque, hwaddr offset, uint64_t value, un
     int mode;
 
     if (i2c_trace()) {
-        fprintf(stderr, "[I2C] %s write %02x=%02x con=%02x stat=%02x data=%02x "
+        TRACE_PRINTF(trace_ipod_touch_i2c_log, "[I2C] %s write %02x=%02x con=%02x stat=%02x data=%02x "
                 "active=%d addr=%02x flags=%04x\n", BUS(s->bus)->name,
                 (unsigned)offset, (unsigned)value, s->control, s->status,
                 s->data, s->active, s->cur_addr, s->iicreg20);

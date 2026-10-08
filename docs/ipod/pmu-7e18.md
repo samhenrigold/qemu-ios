@@ -96,7 +96,7 @@ absent-address 0x29 probe set LASTBIT, `I2CDS=0xe6` was discarded. START therefo
 kept using stale data 0x52/address 0x29, and PMU accesses failed indefinitely
 (`e00002e9`). The data register now always stages writes even when the previous
 transfer NAKed; bus data delivery still respects NAK. A sanitizer regression
-replays the absent-device/PMU sequence. `IT_I2C_TRACE` records register accesses,
+replays the absent-device/PMU sequence. `-trace ipod_touch_i2c_log` records register accesses,
 latched address and active state for diagnosing future controller issues.
 
 `/tmp/it-blitz-spore-56813` passed boot with real absent-device NAKs, USB detach

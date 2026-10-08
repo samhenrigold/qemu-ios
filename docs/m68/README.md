@@ -108,7 +108,7 @@ The Zephyr1 wire protocol (openiBoot's `multitouch-z1.c`, and 1.0's AppleMultito
 length (`AA len len ck ck` for interface versions up to 0x10), `47` frame data (`AA` + frame + sum). The model
 reports interface version 1 and the Zephyr2 model's sensor, with its own frame calibration: taps land
 within 0.1 px of their aim over the whole panel (fitted from the points 1.0's GraphicsServices reports,
-`GSEventGetLocationInWindow`, read through the gdbstub). `MT_TRACE=2` logs every transaction.
+`GSEventGetLocationInWindow`, read through the gdbstub). `-trace 's5l8900_z1_*'` logs every transaction.
 
 ## Debts
 

@@ -22,6 +22,8 @@
 #include "chardev/char.h"
 #include "hw/arm/s5l8930.h"
 #include "system/reset.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 #define HDQ_SYM_1   0xfe
 #define HDQ_SYM_0   0xc0
@@ -140,8 +142,8 @@ static int hdq_chr_write(Chardev *chr, const uint8_t *buf, int len)
     int i;
 
     for (i = 0; i < len; i++) {
-        if (getenv("S5L8930_HDQ_TRACE")) {
-            fprintf(stderr, "[HDQ] tx 0x%02x nbits %u bits 0x%04x\n",
+        if (trace_event_get_state_backends(TRACE_S5L8930_HDQ_LOG)) {
+            TRACE_PRINTF(trace_s5l8930_hdq_log, "[HDQ] tx 0x%02x nbits %u bits 0x%04x\n",
                     buf[i], g->nbits, g->bits);
         }
         hdq_queue(g, buf[i]);                    /* the wire echo */

@@ -5,6 +5,8 @@
 #include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /* ---- page store: overlay directory over a read-only base directory ---- */
 
@@ -125,8 +127,8 @@ static bool fmc_program_page(S5L8900FMCState *s, uint32_t bank, uint32_t page,
     if (!s5l8900_fmc_page_erased(cell, cell_spare)) {
         /* An FTL never does this to a consistent store: the page was not erased. */
         qemu_log_mask(LOG_GUEST_ERROR, "[fmc] program of bank %u page %u, which is not erased\n", bank, page);
-        if (getenv("IT_FMC_TRACE")) {
-            fprintf(stderr, "[fmc] program of bank %u page %u, which is not erased\n", bank, page);
+        if (trace_event_get_state_backends(TRACE_S5L8900_FMC_LOG)) {
+            TRACE_PRINTF(trace_s5l8900_fmc_log, "[fmc] program of bank %u page %u, which is not erased\n", bank, page);
         }
     }
     for (int i = 0; i < FMC_BYTES_PER_PAGE; i++) {
@@ -297,8 +299,8 @@ static void s5l8900_fmc_write(void *opaque, hwaddr addr, uint64_t val, unsigned 
         break;
     case FMC_CMD:
         s->cmd = val;
-        if (getenv("IT_FMC_TRACE") && val != FMC_CMD_READ && val != FMC_CMD_READSTATUS && val != 0) {
-            fprintf(stderr, "[fmc] cmd 0x%02x ctrl0 0x%x ctrl1 0x%x addr0 0x%x addr1 0x%x anum %u\n", (unsigned)val,
+        if (trace_event_get_state_backends(TRACE_S5L8900_FMC_LOG) && val != FMC_CMD_READ && val != FMC_CMD_READSTATUS && val != 0) {
+            TRACE_PRINTF(trace_s5l8900_fmc_log, "[fmc] cmd 0x%02x ctrl0 0x%x ctrl1 0x%x addr0 0x%x addr1 0x%x anum %u\n", (unsigned)val,
                     s->fmctrl0, s->fmctrl1, s->fmaddr0, s->fmaddr1, s->fmanum);
         }
         break;
@@ -332,9 +334,9 @@ static void s5l8900_fmc_write(void *opaque, hwaddr addr, uint64_t val, unsigned 
             memset(spare, 0xFF, sizeof(spare));
             memcpy(spare, s->prog_spares[i], FMC_META_BYTES);
             fmc_program_page(s, s->banks_to_read[i], s->pages_to_read[i], s->page_buffer, spare);
-            if (getenv("IT_FMC_TRACE")) {
+            if (trace_event_get_state_backends(TRACE_S5L8900_FMC_LOG)) {
                 uint32_t *w = (uint32_t *)s->page_buffer;
-                fprintf(stderr, "[fmc] program %u/%u bank %u page %u meta type %02x: %08x %08x .. %08x\n",
+                TRACE_PRINTF(trace_s5l8900_fmc_log, "[fmc] program %u/%u bank %u page %u meta type %02x: %08x %08x .. %08x\n",
                         i + 1, s->prog_count, s->banks_to_read[i], s->pages_to_read[i],
                         s->prog_spares[i][9], w[0], w[1], w[511]);
             }

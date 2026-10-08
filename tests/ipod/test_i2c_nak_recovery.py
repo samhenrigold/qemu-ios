@@ -12,6 +12,8 @@ for name in ('s5l8900_i2c_start_addr','s5l8900_i2c_set_ack','s5l8900_i2c_update'
     funcs.append(re.search(r'^static [^\n]*\b'+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S).group())
 pre=r'''
 #include <stdint.h>
+#define trace_event_get_state_backends(id) 0
+#define TRACE_PRINTF(fn, ...) do { if (0) printf(__VA_ARGS__); } while (0)
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>

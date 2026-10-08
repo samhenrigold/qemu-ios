@@ -154,7 +154,7 @@ From the kext's strings:
   from the config-4 descriptor at runtime rather than trusting this.
 - Link status: `Link Status - %d` / `failed to allocate Link Status MD`. This
   is a status buffer the host reads, probably a vendor control request. Find
-  out which by tracing `IT_USB_TCP_DEBUG=1`. The interface may stay link-down
+  out which by tracing `-trace ipod_touch_tcp_usb_log`. The interface may stay link-down
   until the host sends it.
 - MACs: the device MAC is fixed at 0a:0b:ad:0b:ab:e0. The host MAC is taken
   from the `sdio` node's `local-mac-address` (the Wi-Fi MAC); if that's missing,

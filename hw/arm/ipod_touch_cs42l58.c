@@ -1,6 +1,8 @@
 #include "qemu/osdep.h"
 #include "migration/vmstate.h"
 #include "hw/arm/ipod_touch_cs42l58.h"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 /*
  * Cirrus CS42L58 stereo audio codec, I2C address 0x4A (device tree:
@@ -14,11 +16,7 @@
  */
 static bool codec_trace(void)
 {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("IT_CODEC_TRACE") != NULL;
-    }
-    return on;
+    return trace_event_get_state_backends(TRACE_CS42L58_LOG);
 }
 
 #define CS42L58_MAP_INCR   0x80
@@ -75,7 +73,7 @@ static uint8_t cs42l58_recv(I2CSlave *i2c)
     }
 
     if (codec_trace()) {
-        fprintf(stderr, "CODEC R %02x -> %02x\n", reg, res);
+        TRACE_PRINTF(trace_cs42l58_log, "CODEC R %02x -> %02x\n", reg, res);
     }
     if (s->autoinc) {
         s->cmd = (reg + 1) & 0x7f;
@@ -95,7 +93,7 @@ static int cs42l58_send(I2CSlave *i2c, uint8_t data)
     }
 
     if (codec_trace()) {
-        fprintf(stderr, "CODEC W %02x <- %02x\n", (uint8_t)(s->cmd & 0x7f), data);
+        TRACE_PRINTF(trace_cs42l58_log, "CODEC W %02x <- %02x\n", (uint8_t)(s->cmd & 0x7f), data);
     }
     if ((s->cmd & 0x7f) != CS42L58_REG_CHIPID) {
         s->regs[s->cmd & 0x7f] = data;

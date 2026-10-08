@@ -129,7 +129,7 @@
  *
  * So kIOReturnNotReady WAS the timeout, and state 4 is the abort state, not a
  * "done but empty" state. Confirmed independently from the other side:
- * IT_GPIO_TRACE shows the guest write INTEN group 1 <- 0x1060 (bit 12 newly
+ * ipod_touch_sysic_gpio_log shows the guest write INTEN group 1 <- 0x1060 (bit 12 newly
  * set) immediately after the last I2S setup write, i.e. it really does arm the
  * source it then sleeps on. We never asserted it.
  *
@@ -174,11 +174,11 @@
  *
  * 3. IT IS NOT THE AMC. The same scan finds none of that PCM anywhere in the
  *    AMC's 192 KB aperture, with the same positive control. Nothing on this
- *    path touches the AMC at all: IT_AMC_TRACE emits zero lines for a sound.
+ *    path touches the AMC at all: ipod_touch_amc_log emits zero lines for a sound.
  *
  * 4. THE DMA'S COMPLETION INTERRUPT IS NEVER DELIVERED, and that is ours.
  *    pl080_update now logs every transition of the combined line under
- *    IT_DMAC_TRACE. DMAC0 raises it once during boot and it is NEVER
+ *    pl080_dmac_log. DMAC0 raises it once during boot and it is NEVER
  *    acknowledged -- across an entire run the kernel makes ZERO IntStatus
  *    reads and ZERO IntTCClear writes to DMAC0 -- while DMAC1, on the same VIC
  *    number, is serviced cleanly every time (6 reads, 6 acks). Both devices get
@@ -233,12 +233,12 @@
  * executed.
  *
  * ---------------------------------------------------------------------------
- * WHERE THE FAILURE ACTUALLY IS (measured 2026-08-03, IT_DMAC_TRACE +
+ * WHERE THE FAILURE ACTUALLY IS (measured 2026-08-03, pl080_dmac_log +
  * IT_I2S_PC + a live RAM dump; every address below is from the running guest,
  * not from the kernelcache in ~/Developer/ipod2g-re, which is a different
  * image and whose addresses do not apply)
  *
- * 1. THE DMA CONTROLLER IS NEVER ASKED ANYTHING. IT_DMAC_TRACE=1 logs every
+ * 1. THE DMA CONTROLLER IS NEVER ASKED ANYTHING. pl080_dmac_log logs every
  *    PL080 read and write on both controllers with the guest PC, interleaved
  *    with this device's accesses in one stream. Across the whole I2S bring-up
  *    -- before it, during it, after it -- there are ZERO PL080 accesses. Every
@@ -345,21 +345,17 @@
 #include "cpu.h"
 
 #include <math.h>
-
-#define IT_I2S_DEBUG_ENV "IT_I2S_DEBUG"
+#include "trace.h"
+#include "hw/trace-printf.h"
 
 static bool it_i2s_debug(void)
 {
-    static int cached = -1;
-    if (cached < 0) {
-        cached = getenv(IT_I2S_DEBUG_ENV) != NULL;
-    }
-    return cached;
+    return trace_event_get_state_backends(TRACE_IPOD_TOUCH_I2S_LOG);
 }
 
 #define IT_I2S_DPRINTF(fmt, ...) \
     do { if (it_i2s_debug()) { \
-        printf("[i2s] " fmt, ## __VA_ARGS__); fflush(stdout); } } while (0)
+        TRACE_PRINTF(trace_ipod_touch_i2s_log, "[i2s] " fmt, ## __VA_ARGS__); } } while (0)
 
 /*
  * The controller-ready interrupt (GPIO group 1, bit 12 -- see the header).
@@ -619,21 +615,17 @@ static void it_i2s_pace_drain(IPodTouchI2SState *s)
 }
 
 /*
- * IT_I2S_STALLDBG=1 -- when the stream is up and nothing has reached the FIFO
+ * -trace ipod_touch_i2s_stall_log -- when the stream is up and nothing has reached the FIFO
  * for >10 ms, print the whole gating state once per episode: the FIFO model,
  * the request line, and the PL080 channel-5 registers. This exists to NAME the
  * limiter during the recurring mid-stream delivery pauses rather than infer it.
  */
 static void it_i2s_stall_debug(IPodTouchI2SState *s)
 {
-    static int on = -1;
     static int64_t episode_reported;
     int64_t now;
 
-    if (on < 0) {
-        on = getenv("IT_I2S_STALLDBG") != NULL;
-    }
-    if (!on || !s->running || !s->dmac || s->last_push_ns == 0) {
+    if (!trace_event_get_state_backends(TRACE_IPOD_TOUCH_I2S_STALL_LOG) || !s->running || !s->dmac || s->last_push_ns == 0) {
         return;
     }
     now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -645,7 +637,7 @@ static void it_i2s_stall_debug(IPodTouchI2SState *s)
         return;
     }
     episode_reported = 1;
-    fprintf(stderr, "[i2s-stall] t=%" PRId64 " no push for %.1f ms: "
+    TRACE_PRINTF(trace_ipod_touch_i2s_stall_log, "[i2s-stall] t=%" PRId64 " no push for %.1f ms: "
             "fifo=%u/%u debt=%u req=%d req_single=%08x running=%d | "
             "ch5 src=%08x dest=%08x lli=%08x ctrl=%08x conf=%08x\n",
             now, (now - s->last_push_ns) / 1e6,
@@ -1112,24 +1104,23 @@ static void it_i2s_log_caller(hwaddr offset, uint32_t val)
 }
 
 /*
- * Emit I2S accesses into the same stderr stream as IT_DMAC_TRACE, so a single
+ * Emit I2S accesses into the same trace log as pl080_dmac_log, so a single
  * ordered log shows where in the DMAC conversation the audio driver brings this
  * controller up. Correlating two separately-buffered logs was the previous
  * approach and it could not answer "what did the DMAC do NEXT".
  */
-bool it_dmac_trace_on(void);
-
 static void it_i2s_dmac_mark(hwaddr offset, uint32_t val, bool write)
 {
     uint32_t pc = 0;
 
-    if (!it_dmac_trace_on() || offset == IT_I2S_TXFIFO) {
+    if (!trace_event_get_state_backends(TRACE_IPOD_TOUCH_I2S_DMAC_LOG) ||
+        offset == IT_I2S_TXFIFO) {
         return;
     }
     if (current_cpu) {
         pc = ARM_CPU(current_cpu)->env.regs[15];
     }
-    fprintf(stderr, "[i2s  ] %c %03x                %08x  pc=%08x\n",
+    TRACE_PRINTF(trace_ipod_touch_i2s_dmac_log, "[i2s  ] %c %03x                %08x  pc=%08x\n",
             write ? 'W' : 'R', (unsigned)offset, val, pc);
 }
 

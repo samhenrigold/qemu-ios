@@ -188,7 +188,7 @@ These hold for the 3GS unless its v1 trace says otherwise.
   still in.
 
 How to watch it: `IOS_BB_TRACE=2` prints every AT line and reply, the SPI frames and MRDY/SRDY with
-virtual-ms stamps. `S5L8930_CDMA_TRACE=1` prints the channel go's.
+virtual-ms stamps. `-trace s5l8930_cdma_log` prints the channel go's.
 
 ## Black-box checklist (N88, once it boots)
 
