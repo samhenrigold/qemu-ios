@@ -53,7 +53,8 @@ bool qemu_ios_ui_usb_charger(bool high_power);
 /* The cellular modem (the machine's "baseband-modem" child: -M iPhone-2G, or
  * baseband=on on iPhone-4/n88). modem_set writes one of its properties from its
  * string form on the QEMU thread (carrier, mcc-mnc, registered, sim-present,
- * signal-dbm, incoming-call, remote-answer, remote-hangup, incoming-sms); false
+ * signal-dbm, incoming-call, remote-answer, remote-hangup, incoming-sms, and
+ * gps-fix where the modem carries a GPS receiver, which the status's "gps" says); false
  * when there is no modem or no such property. A property's own refusal (a bad
  * number, no channel to ring on) shows as "error" in the next status.
  * modem_status: a JSON object of the modem's state as of the last refresh, which

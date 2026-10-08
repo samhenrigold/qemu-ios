@@ -251,7 +251,9 @@ What differs from 7.1.2:
    - The Highland Park voice processor (AUD10: i2c0 0x3e, uart6, i2s2) passes probe and start with nothing
      behind it. Its message protocol (firmware download, routing, algorithm parameters) is only exercised
      on a call's audio route. Deferred, since calls carry no audio.
-   - The GPS (bcm4750 on uart4).
+   - The GPS (bcm4750 on uart4): a measurement engine whose binary protocol Broadcom's GLL, linked into
+     locationd, drives down to correlator data; out of reach for now (docs/baseband/gps.md). The 3GS's
+     receiver, inside its modem, is modeled.
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
 3. **Compass**: the AK8973 stands in for the AK8975B pair.
 4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).

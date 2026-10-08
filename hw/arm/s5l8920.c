@@ -148,6 +148,7 @@ typedef struct S5L8920Board {
     uint16_t bb_max_data;
     uint16_t bb_mrdy, bb_srdy, bb_radio_on, bb_rst;
     const char *bb_compat;               /* the DT baseband node's compatible, to re-match it */
+    bool bb_gps;                         /* the baseband carries the GPS receiver (the 3GS's +XLSR) */
     bool no_isp;                         /* unmatch the DT's isp node: there is no ISP model */
     uint32_t fmc_off;                    /* FMC within each FMI window, as its IOP firmware addresses it */
     uint16_t mt_atn;                     /* multi-touch ATN, a GPIO interrupt */
@@ -216,6 +217,7 @@ static const S5L8920Board s5l8920_n88 = {
     .bb_ifx = 1, .bb_max_data = 0x7f8,   /* DT spi2 protocol-version, max-data-size */
     .bb_mrdy = 0x1802, .bb_srdy = 0x1304, .bb_radio_on = 0x1405, .bb_rst = 0x1407,
     .bb_compat = "baseband,n88",
+    .bb_gps = true,
     .no_isp = true,
     .mt_atn = 0xb4,
     .mt_profile = &mt_profile_n88,       /* N1F54 */
@@ -844,6 +846,7 @@ static void s5l8920_init(MachineState *machine)
 
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
+        qdev_prop_set_bit(bb, "gps", s->board->bb_gps);
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
         if (s->imei && s->imei[0]) {
             object_property_set_str(OBJECT(bb), "imei", s->imei, &error_fatal);

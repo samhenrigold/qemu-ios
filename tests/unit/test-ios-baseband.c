@@ -12,6 +12,7 @@
  * parses - this fails.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/misc/ios_baseband_core.h"
 
 /* ------------------------------------------------------------------- harness */
@@ -887,6 +888,133 @@ static void test_vibrator(void)
 }
 
 /*
+ * The 3GS's GPS receiver (issue 40), as locationd 4.2.1's CLGpsController82 runs it on DLCI 7:
+ * +XLSR=2,,,,<interval s> starts a session, each fix is a "+XLSR:" URC, +XLSRSTOP ends it. The
+ * reports are read back here the way CLHelper::ParsePositionEstimate reads them (shape 2, NMEA-style
+ * coordinates, TS 23.032 uncertainty codes, the radius over confidence / 100, knots).
+ */
+static double xlsr_coord(const char *value, const char *hemi)
+{
+    double v = atof(value);
+    int deg = (int)(v / 100);
+    double d = deg + (v - deg * 100) / 60;
+
+    return *hemi == 'S' || *hemi == 'W' ? -d : d;
+}
+
+/* The next frame on DLCI 7 must be a fix: its fields, NULL-padded. */
+static bool expect_xlsr(char **f, int nf)
+{
+    static char line[256];
+    Ev *e = expect_kind(EV_FRAME);
+    int n = 0;
+
+    if (!e || e->dlci != 7 || e->plen >= sizeof(line) ||
+        memcmp(e->payload, "\r\n+XLSR: ", 9) != 0) {
+        failures++;
+        fprintf(stderr, "FAIL %s: not a +XLSR report\n", __func__);
+        return false;
+    }
+    memcpy(line, e->payload + 9, e->plen - 9);
+    line[e->plen - 11] = 0;                      /* drop the trailing CRLF */
+    memset(f, 0, nf * sizeof(*f));
+    for (char *p = line; n < nf; ) {
+        f[n++] = p;
+        p = strchr(p, ',');
+        if (!p) {
+            break;
+        }
+        *p++ = 0;
+    }
+    return n == 13;
+}
+
+static void test_gps(void)
+{
+    char *f[16];
+
+    c_sabm(7, 0x3f);
+    pump();
+    ev_i = nev;                                  /* skip the UA */
+
+    /* A modem without the receiver (the iPhone 4's, the M68's): plain OKs, no reports. */
+    CHECK(!bb.gps.present);
+    c_mux_str(7, "at+xlsr=2,,,,1\r");
+    pump();
+    expect_frame(7, "\r\nOK\r\n");
+    tick_to(tnow + 3000);
+    expect_none();
+
+    bb.gps.present = true;
+    CHECK(!ios_bb_gps_set(&bb.gps, "91,0"));
+    CHECK(!ios_bb_gps_set(&bb.gps, "0,181"));
+    CHECK(!ios_bb_gps_set(&bb.gps, "37.33"));
+    CHECK(!ios_bb_gps_set(&bb.gps, "37.33,-122,0,0,-1,5,7"));
+    CHECK(!ios_bb_gps_set(&bb.gps, "37.33,x"));
+    CHECK(!bb.gps.fix);
+
+    /* No fix yet: the session runs but has nothing to report. */
+    c_mux_str(7, "at+xlsr=2,,,,1\r");
+    pump();
+    expect_frame(7, "\r\nOK\r\n");
+    tick_to(tnow + 2500);
+    expect_none();
+
+    /* Apple Park, walking east at 1.4 m/s: one report a second on the session's DLCI. */
+    CHECK(ios_bb_gps_set(&bb.gps, "37.3349,-122.009,30,1.4,90,5"));
+    tick_to(tnow + 1000);
+    if (expect_xlsr(f, 16)) {
+        check_str(f[0], "2", "shape: point with altitude and uncertainty ellipsoid");
+        CHECK(fabs(xlsr_coord(f[1], f[2]) - 37.3349) < 1e-6);
+        CHECK(fabs(xlsr_coord(f[3], f[4]) + 122.009) < 1e-6);
+        CHECK(atoi(f[5]) == 30);
+        double r = 10 * (pow(1.1, atoi(f[6])) - 1) / (atoi(f[10]) / 100.0);
+        CHECK(atoi(f[10]) > 0 && atoi(f[10]) < 100 && r > 3.5 && r < 6.5);
+        CHECK(fabs(atof(f[11]) * 1.852 / 3.6 - 1.4) < 0.01);
+        CHECK(fabs(atof(f[12]) - 90) < 0.1);
+    }
+    expect_none();
+    tick_to(tnow + 1000);
+    expect_xlsr(f, 16);
+    expect_none();
+
+    /* The southern and western hemispheres, and an unknown course. */
+    CHECK(ios_bb_gps_set(&bb.gps, "-33.8568,151.2153"));
+    tick_to(tnow + 1000);
+    if (expect_xlsr(f, 16)) {
+        CHECK(fabs(xlsr_coord(f[1], f[2]) + 33.8568) < 1e-6);
+        CHECK(fabs(xlsr_coord(f[3], f[4]) - 151.2153) < 1e-6);
+        check_str(f[12], "", "unknown course");
+    }
+    char spec[96];
+    ios_bb_gps_get(&bb.gps, spec, sizeof(spec));
+    check_str(spec, "-33.8568000,151.2153000,0,0,-1,5", "gps-fix read back");
+
+    /* Stop: no more reports; a baseband reset ends a session too. */
+    c_mux_str(7, "at+xlsrstop\r");
+    pump();
+    expect_frame(7, "\r\nOK\r\n");
+    tick_to(tnow + 3000);
+    expect_none();
+    c_mux_str(7, "at+xlsr=2,,,,5\r");
+    pump();
+    expect_frame(7, "\r\nOK\r\n");
+    tick_to(tnow + 1000);
+    expect_xlsr(f, 16);
+    tick_to(tnow + 4000);
+    expect_none();                               /* every 5 s now */
+    tick_to(tnow + 1000);
+    expect_xlsr(f, 16);
+    CHECK(ios_bb_gps_set(&bb.gps, ""));
+    tick_to(tnow + 6000);
+    expect_none();                               /* the fix is gone */
+    c_mux_str(7, "at+xlsrstop\r");
+    pump();
+    expect_frame(7, "\r\nOK\r\n");
+    bb.gps.present = false;
+}
+
+/*
  * The calls-sms doc's worked example 4.2: an SMS from 14155550100 saying
  * "Hello from 2007", acked with +CNMA, and read back with +CMGR.
  */
@@ -1363,6 +1491,7 @@ static void test_chain(void)
     test_outgoing_call();
     test_emergency_call();
     test_vibrator();
+    test_gps();
     test_incoming_sms();
     test_outgoing_sms();
     test_incoming_sms_ucs2();

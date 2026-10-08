@@ -126,7 +126,8 @@ endif
 if have_system
   tests += {
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
-    'test-ios-baseband': [meson.project_source_root() / 'hw/misc/ios_baseband_core.c'],
+    'test-ios-baseband': [meson.project_source_root() / 'hw/misc/ios_baseband_core.c',
+                          meson.project_source_root() / 'hw/misc/ios_baseband_gps.c'],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],

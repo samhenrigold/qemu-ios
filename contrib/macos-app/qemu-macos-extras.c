@@ -428,9 +428,9 @@ bool qemu_ios_ui_modem_set(const char *property, const char *value)
 static void modem_refresh_bh(void *opaque)
 {
     static const char *const strs[] = {
-        "carrier", "mcc-mnc", "call-state", "last-dialed", "last-mo-sms",
+        "carrier", "mcc-mnc", "call-state", "last-dialed", "last-mo-sms", "gps-fix",
     };
-    static const char *const bools[] = { "registered", "sim-present", "emergency-call", "attached" };
+    static const char *const bools[] = { "registered", "sim-present", "emergency-call", "attached", "gps" };
     static const char *const ints[] = { "signal-dbm", "mo-sms-count", "power-offs" };
     Object *modem = modem_object();
     QDict *d = qdict_new();

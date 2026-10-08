@@ -14,6 +14,8 @@
 #ifndef HW_MISC_IOS_BASEBAND_CORE_H
 #define HW_MISC_IOS_BASEBAND_CORE_H
 
+#include "hw/misc/ios_baseband_gps.h"
+
 #define IOS_BB_MAX_CH    16    /* AT channels: 0 = pre-mux line, 1..15 = DLCIs (4.x opens 1..13) */
 #define IOS_BB_MAX_CALLS 4
 #define IOS_BB_H5_WINDOW 7
@@ -182,6 +184,8 @@ typedef struct IosBbCore {
     bool pdp_active;
     uint8_t ip_rx[2048];       /* guest -> network packet being reassembled */
     unsigned ip_rxlen;
+
+    IosBbGps gps;              /* the 3GS's GPS receiver (ios_baseband_gps.c) */
 } IosBbCore;
 
 void ios_bb_init(IosBbCore *bb, IosBbOutFn out, void *opaque);

@@ -22,7 +22,7 @@ system_ss.add(when: 'CONFIG_ARM_V7M', if_true: files('armv7m_ras.c'))
 system_ss.add(when: 'CONFIG_MOS6522', if_true: files('mos6522.c'))
 system_ss.add(when: 'CONFIG_DJMEMC', if_true: files('djmemc.c'))
 system_ss.add(when: 'CONFIG_IOSB', if_true: files('iosb.c'))
-system_ss.add(when: 'CONFIG_IOS_BASEBAND', if_true: files('ios_baseband.c', 'ios_baseband_core.c'))
+system_ss.add(when: 'CONFIG_IOS_BASEBAND', if_true: files('ios_baseband.c', 'ios_baseband_core.c', 'ios_baseband_gps.c'))
 # The iPhones' vibration motor: every board with one has the modem.
 system_ss.add(when: 'CONFIG_IOS_BASEBAND', if_true: files('ios_vibrator.c'))
 

@@ -2537,6 +2537,10 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         TRACE("dlci %d is raw IP for cid %d\n", ch, bb->ch[ch].data_cid);
         return;
     }
+    if (ios_bb_gps_command(&bb->gps, bb->now_ms, ch, cmd)) {
+        at_ok(bb, ch);
+        return;
+    }
     TRACE("unknown AT command \"at+%s\"\n", cmd);
     at_ok(bb, ch);
 }
@@ -2894,6 +2898,12 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
         h5_retransmit(bb);
         bb->h5_last_tx_ms = now_ms;
     }
+    char fix[200];
+    int gps_ch = ios_bb_gps_poll(&bb->gps, now_ms, fix, sizeof(fix));
+
+    if (gps_ch >= 0 && bb->ch[gps_ch].open) {
+        chan_write(bb, gps_ch, fix, strlen(fix));
+    }
 }
 
 int64_t ios_bb_next_due(const IosBbCore *bb)
@@ -2935,6 +2945,11 @@ int64_t ios_bb_next_due(const IosBbCore *bb)
             due = r;
         }
     }
+    int64_t gps = ios_bb_gps_next_due(&bb->gps);
+
+    if (gps && (!due || gps < due)) {
+        due = gps;
+    }
     return due;
 }
 
@@ -2950,6 +2965,7 @@ void ios_bb_reset(IosBbCore *bb)
     void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
     int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
     unsigned power_offs = bb->power_offs;
+    IosBbGps gps = bb->gps;
 
     memcpy(operator_long, bb->operator_long, sizeof(operator_long));
     memcpy(operator_short, bb->operator_short, sizeof(operator_short));
@@ -2986,6 +3002,8 @@ void ios_bb_reset(IosBbCore *bb)
     bb->wall_offset_ms = wall_offset_ms;
     bb->nitz = nitz;
     bb->power_offs = power_offs;
+    bb->gps = gps;
+    ios_bb_gps_reset(&bb->gps);
 
     /* The FCS/CRC tables are lazy-initialized on first use; the mux rx path
      * can run before anything is ever sent, so make sure they exist. */

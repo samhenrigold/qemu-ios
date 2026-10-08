@@ -17,7 +17,7 @@
  * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms; the actions
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
  * the observables attached, power-offs, call-state, emergency-call, last-dialed, last-mo-sms and
- * mo-sms-count.
+ * mo-sms-count; and with gps=on (the 3GS) the GPS receiver's gps-fix.
  *
  * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
  * framing, docs/baseband/commcenter-4.2.1-3gs.md): with ifx-version 1/2 and
@@ -496,6 +496,26 @@ static void iosbb_set_remote_hangup(Object *obj, const char *value, Error **errp
     iosbb_arm(s, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
 
+/* gps-fix: the GPS receiver's position, "lat,lon[,alt[,speed[,course[,accuracy]]]]", "" = no fix. */
+static char *iosbb_get_gps_fix(Object *obj, Error **errp)
+{
+    char buf[160];
+
+    ios_bb_gps_get(&IOS_BASEBAND(obj)->bb.gps, buf, sizeof(buf));
+    return g_strdup(buf);
+}
+
+static void iosbb_set_gps_fix(Object *obj, const char *value, Error **errp)
+{
+    IosBasebandState *s = IOS_BASEBAND(obj);
+
+    /* Taken on every modem (the app sets it with the carrier at boot); only a receiver (gps=on) reports it. */
+    if (!ios_bb_gps_set(&s->bb.gps, value ? : "")) {
+        error_setg(errp, "gps-fix: \"%s\" is not lat,lon[,alt[,speed[,course[,accuracy]]]] "
+                   "(degrees, meters, m/s, degrees or -1, meters)", value ? : "");
+    }
+}
+
 static void iosbb_set_incoming_sms(Object *obj, const char *value, Error **errp)
 {
     IosBasebandState *s = IOS_BASEBAND(obj);
@@ -740,6 +760,32 @@ static const VMStateDescription vmstate_ios_baseband_vib = {
     }
 };
 
+static bool iosbb_gps_needed(void *opaque)
+{
+    return IOS_BASEBAND(opaque)->bb.gps.present;
+}
+
+/* The doubles go as their bytes (VMState has no float type); both host architectures are little-endian. */
+static const VMStateDescription vmstate_ios_baseband_gps = {
+    .name = "ios-baseband/gps",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_gps_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bb.gps.fix, IosBasebandState),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.lat, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.lon, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.alt, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.speed, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.course, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_BUFFER_UNSAFE(bb.gps.accuracy, IosBasebandState, 0, sizeof(double)),
+        VMSTATE_INT32(bb.gps.ch, IosBasebandState),
+        VMSTATE_INT32(bb.gps.interval_ms, IosBasebandState),
+        VMSTATE_INT64(bb.gps.due_ms, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool iosbb_off_needed(void *opaque)
 {
     return IOS_BASEBAND(opaque)->bb.off;
@@ -853,6 +899,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         &vmstate_ios_baseband_off,
         &vmstate_ios_baseband_xemc,
         &vmstate_ios_baseband_vib,
+        &vmstate_ios_baseband_gps,
         NULL
     }
 };
@@ -1007,6 +1054,12 @@ static void iosbb_instance_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->srdy, "srdy", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->vibrator, "vibrator", 1);
 
+    object_property_add_str(obj, "gps-fix", iosbb_get_gps_fix, iosbb_set_gps_fix);
+    object_property_set_description(obj, "gps-fix",
+        "The GPS receiver's position, reported where the modem has one (gps=on): "
+        "\"lat,lon[,alt[,speed[,course[,accuracy]]]]\" "
+        "in degrees, meters above the ellipsoid, m/s, degrees (-1 unknown) and meters; \"\" = no fix");
+
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);
     object_property_set_description(obj, "call-state",
         "idle, dialing, alerting, incoming, active or held (first live call)");
@@ -1032,6 +1085,8 @@ static const Property iosbb_props[] = {
     DEFINE_PROP_INT32("ifx-max-data", IosBasebandState, ifx_max_data, 0),
     /* NITZ (+CTZV with the host's offset) once the host enables +CTZR; the M68 turns it on. */
     DEFINE_PROP_BOOL("nitz", IosBasebandState, nitz, false),
+    /* The baseband's own GPS receiver (the 3GS's), reporting gps-fix through +XLSR. */
+    DEFINE_PROP_BOOL("gps", IosBasebandState, bb.gps.present, false),
 };
 
 static void iosbb_class_init(ObjectClass *oc, const void *data)
