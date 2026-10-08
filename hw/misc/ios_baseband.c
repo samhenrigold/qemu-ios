@@ -16,7 +16,8 @@
  * mcc-mnc, signal-dbm, registered, sim-present, battery-percent (wired by the
  * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms; the actions
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
- * the observables call-state, last-dialed, last-mo-sms and mo-sms-count.
+ * the observables call-state, emergency-call, last-dialed, last-mo-sms and
+ * mo-sms-count.
  *
  * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
  * framing, docs/baseband/commcenter-4.2.1-3gs.md): with ifx-version 1/2 and
@@ -518,6 +519,11 @@ static char *iosbb_get_call_state(Object *obj, Error **errp)
     return g_strdup(ios_bb_call_state(&IOS_BASEBAND(obj)->bb));
 }
 
+static bool iosbb_get_emergency_call(Object *obj, Error **errp)
+{
+    return ios_bb_emergency_call(&IOS_BASEBAND(obj)->bb);
+}
+
 static char *iosbb_get_last_dialed(Object *obj, Error **errp)
 {
     return g_strdup(IOS_BASEBAND(obj)->bb.last_dialed);
@@ -555,6 +561,22 @@ static char *iosbb_get_last_mo_sms(Object *obj, Error **errp)
     .offset = offsetof(_s, _f),                                             \
 }
 
+static bool iosbb_call_emergency_needed(void *opaque)
+{
+    return ((IosBbCall *)opaque)->emergency;
+}
+
+static const VMStateDescription vmstate_ios_bb_call_emergency = {
+    .name = "ios-baseband/call/emergency",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_call_emergency_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(emergency, IosBbCall),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_ios_bb_call = {
     .name = "ios-baseband/call",
     .version_id = 1,
@@ -569,6 +591,10 @@ static const VMStateDescription vmstate_ios_bb_call = {
         VMSTATE_INT32(rings, IosBbCall),
         VMSTATE_CHAR_ARRAY(number, IosBbCall, 32),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_ios_bb_call_emergency,
+        NULL
     }
 };
 
@@ -645,6 +671,22 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
         VMSTATE_BOOL(srdy_level, IosBasebandState),
         VMSTATE_BOOL(mrdy_level, IosBasebandState),
         VMSTATE_BOOL(frame_wanted, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool iosbb_xemc_needed(void *opaque)
+{
+    return IOS_BASEBAND(opaque)->bb.xemc_on;
+}
+
+static const VMStateDescription vmstate_ios_baseband_xemc = {
+    .name = "ios-baseband/xemc",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_xemc_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bb.xemc_on, IosBasebandState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -759,6 +801,7 @@ static const VMStateDescription vmstate_ios_baseband = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_ios_baseband_spi,
         &vmstate_ios_baseband_off,
+        &vmstate_ios_baseband_xemc,
         NULL
     }
 };
@@ -914,6 +957,9 @@ static void iosbb_instance_init(Object *obj)
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);
     object_property_set_description(obj, "call-state",
         "idle, dialing, alerting, incoming, active or held (first live call)");
+    object_property_add_bool(obj, "emergency-call", iosbb_get_emergency_call, NULL);
+    object_property_set_description(obj, "emergency-call",
+        "True while the call call-state describes is to an emergency number");
     object_property_add_str(obj, "last-dialed", iosbb_get_last_dialed, NULL);
     object_property_add_str(obj, "last-mo-sms", iosbb_get_last_mo_sms, NULL);
     object_property_add(obj, "mo-sms-count", "int", iosbb_get_mo_sms_count, NULL, NULL, NULL);

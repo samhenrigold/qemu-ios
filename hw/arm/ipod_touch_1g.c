@@ -913,7 +913,7 @@ static void n45_machine_init(MachineState *machine)
         static const char *const controls[] = {
             "carrier", "mcc-mnc", "signal-dbm", "registered", "sim-present", "imsi", "iccid", "voicemail",
             "answer-delay-ms", "incoming-call", "remote-answer", "remote-hangup", "incoming-sms",
-            "call-state", "last-dialed", "last-mo-sms", "mo-sms-count",
+            "call-state", "emergency-call", "last-dialed", "last-mo-sms", "mo-sms-count",
         };
         dev = qdev_new(TYPE_IOS_BASEBAND);
         s->modem = dev;

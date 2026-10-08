@@ -41,6 +41,7 @@ typedef struct IosBbCall {
     int next_stat;            /* scripted step to emit at due_ms, -1 = none */
     int64_t due_ms;           /* next scripted step (MO progress, MT ring repeat) */
     int rings;                /* MT: RING URCs emitted so far (s0 auto-answer) */
+    bool emergency;           /* MO to an emergency number (+XEMC: 1 while it lasts) */
     char number[32];
 } IosBbCall;
 
@@ -133,6 +134,7 @@ typedef struct IosBbCore {
     /* AT/network state. */
     bool hex_cs;               /* +CSCS="HEX" */
     bool colp_off;             /* +COLP=0; on by default (1.0 never sends +COLP=1) */
+    bool xemc_on;              /* +XEMC=1: emergency call start/end URCs */
     int cfun;
     bool off;                  /* +CPWROFF: powered down, silent until bb_rst/radio_on reset it */
     int cops_format;
@@ -197,6 +199,10 @@ void ios_bb_remote_hangup(IosBbCore *bb);
 void ios_bb_remote_answer(IosBbCore *bb);
 /* "idle", "dialing", "alerting", "incoming", "active", "held" of the first live call. */
 const char *ios_bb_call_state(const IosBbCore *bb);
+/* True while the first live call (the one call-state describes) is an emergency call. */
+bool ios_bb_emergency_call(const IosBbCore *bb);
+/* The numbers the modem treats as emergency numbers (TS 22.101 10.1.1). */
+bool ios_bb_is_emergency_number(const char *number);
 
 /* A sender incoming-sms takes: 1-20 digits, optionally after a "+" (always sent as international). */
 bool ios_bb_sms_sender_ok(const char *number);

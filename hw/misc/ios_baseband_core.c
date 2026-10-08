@@ -1275,7 +1275,26 @@ static void call_release(IosBbCore *bb, IosBbCall *c)
     c->next_stat = -1;
     c->due_ms = 0;
     emit_xcallstat(bb, c->id, IOS_BB_CALL_RELEASED);
+    if (c->emergency && bb->xemc_on && bb->ch[bb->call_ch].open) {
+        chan_printf(bb, bb->call_ch, "\r\n+XEMC: 0\r\n");
+    }
     c->used = false;
+}
+
+/*
+ * The emergency numbers (TS 22.101 10.1.1): 112 and 911 always; 000, 08, 110, 118, 119
+ * and 999 as the list a SIM without EF_ECC gets from the network (24.008 10.5.3.13).
+ */
+bool ios_bb_is_emergency_number(const char *number)
+{
+    static const char *const list[] = { "112", "911", "000", "08", "110", "118", "119", "999" };
+
+    for (int i = 0; i < ARRAY_SIZE(list); i++) {
+        if (strcmp(number, list[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool radio_ok(const IosBbCore *bb)
@@ -1402,6 +1421,16 @@ const char *ios_bb_call_state(const IosBbCore *bb)
         }
     }
     return "idle";
+}
+
+bool ios_bb_emergency_call(const IosBbCore *bb)
+{
+    for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
+        if (bb->calls[i].used) {
+            return bb->calls[i].emergency;
+        }
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------- registration / SIM */
@@ -1686,7 +1715,11 @@ static void dial_command(IosBbCore *bb, int ch, const char *num)
         return;
     }
     snprintf(bb->last_dialed, sizeof(bb->last_dialed), "%s", nbuf);
+    c->emergency = ios_bb_is_emergency_number(nbuf);
     at_ok(bb, ch);
+    if (c->emergency && bb->xemc_on) {
+        chan_printf(bb, bb->call_ch, "\r\n+XEMC: 1\r\n");   /* CommCenter: "EMERGENCY CALL: Start" */
+    }
     emit_xcallstat(bb, c->id, IOS_BB_CALL_DIALING);
     c->next_stat = IOS_BB_CALL_ALERTING;
     c->due_ms = bb->now_ms + 2000;
@@ -2330,6 +2363,31 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
                 }
             }
         }
+        return;
+    }
+    if ((arg = arg_after(cmd, "xemc=", NULL))) {
+        bb->xemc_on = atoi(arg) == 1;
+        at_ok(bb, ch);
+        return;
+    }
+    if ((arg = arg_after(cmd, "xemn=", NULL))) {
+        /*
+         * Is this an emergency number? The lock screen's emergency dialer (and any dial
+         * while the phone allows emergency calls only) asks first: 4.2.1 CommCenter's
+         * handler 0x2e834 dials field 0 ("d%s;") only if field 1 is 1, and otherwise logs
+         * "Rejecting non-emergency number" and fails the call.
+         */
+        char num[32];
+        unsigned n = 0;
+
+        for (const char *p = arg; *p && n < sizeof(num) - 1; p++) {
+            if (*p != '"' && *p != ' ') {
+                num[n++] = *p;
+            }
+        }
+        num[n] = 0;
+        chan_printf(bb, ch, "\r\n+XEMN: \"%s\",%d\r\n", num, ios_bb_is_emergency_number(num));
+        at_ok(bb, ch);
         return;
     }
     if ((arg = arg_after(cmd, "colp=", NULL))) {

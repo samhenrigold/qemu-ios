@@ -792,6 +792,60 @@ static void test_outgoing_call(void)
 }
 
 /*
+ * The lock screen's emergency dialer (issue 32): CommCenter asks +XEMN first and dials
+ * only when field 1 says emergency; the call then runs as any other, bracketed by
+ * +XEMC: 1/0 once +XEMC=1 asked for them.
+ */
+static void test_emergency_call(void)
+{
+    c_mux_str(1, "at+xemn=\"5550100\"\r");
+    pump();
+    expect_frame(1, "\r\n+XEMN: \"5550100\",0\r\n");
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "at+xemn=\"911\"\r");
+    pump();
+    expect_frame(1, "\r\n+XEMN: \"911\",1\r\n");
+    expect_frame(1, "\r\nOK\r\n");
+    c_mux_str(1, "at+xemc=1\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+
+    c_mux_str(1, "atd911;\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XEMC: 1\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,2\r\n");
+    CHECK(ios_bb_emergency_call(&bb));
+    check_str(bb.last_dialed, "911", "last dialed");
+    ios_bb_remote_answer(&bb);
+    pump();
+    expect_frame(1, "\r\n+COLP: \"911\",129\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,0\r\n");
+    check_str(ios_bb_call_state(&bb), "active", "call state");
+    c_mux_str(1, "ath\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 2,6\r\n");
+    expect_frame(1, "\r\n+XEMC: 0\r\n");
+    CHECK(!ios_bb_emergency_call(&bb));
+
+    /* An ordinary number: no +XEMC, not an emergency call. */
+    c_mux_str(1, "atd5550100;\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 3,2\r\n");
+    CHECK(!ios_bb_emergency_call(&bb));
+    c_mux_str(1, "ath\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    expect_frame(1, "\r\n+XCALLSTAT: 3,6\r\n");
+    c_mux_str(1, "at+xemc=0\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    bb.next_call_id = 2;                         /* the 1.0 sections below expect id 2 next */
+}
+
+/*
  * The calls-sms doc's worked example 4.2: an SMS from 14155550100 saying
  * "Hello from 2007", acked with +CNMA, and read back with +CMGR.
  */
@@ -1262,6 +1316,7 @@ static void test_chain(void)
     test_boot();               /* through init, registration and SIM */
     test_incoming_call();
     test_outgoing_call();
+    test_emergency_call();
     test_incoming_sms();
     test_outgoing_sms();
     test_incoming_sms_ucs2();
