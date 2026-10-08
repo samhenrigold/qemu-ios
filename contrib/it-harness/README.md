@@ -4,7 +4,6 @@ Build an ARMv6 app and installable IPA with the existing legacy SDK toolchain:
 
 ```sh
 bash contrib/it-harness/build.sh
-imgtools/install-ipa.sh --check contrib/it-harness/build/Harness.ipa
 ```
 
 Requires the SDK configured in `contrib/armv6-toolchain/armv6.sh` (override with
@@ -12,16 +11,9 @@ Requires the SDK configured in `contrib/armv6-toolchain/armv6.sh` (override with
 and libmp3lame. No downloaded or copyrighted media: all six fixtures are generated.
 
 Drop `contrib/it-harness/build/Harness.ipa` into LightTouch's app installation UI.
-Alternatively, with an AppSync-enabled emulator running:
-
-```sh
-imgtools/install-ipa.sh contrib/it-harness/build/Harness.ipa
-```
 
 Use a prepared emulator with the GLES bridge installed. This app opens OpenGLES
-dynamically, like GLTest, so the command-line installer's linked-framework scan
-does not install the bridge automatically. The normal LightTouch package supplies
-the bridge. Standalone media decoding requires the switches documented in
+dynamically, like GLTest; the normal LightTouch package supplies the bridge. Standalone media decoding requires the switches documented in
 `docs/research/ipod-media.md`; unavailable device functions should produce failures or
 missing output, not be assumed supported because the app installed.
 

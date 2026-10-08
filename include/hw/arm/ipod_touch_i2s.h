@@ -125,9 +125,8 @@
  *     prebuffer 32768 alone              1 hole, 1 starvation
  *     32768 + out.buffer-count=16        0 of 3 damaged, 0 starvations
  *
- * So `--sound` (`contrib/run-ipod-touch.sh`, or your local
- * `~/Developer/qemu-ios-files/ios3/run-ios3.sh`) must pass
- * `-audio driver=coreaudio,out.buffer-count=16`, and it now does. The cost of
+ * So a host run with sound must pass
+ * `-audio driver=coreaudio,out.buffer-count=16`. The cost of
  * this constant is that much added output latency, once at the start of each
  * sound.
  *

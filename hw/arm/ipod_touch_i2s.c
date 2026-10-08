@@ -13,8 +13,6 @@
  * resolves its backend through the DEFAULT audiodev list, and only `-audio`
  * populates that; `-audiodev` alone leaves this device with nowhere to send
  * samples and looks exactly like a broken audio path.
- * contrib/run-ipod-touch.sh --sound (or your local
- * ~/Developer/qemu-ios-files/ios3/run-ios3.sh --sound) sets this up for you.
  *
  * Sample format: 16-bit stereo little-endian, clocked by the CS42L58's LRCLK.
  * System sounds use 44100 Hz, but movie playback can change the codec clock

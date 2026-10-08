@@ -6,8 +6,8 @@ Linux compatibility is currently unstable. Efforts are underway to improve it.
 
 **This file documents the generic build/run path and predates this fork's
 current target.** This fork's day-to-day device is an iOS **3.1.3** image, run
-via `contrib/run-ipod-touch.sh` — see the top-level `README.md` for the short
-version. The build instructions, USB device mode, shutdown, and offline
+headless by LightTouchMac and `tests/ipod/regress.py` — see the top-level
+`README.md`. The build instructions, USB device mode, shutdown, and offline
 filesystem-editing sections below are still accurate; the specific example
 output (`ProductVersion: 2.1.1`, `BuildVersion: 5F138`) reflects the 2.1.1
 image they were captured against, not necessarily what a 3.1.3 boot reports.

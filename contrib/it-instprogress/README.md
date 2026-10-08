@@ -21,10 +21,7 @@ deleted (they are in git history); only `sbdlicon` is built and shipped.
 
 ## Using it
 
-Nothing new to invoke: `imgtools/install-ipa.sh` does it. That script is what
-the Cocoa window runs when an `.ipa` is dropped on it *and* what you run from a
-terminal, so a headless install behaves exactly like a drop and the two cannot
-drift. The placeholder goes up before `ideviceinstaller` starts and comes down
+LightTouchMac's install pipeline does it. The placeholder goes up before `ideviceinstaller` starts and comes down
 when it finishes **whether or not it succeeded**; Ctrl-C takes it down too.
 Both directions were tested against a live guest, by page-indicator dot.
 

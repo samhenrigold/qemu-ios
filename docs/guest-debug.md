@@ -83,7 +83,7 @@ bootrom.
 | Board | How |
 |---|---|
 | M68 1.0 | `RUN=/tmp/x tools/boot.py SECS --extra '-gdb tcp:127.0.0.1:PORT'` (qemu-ios-files/m68/tools) |
-| iPod 2G 3.1.3 | the `iPod-Touch` command line from `contrib/run-ipod-touch.sh` plus `-gdb tcp:127.0.0.1:PORT`, with `IT_DIRECT_IBOOT`, `IT_TVOUT_READY=1` and `IT_LCD_BRIGHT=255` in the environment (`tests/ipod/regress.py` `boot_env`; without them it stays in iBoot) |
+| iPod 2G 3.1.3 | the `iPod-Touch` command line from `tests/ipod/regress.py` plus `-gdb tcp:127.0.0.1:PORT`, with `IT_DIRECT_IBOOT`, `IT_TVOUT_READY=1` and `IT_LCD_BRIGHT=255` in the environment (`tests/ipod/regress.py` `boot_env`; without them it stays in iBoot) |
 | iPad 3.2.2 | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT' tests/ipad1/boot-smoke.py ...`, or the `ipad1` machine line it prints |
 | N81, N90, N18, N88 (kboot) | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT'` with any `tests/ipad1` harness and `--machine iPod-Touch-4G`, `iPhone-4`, `n18` or `n88 --device DEV`; `tests/ipad1/debug-check.py` does it and runs both passes. Target arch `armv7-apple-ios` |
 

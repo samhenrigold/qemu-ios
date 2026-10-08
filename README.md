@@ -40,7 +40,6 @@ is the wire contract).
 | `contrib/gles-public`, `contrib/ipad1-guest`, `contrib/appsync` | the GL front end (one OpenGLES.framework replacement for every 2.x-5.x firmware, iPad and iPod; `docs/ipad1/gles-public-seam.md`); iPad-side helpers: `ipad1-guest/build.sh` builds `it_pbd` (pasteboard bridge) and `it_ethlink` (raises the USB Ethernet link) for armv7 from the shared sources; the AppSync interposer dylib |
 | `contrib/guest-package` | `mkpkg.py` and `VERSION`: the versioned guest-tools package format the loader installs at boot |
 | `contrib/macos-app` | `make-dylib-macos.sh` (the app's dylib), `entitlements.plist` (the app's helper entitlements), `nandpack.py` |
-| `contrib/run-ipod-touch.sh` | Stand-alone windowed launcher for the iPod (expects images under `~/Developer/qemu-ios-files`) |
 | `imgtools/` | NAND/HFS/img3 tools and older one-offs. Devices are made by LightTouchMac's Swift FirmwareKit: `firmwarekit create --catalog CATALOG --id BOARD-BUILD --ipsw IPSW --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; k48ap and 4.x n72ap also take `--helper` with the LightTouchDevice executable). `device.py create` and the `*_device.py` names only translate their inputs and call it (`research/python-preparer/README.md`) |
 | `manifests/` | One declared-inputs manifest per build (`ipad1-7B367/7B500/8C148`, `ipod2g-5F138/7E18/8C148`) |
 | `tests/ipod/`, `tests/ipad1/`, `tests/guest-package/` | The gates below |
@@ -80,17 +79,6 @@ every input and every staged file). LightTouchMac pins this repository by commit
 `build-support/sources.json`; its `scripts/build-guest-tools.sh` is a thin caller of the export, and its
 release build validates the staged tree against the manifest. Bump the pin when the guest tools, the
 helper ABI or the entitlements change.
-
-For a windowed stand-alone iPod run (`contrib/run-ipod-touch.sh`) the older configure line still works,
-at the cost of the FFmpeg caveat above:
-
-```sh
-../configure --enable-sdl --target-list=arm-softmmu --disable-capstone --disable-pie --disable-slirp --disable-fuse \
-    --extra-cflags=-I/opt/homebrew/opt/openssl@3/include --extra-ldflags='-L/opt/homebrew/opt/openssl@3/lib -lcrypto'
-ninja -C build qemu-system-arm
-```
-
-(`--disable-slirp` costs the Wi-Fi checks; see `RUNNING.md`, upstream's, for other platforms.)
 
 ## Gates
 
@@ -134,7 +122,7 @@ and validates the staged tree against `manifest.json`; a pin bump is a LightTouc
 |---|---|
 | `docs/capabilities.md` | The iPod board: what works, where it stops, how to verify |
 | `docs/ipad1/README.md` | The iPad board: Sam's principles (vanilla guest, IPSW-agnostic guest changes, Wi-Fi default), the definition of done, the audio and Bluetooth notes, and the index of `docs/ipad1/` (`iboot.md`, `wifi.md`, `usb-keyboard.md`, `ios4.md`, `location.md`, `guest-services.md`, `app-compat*.md`, `addresses-7B500.md`) |
-| `docs/ipod/` | `from-ipsw.md` (the manifest pipeline for the iPod), the 7E18 hardware notes (`pmu-7e18.md`, `ipod-pke.md`, `ipod-clcd-irqs.md`, `ipod-native-halt.md`, `nor-transactions.md`), `ipod-touch-2g-setup.md` (the stand-alone launcher walkthrough), and `nand-current-new-verification.md` (the staged iPod image, kept until the image swap at the main merge) |
+| `docs/ipod/` | `from-ipsw.md` (the manifest pipeline for the iPod), the 7E18 hardware notes (`pmu-7e18.md`, `ipod-pke.md`, `ipod-clcd-irqs.md`, `ipod-native-halt.md`, `nor-transactions.md`), and `nand-current-new-verification.md` (the staged iPod image, kept until the image swap at the main merge) |
 | `docs/configuration.md` | Typed machine properties and their `IT_*` aliases |
 | `docs/tcp-usb-protocol.md` | The tcp_usb wire protocol shared with the usbmuxd fork |
 | `docs/networking.md`, `docs/stock-service-protocol.md`, `docs/app-ledger.md` | Guest networking and the built-in proxy; the Weather/Stocks gateway; the iPod app ledger |
