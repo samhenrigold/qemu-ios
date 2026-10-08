@@ -114,9 +114,9 @@ static QTestState *migration_board(const char *profile, bool incoming, bool n45,
                                   const char *n45_rom, bool different_identity)
 {
     if (n45) {
-        return qtest_initf("-machine iPod-Touch-1G,bootrom=%s,nand=%s,x-rom-boot=on,wifi=off "
+        return qtest_initf("-machine iPod-Touch-1G,bootrom=%s,iboot=%s,nand=%s,wifi=off "
             "-drive if=pflash,format=raw,file=%s -display none -audio driver=none -nic none %s %s",
-            n45_rom, nand, nor, incoming ? "-incoming defer" : "",
+            n45_rom, n45_rom, nand, nor, incoming ? "-incoming defer" : "",
             different_identity ? "-global driver=ipodtouch.chipid,property=word3,value=1" : "");
     }
     return qtest_initf("-machine iPod-Touch,bootrom=%s,nand=%s,nor=%s,security-profile=%s "

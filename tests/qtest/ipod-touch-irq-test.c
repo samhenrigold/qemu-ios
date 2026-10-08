@@ -97,6 +97,8 @@ static void pmu_wake_irq(void)
     g_assert_cmphex(qtest_readl(q, VIC + 8) & PMU_VIC, ==, 0);
     g_assert_cmphex(pmu_read(q, 3), ==, 0);
     power(q, false);
+    /* The board holds a press for 150 ms of guest time (BUTTON_MIN_PRESS_NS). */
+    qtest_clock_step(q, 150000000);
     pmu_write(q, 8, 0xf7);
     g_assert_cmphex(qtest_readl(q, SYSIC + 0xa8) & PMU_PIN, ==, PMU_PIN);
     g_assert_cmphex(pmu_read(q, 2), ==, 0); /* INT1 does not hold EXTON1 */
@@ -121,8 +123,8 @@ static void send_power_sequence(QTestState *q, int id)
         "'id': %d, 'events': ["
         "{'type':'key','at-ms':0,'key':'meta_l','down':true},"
         "{'type':'key','at-ms':10,'key':'l','down':true},"
-        "{'type':'key','at-ms':30,'key':'l','down':false},"
-        "{'type':'key','at-ms':30,'key':'meta_l','down':false}]}}", id);
+        "{'type':'key','at-ms':170,'key':'l','down':false},"
+        "{'type':'key','at-ms':170,'key':'meta_l','down':false}]}}", id);
 }
 
 /* Exercise generated QAPI, actual handler ownership and virtual deadlines,
@@ -143,7 +145,9 @@ static void input_sequence(void)
     g_assert_true(qdict_haskey(reply, "error"));
     qobject_unref(reply);
     sequence_status(q, 1, "running");
-    qtest_clock_step(q, 20000000);
+    qtest_clock_step(q, 159000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 0);
+    qtest_clock_step(q, 1000000);
     g_assert_cmphex(pmu_read(q, 3), ==, 8);
     sequence_status(q, 1, "completed");
     sequence_status(q, 2, "unknown");
@@ -158,8 +162,13 @@ static void input_sequence(void)
     qtest_qmp_assert_success(q, "{'execute':'input-cancel-sequence',"
                                "'arguments':{'id':3}}");
     sequence_status(q, 3, "cancelled");
-    g_assert_cmphex(pmu_read(q, 3), ==, 8); /* owned release reaches paused board */
+    /* The owned release is kept for the paused board: it lands once the press has lasted 150 ms of guest time. */
+    g_assert_cmphex(pmu_read(q, 3), ==, 0);
     qtest_qmp_assert_success(q, "{'execute':'cont'}");
+    qtest_clock_step(q, 149000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 0);
+    qtest_clock_step(q, 1000000);
+    g_assert_cmphex(pmu_read(q, 3), ==, 8);
     send_power_sequence(q, 4);
     qtest_clock_step(q, 10000000);
     g_assert_cmphex(pmu_read(q, 3), ==, 4);
