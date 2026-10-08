@@ -70,7 +70,7 @@ static void check_card(const char *machine, uint16_t prodid, const char *rev, co
 }
 
 static void n18(void) { check_card("n18", 0x4329, "s=B1", "P=N18"); }
-static void n88(void) { check_card("n88", 0x4325, "s=D1", "P=N88"); }
+static void n88(void) { check_card("n88", 0xa8f2, "s=D1", "P=N88"); }
 
 int main(int argc, char **argv)
 {

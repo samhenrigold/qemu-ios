@@ -8,11 +8,21 @@ from a NAND store to an activated home screen, with touch, Home and Hold, powers
 data; an IPA installs through installation_proxy and AppSync and launches.
 
 Wi-Fi (2026-10-08): the board's BCM4325 D1 (AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1": CIS s=D1 / P=N88,
-manufacturer 0x2d0, product 0x4325) behind the SDHC at 0x80000000, the same card model as the N18's at the
-iPod 2G card's chip ID and SDIO core. Before that the N88 had no card at all: iOS 6's AppleIOPSDIO read the
-unimplemented window ("SDIO Internal Clk Unstable", clockControl 0) and Settings showed Wi-Fi off. 4.2.1, 5.1.1
-and 6.1.6 join "qemu-ios" and take 10.0.2.15; 3.1.3's AppleBCMWLAN-1.25 stops at its N88 platform manager
-("Failed to get Baseband service"), as before. tests/qtest/s5l8920-sdio-test checks the card.
+manufacturer 0x2d0, product 0xa8f2, the production card's) behind the SDHC at 0x80000000, the same card model as
+the N18's at the iPod 2G card's chip ID and SDIO core. Before that the N88 had no card at all: iOS 6's AppleIOPSDIO
+read the unimplemented window ("SDIO Internal Clk Unstable", clockControl 0) and Settings showed Wi-Fi off. Every
+build from 3.0 to 6.1.6 joins "qemu-ios" (sessions single's wifi0 probe on 3.1, 3.1.2, 3.1.3, 4.2.1, 5.1.1, 6.1.6;
+the serial log's "Joined BSS" on 3.0, where the probe's httpget does not run). tests/qtest/s5l8920-sdio-test checks
+the card. What 3.x needed:
+- Product 0xa8f2: 3.0's AppleBCM4325-42.43 matches the N88 only by it ("N88 4325 D1"; 0x4325 needs its DVT boards'
+  "P=N88 m=3.1"/"m=3.2"), so with 0x4325 no driver attached. 3.1 to 6.1.6 match either.
+- No VXD: 3.1.x's AppleBCMWLANN88PlatformManager::init waits 20 ms (waitForMatchingService) for AppleBaseband, which
+  registers at the end of its start. That start sat ~1.2 s in addEventSource on arm-io's shared work loop, whose
+  gate AppleVXD375's power-on held while polling the unmodeled decoder (DMAC 0x50c FIN 1000 x 1 ms, MTX 0xfc, the
+  firmware's 0x2fe0 signature), so the card enumerated first: "Failed to get Baseband service", no Wi-Fi. kboot now
+  unmatches the `vxd` node on both S5L8920 boards (the decoder never powered on anyway). Found with gdbstub
+  breakpoints on IOService::probeCandidates/startCandidate, IORecursiveLockLock/Unlock on the work loop's gate and
+  IODelay callers.
 
 ## What runs (2026-10-05)
 
@@ -95,6 +105,7 @@ Machine properties as the N18's (docs/n18/README.md).
 | UART3 | BCM4325 HCI (`ipod_touch_bt.c`'s chardev); the CDMA receive chain from URXH is paced by the UART's FIFO | board data | H |
 | ISP | none: the DT's `isp` node is unmatched (`no_isp`), as the A4 machines' | board data | S |
 | PWM (0x83500000) | `s5l8920.pwm` (`hw/arm/s5l8920_pwm.c`): channel 0 (DT pwm/vibrator) runs the vibration motor, which the app hears (`qemu_ios_ui_vibrator`, `hw/misc/ios_vibrator.c`); channel 2 is the codec MCLK, unwired | shared | H |
+| VXD | none: the DT's `vxd` node is unmatched (both S5L8920 boards); unanswered, its power-on held arm-io's work loop ~1.2 s | | S |
 
 `explicit-start`: the s5l8920x firmware leaves FMI control at 3 or 5 between transfers and starts each
 with its own control write. The last page of a multi-page read follows a status poll, not a read command,

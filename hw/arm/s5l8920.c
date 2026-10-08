@@ -224,10 +224,12 @@ static const S5L8920Board s5l8920_n88 = {
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .ringer = 0x1403,                    /* function-button_ringerab flags 0: active low (the N90's is high) */
     .vibrator = true, .vibrator_pwm = 0,
-    /* A BCM4325 D1: AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1" (s=D1, P=N88 -> 4325b0/default.bin), at the
-     * iPod 2G card model's own chip ID and SDIO core. */
+    /* A BCM4325 D1: AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1" (-> 4325b0/default.bin), at the iPod 2G card
+     * model's own chip ID and SDIO core. Its CIS product ID is the production 3GS card's, 0xa8f2: 3.0's
+     * AppleBCMWLAN matches only that ("N88 4325 D1"; 0x4325 with "P=N88 m=3.x" is its DVT boards), and 3.1 to
+     * 6.1.6 match it as well as 0x4325 with s=D1/P=N88. */
     .wifi = {
-        .manfid = 0x02d0, .prodid = 0x4325,
+        .manfid = 0x02d0, .prodid = 0xa8f2,
         .chipid = CHIPCOMMON_CHIPID,
         .sdiod_base = SDPCM_CORE_BASE,
         .vers1 = { "", "", "s=D1", "P=N88" },
@@ -387,6 +389,20 @@ static void s5l8920_cpu_reset(void *opaque)
         a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
                    &(A4DTEdit){ "isp", "compatible", "none", 5 });
     }
+    /*
+     * No VXD (the H.264 decoder, an MSVDX with its own MTX core) model either.
+     * AppleVXD375 powers it on at start inside a command gate on arm-io's shared
+     * work loop and polls: DMAC IRQ_STAT 0x50c for the firmware download's FIN
+     * (1000 x 1 ms), then MTX register access (0xfc) and the firmware's comms
+     * signature 0x2fe0 == 0xa5a5a5a5; unanswered, that holds the gate ~1.2 s.
+     * AppleBaseband::start waits behind it in addEventSource, and 3.x's
+     * AppleBCMWLANN88PlatformManager gives AppleBaseband only 20 ms
+     * (waitForMatchingService) once the card has enumerated: "Failed to get
+     * Baseband service", no Wi-Fi. Unmatched, the board reads as having no
+     * hardware decoder, which it already was in effect (power-on failed).
+     */
+    a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+               &(A4DTEdit){ "vxd", "compatible", "none", 5 });
     address_space_write(&address_space_memory, load_pa, MEMTXATTRS_UNSPECIFIED,
                         data, image_len);
     for (gsize off = image_len; off + KBOOT_SEGMENT_LEN <= size - KBOOT_TRAILER_LEN;) {
