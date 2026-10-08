@@ -79,6 +79,24 @@ static bool scaler_write_bus(IPodScalerState *s, uint32_t va, const void *buf,
 }
 
 /*
+ * The bus address of row `y` of a buffer whose rows are `pitch` bytes apart in memory and
+ * `stride` apart as the block is programmed (+0x1c/+0x3c). Where the stride is a power of
+ * two past the pitch, the kernel maps the buffer in 64 KiB windows of 64 KiB / stride rows,
+ * each packed at the pitch and only as many pages mapped as those rows fill: 2x of a 1x
+ * iPad app, 960x640 at stride 4096 (16 rows of 3840 bytes, 15 pages of each window; issue
+ * 47), as the Zoom source below (11 of 16 at 683 wide).
+ */
+static uint32_t scaler_row(uint32_t base, unsigned y, unsigned stride, unsigned pitch)
+{
+    if (pitch < stride && stride < 0x10000 && !(stride & (stride - 1))) {
+        unsigned rows = 0x10000 / stride;
+
+        return base + (y / rows) * 0x10000 + (y % rows) * pitch;
+    }
+    return base + y * stride;
+}
+
+/*
  * 32-bit RGB to 32-bit RGB with scaling: what iPad Accessibility > Zoom asks
  * for. CA renders the visible crop (683x512 at 1.5x) and the scaler blows it
  * up onto the 1024x768 framebuffer. +0x10/+0x30 formats (low 3 bits 6 =
@@ -111,6 +129,10 @@ static bool scaler_rgb(IPodScalerState *s)
         ds < dw * 4) {
         return false;
     }
+    /* Rotated 90 degrees when the steps walk the destination's rows down the source's
+     * columns: a 1x iPhone app on the iPad's landscape panel (320x480 -> 480x320 at 1:1,
+     * 960x640 at 2x), the way the rest of the portrait UI is turned. */
+    bool rot = sx && sy && sw != sh && ((uint64_t)dw * sx) >> 16 == sh && ((uint64_t)dh * sy) >> 16 == sw;
     sx = sx ? sx : ((uint64_t)sw << 16) / dw;
     sy = sy ? sy : ((uint64_t)sh << 16) / dh;
     need = (size_t)pitch * sh * 4;
@@ -135,9 +157,14 @@ static bool scaler_rgb(IPodScalerState *s)
             (size_t)MIN(((uint64_t)y * sy) >> 16, sh - 1) * pitch;
 
         for (unsigned x = 0; x < dw; x++) {
-            row[x] = line[MIN(((uint64_t)x * sx) >> 16, sw - 1)];
+            if (rot) {      /* destination (x, y) is source column sw - 1 - y, row x */
+                unsigned u = sw - 1 - MIN(((uint64_t)y * sy) >> 16, sw - 1);
+                row[x] = ((const uint32_t *)src)[(size_t)MIN(((uint64_t)x * sx) >> 16, sh - 1) * pitch + u];
+            } else {
+                row[x] = line[MIN(((uint64_t)x * sx) >> 16, sw - 1)];
+            }
         }
-        if (!scaler_write_bus(s, r[0x34 / 4] + y * ds, row, dw * 4)) {
+        if (!scaler_write_bus(s, scaler_row(r[0x34 / 4], y, ds, ROUND_UP(dw, 64) * 4), row, dw * 4)) {
             return false;
         }
     }
