@@ -1412,7 +1412,7 @@ static void ipad1_init(MachineState *machine)
     /*
      * 6.x and 7.x drive the same motor another way: AppleD1815PMUPWM (the DT's pmu/vib-pwm) sets the
      * PMU's PWM (0x6e enable, 0x6f duty) and raises the driver's enable GPIO for each buzz (startPWM /
-     * stopPWM). ponytail: the enable alone runs the motor; the PMU PWM's own enable is not gated in.
+     * stopPWM). The enable alone runs the motor; the PMU PWM's own enable is not modeled as a gate.
      */
     if (s->board->vibrator_enable) {
         qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->vibrator_enable),
