@@ -1168,6 +1168,19 @@ static void test_ifx(void)
     x.credits_in = 165;                         /* repeated unanswered "at" pings granting 15 each */
     ios_bb_ifx_modem_reset(&x);
     CHECK(x.credits_in == 16);
+
+    /* +CPWROFF: the OK, then silence (CommCenter's raw "at" pings must go unanswered,
+     * or it waits out its ~30 s power-off timeout) until bb_rst resets the modem. */
+    ios_bb_reset(&c);
+    ifx_frame(&x, &c, "at+cpwroff\r", miso, 0x7fc, got);
+    ifx_frame(&x, &c, "", miso, 0x7fc, got);
+    check_str(got, "\r\nOK\r\n", "cpwroff OK");
+    ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
+    ios_bb_tick(&c, c.now_ms + 10000);
+    CHECK(!ios_bb_ifx_pending(&x) && !ios_bb_next_due(&c));
+    ios_bb_reset(&c);
+    ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
+    CHECK(ios_bb_ifx_pending(&x));              /* answering again */
 }
 
 /* ------------------------------------------------------------- packet data */

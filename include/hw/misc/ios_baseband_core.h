@@ -134,6 +134,7 @@ typedef struct IosBbCore {
     bool hex_cs;               /* +CSCS="HEX" */
     bool colp_off;             /* +COLP=0; on by default (1.0 never sends +COLP=1) */
     int cfun;
+    bool off;                  /* +CPWROFF: powered down, silent until bb_rst/radio_on reset it */
     int cops_format;
     bool cops_detached;        /* +COPS=2 */
     int creg_n, creg_ch;

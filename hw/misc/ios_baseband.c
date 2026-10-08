@@ -116,6 +116,10 @@ static void iosbb_set_srdy(IosBasebandState *s, bool level)
 
 static void iosbb_srdy_update(IosBasebandState *s)
 {
+    /* Switched off (+CPWROFF): SRDY stays low once the OK has gone, whatever the AP asks. */
+    if (s->bb.off && !ios_bb_ifx_pending(&s->ifx)) {
+        return;
+    }
     if (s->mrdy_level ||
         (!s->srdy_level && (s->frame_wanted || ios_bb_ifx_pending(&s->ifx)))) {
         iosbb_set_srdy(s, true);
@@ -645,6 +649,22 @@ static const VMStateDescription vmstate_ios_baseband_spi = {
     }
 };
 
+static bool iosbb_off_needed(void *opaque)
+{
+    return IOS_BASEBAND(opaque)->bb.off;
+}
+
+static const VMStateDescription vmstate_ios_baseband_off = {
+    .name = "ios-baseband/off",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_off_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bb.off, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_ios_baseband = {
     .name = "ios-baseband",
     .version_id = 2,
@@ -738,6 +758,7 @@ static const VMStateDescription vmstate_ios_baseband = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_ios_baseband_spi,
+        &vmstate_ios_baseband_off,
         NULL
     }
 };

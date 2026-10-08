@@ -684,6 +684,9 @@ static void mx_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 /* Raw or H5-wrapped output of the AT stream, pre-mux. */
 static void h5_stream(IosBbCore *bb, const uint8_t *data, unsigned len)
 {
+    if (bb->off) {
+        return;                                  /* a switched-off modem says nothing */
+    }
     if (!bb->h5) {
         bb->out(bb->opaque, data, len);
         return;
@@ -2041,6 +2044,18 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         TRACE("mux started\n");
         return;
     }
+    if (strcmp(cmd, "cpwroff") == 0) {
+        /*
+         * Switch off: OK, then nothing at all until the AP resets the modem. CommCenter
+         * sends it before a recovery reset (and at shutdown) and then pings in raw AT
+         * until the modem stops answering; a modem that kept clocking frames made it wait
+         * out its ~30 s power-off timeout first ("Searching..." meanwhile).
+         */
+        at_ok(bb, ch);
+        bb->off = true;
+        TRACE("powered off (+cpwroff)\n");
+        return;
+    }
     if ((arg = arg_after(cmd, "cfun=", NULL))) {
         int n = atoi(arg);
 
@@ -2666,6 +2681,9 @@ void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso)
 
 void ios_bb_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 {
+    if (bb->off) {
+        return;
+    }
     if (!bb->h5 && bb->mux) {
         /* SPI (3GS/iPhone 4): the mux runs straight on the byte stream, no H5. */
         mx_input(bb, buf, len);
@@ -2696,6 +2714,9 @@ void ios_bb_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
 {
     bb->now_ms = now_ms;
+    if (bb->off) {
+        return;
+    }
 
     if (bb->reg_step && now_ms >= bb->reg_due_ms) {
         reg_tick(bb);
@@ -2762,6 +2783,10 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
 int64_t ios_bb_next_due(const IosBbCore *bb)
 {
     int64_t due = 0;
+
+    if (bb->off) {
+        return 0;
+    }
 
     if (bb->reg_step) {
         due = bb->reg_due_ms;
