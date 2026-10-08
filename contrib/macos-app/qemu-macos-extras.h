@@ -26,9 +26,10 @@ void qemu_ios_ui_touch2(int phase, double nx, double ny);
 void qemu_ios_ui_rotate(bool clockwise);
 
 /*
- * A host key event by macOS virtual keycode (NSEvent.keyCode / kVK_*). Uses
- * the same mapping as ui/cocoa.m, so the app can forward key events without
- * carrying QKeyCode constants. Unmapped keycodes are ignored.
+ * A host key event by macOS virtual keycode (NSEvent.keyCode / kVK_*),
+ * through QEMU's generated qemu_input_map_osx_to_qcode, so the app can forward
+ * key events without carrying QKeyCode constants. Unmapped keycodes, Command
+ * and Control are ignored.
  */
 void qemu_ios_ui_key_mac(int mac_keycode, bool down);
 

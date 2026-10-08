@@ -33,7 +33,6 @@
 
 #include <dlfcn.h>
 #include <mach-o/loader.h>
-#include <Carbon/Carbon.h>          /* kVK_* virtual keycodes */
 
 #include "qemu-macos-extras.h"
 
@@ -145,73 +144,22 @@ static void qemu_ios_ui_key(int qcode, bool down)
     aio_bh_schedule_oneshot(qemu_get_aio_context(), key_bh, k);
 }
 
-/*
- * macOS virtual keycode (NSEvent.keyCode / kVK_*) to QKeyCode. The same table
- * ui/cocoa.m uses -- kept here verbatim so host-keyboard passthrough matches
- * the built-in Cocoa UI exactly and the app never has to carry QKeyCode
- * integer constants in Swift.
- */
-static const int mac_to_qkeycode_map[] = {
-    [kVK_ANSI_A] = Q_KEY_CODE_A, [kVK_ANSI_B] = Q_KEY_CODE_B,
-    [kVK_ANSI_C] = Q_KEY_CODE_C, [kVK_ANSI_D] = Q_KEY_CODE_D,
-    [kVK_ANSI_E] = Q_KEY_CODE_E, [kVK_ANSI_F] = Q_KEY_CODE_F,
-    [kVK_ANSI_G] = Q_KEY_CODE_G, [kVK_ANSI_H] = Q_KEY_CODE_H,
-    [kVK_ANSI_I] = Q_KEY_CODE_I, [kVK_ANSI_J] = Q_KEY_CODE_J,
-    [kVK_ANSI_K] = Q_KEY_CODE_K, [kVK_ANSI_L] = Q_KEY_CODE_L,
-    [kVK_ANSI_M] = Q_KEY_CODE_M, [kVK_ANSI_N] = Q_KEY_CODE_N,
-    [kVK_ANSI_O] = Q_KEY_CODE_O, [kVK_ANSI_P] = Q_KEY_CODE_P,
-    [kVK_ANSI_Q] = Q_KEY_CODE_Q, [kVK_ANSI_R] = Q_KEY_CODE_R,
-    [kVK_ANSI_S] = Q_KEY_CODE_S, [kVK_ANSI_T] = Q_KEY_CODE_T,
-    [kVK_ANSI_U] = Q_KEY_CODE_U, [kVK_ANSI_V] = Q_KEY_CODE_V,
-    [kVK_ANSI_W] = Q_KEY_CODE_W, [kVK_ANSI_X] = Q_KEY_CODE_X,
-    [kVK_ANSI_Y] = Q_KEY_CODE_Y, [kVK_ANSI_Z] = Q_KEY_CODE_Z,
-    [kVK_ANSI_0] = Q_KEY_CODE_0, [kVK_ANSI_1] = Q_KEY_CODE_1,
-    [kVK_ANSI_2] = Q_KEY_CODE_2, [kVK_ANSI_3] = Q_KEY_CODE_3,
-    [kVK_ANSI_4] = Q_KEY_CODE_4, [kVK_ANSI_5] = Q_KEY_CODE_5,
-    [kVK_ANSI_6] = Q_KEY_CODE_6, [kVK_ANSI_7] = Q_KEY_CODE_7,
-    [kVK_ANSI_8] = Q_KEY_CODE_8, [kVK_ANSI_9] = Q_KEY_CODE_9,
-    [kVK_ANSI_Grave] = Q_KEY_CODE_GRAVE_ACCENT,
-    [kVK_ANSI_Minus] = Q_KEY_CODE_MINUS,
-    [kVK_ANSI_Equal] = Q_KEY_CODE_EQUAL,
-    [kVK_Delete] = Q_KEY_CODE_BACKSPACE,
-    [kVK_CapsLock] = Q_KEY_CODE_CAPS_LOCK,
-    [kVK_Tab] = Q_KEY_CODE_TAB,
-    [kVK_Return] = Q_KEY_CODE_RET,
-    [kVK_ANSI_LeftBracket] = Q_KEY_CODE_BRACKET_LEFT,
-    [kVK_ANSI_RightBracket] = Q_KEY_CODE_BRACKET_RIGHT,
-    [kVK_ANSI_Backslash] = Q_KEY_CODE_BACKSLASH,
-    [kVK_ANSI_Semicolon] = Q_KEY_CODE_SEMICOLON,
-    [kVK_ANSI_Quote] = Q_KEY_CODE_APOSTROPHE,
-    [kVK_ANSI_Comma] = Q_KEY_CODE_COMMA,
-    [kVK_ANSI_Period] = Q_KEY_CODE_DOT,
-    [kVK_ANSI_Slash] = Q_KEY_CODE_SLASH,
-    [kVK_Space] = Q_KEY_CODE_SPC,
-    [kVK_UpArrow] = Q_KEY_CODE_UP,
-    [kVK_DownArrow] = Q_KEY_CODE_DOWN,
-    [kVK_LeftArrow] = Q_KEY_CODE_LEFT,
-    [kVK_RightArrow] = Q_KEY_CODE_RIGHT,
-    [kVK_Home] = Q_KEY_CODE_HOME,
-    [kVK_PageUp] = Q_KEY_CODE_PGUP,
-    [kVK_PageDown] = Q_KEY_CODE_PGDN,
-    [kVK_End] = Q_KEY_CODE_END,
-    [kVK_ForwardDelete] = Q_KEY_CODE_DELETE,
-    [kVK_Escape] = Q_KEY_CODE_ESC,
-    /* Modifiers the app forwards from flagsChanged. Command and Control stay
-     * unmapped: those combinations belong to the menu bar. */
-    [kVK_Shift] = Q_KEY_CODE_SHIFT, [kVK_RightShift] = Q_KEY_CODE_SHIFT_R,
-    [kVK_Option] = Q_KEY_CODE_ALT, [kVK_RightOption] = Q_KEY_CODE_ALT_R,
-};
-
 void qemu_ios_ui_key_mac(int mac_keycode, bool down)
 {
     int qcode;
 
     if (mac_keycode < 0 ||
-        (size_t)mac_keycode >= ARRAY_SIZE(mac_to_qkeycode_map)) {
+        (unsigned)mac_keycode >= qemu_input_map_osx_to_qcode_len) {
         return;
     }
-    qcode = mac_to_qkeycode_map[mac_keycode];
-    if (qcode == 0) {                 /* unmapped (Q_KEY_CODE_UNMAPPED) */
+    qcode = qemu_input_map_osx_to_qcode[mac_keycode];
+    switch (qcode) {
+    case Q_KEY_CODE_UNMAPPED:
+    /* Command and Control belong to the menu bar. */
+    case Q_KEY_CODE_META_L:
+    case Q_KEY_CODE_META_R:
+    case Q_KEY_CODE_CTRL:
+    case Q_KEY_CODE_CTRL_R:
         return;
     }
     qemu_ios_ui_key(qcode, down);
