@@ -952,8 +952,9 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
         /* Unbuffered stderr makes the trace slow enough to change the handshake's timing. */
         setvbuf(stderr, NULL, _IOFBF, 1 << 20);
     }
-    /* SMS-DELIVER timestamps in host time (the guest's clock follows it too). */
-    s->bb.wall_offset_ms = g_get_real_time() / 1000 - qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    /* SMS-DELIVER timestamps and NITZ in the guest's time: the host's, or the machine's pinned rtc-epoch. */
+    s->bb.wall_offset_ms = (s->rtc_epoch ? (int64_t)s->rtc_epoch * 1000 : g_get_real_time() / 1000)
+                           - qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     qemu_register_reset(iosbb_machine_reset, s);
 
     {
@@ -1085,6 +1086,7 @@ static const Property iosbb_props[] = {
     DEFINE_PROP_INT32("ifx-max-data", IosBasebandState, ifx_max_data, 0),
     /* NITZ (+CTZV with the host's offset) once the host enables +CTZR; the M68 turns it on. */
     DEFINE_PROP_BOOL("nitz", IosBasebandState, nitz, false),
+    DEFINE_PROP_UINT64("rtc-epoch", IosBasebandState, rtc_epoch, 0),
     /* The baseband's own GPS receiver (the 3GS's), reporting gps-fix through +XLSR. */
     DEFINE_PROP_BOOL("gps", IosBasebandState, bb.gps.present, false),
 };

@@ -27,6 +27,7 @@ struct IosBasebandState {
     int ifx_version;
     int ifx_max_data;
     bool nitz;                    /* property: send the host's time zone on registration */
+    uint64_t rtc_epoch;           /* property: the machine's rtc-epoch, the network's clock at power-on; 0 the host's */
     IosBbIfx ifx;
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
     qemu_irq vibrator;            /* out "vibrator": the motor +xdrv=4 runs (wired on the M68 only) */

@@ -301,7 +301,7 @@ static uint8_t pmu_bcd(unsigned v)
 static uint8_t pmu_bcd_rtc_read(Pcf50633State *s, uint8_t reg)
 {
     if (reg == PMU_BCD_RTC || s->rtc_latch == 0) {
-        s->rtc_latch = (uint32_t)time(NULL);
+        s->rtc_latch = (uint32_t)(time(NULL) + s->rtc_offset);
     }
     time_t t = s->rtc_latch;
     struct tm tm;
@@ -309,6 +309,12 @@ static uint8_t pmu_bcd_rtc_read(Pcf50633State *s, uint8_t reg)
     const unsigned field[7] = { tm.tm_sec, tm.tm_min, tm.tm_hour, tm.tm_wday,
                                 tm.tm_mday, tm.tm_mon + 1, tm.tm_year % 100 };
     return pmu_bcd(field[reg - PMU_BCD_RTC]);
+}
+
+void pcf50633_set_rtc_epoch(Pcf50633State *s, uint64_t epoch)
+{
+    s->rtc_offset = epoch ? (int64_t)epoch - time(NULL) : 0;
+    s->rtc_latch = 0;
 }
 
 static uint8_t pcf50633_recv(I2CSlave *i2c)
@@ -333,7 +339,7 @@ static uint8_t pcf50633_recv(I2CSlave *i2c)
         // without this it can observe a torn counter. (Read out of order,
         // which nobody does, still answers the time rather than zero.)
         if (reg == s->rtc_reg || s->rtc_latch == 0) {
-            s->rtc_latch = (uint32_t)time(NULL);
+            s->rtc_latch = (uint32_t)(time(NULL) + s->rtc_offset);
         }
         res = (s->rtc_latch >> (8 * (reg - s->rtc_reg))) & 0xff;
         goto done;

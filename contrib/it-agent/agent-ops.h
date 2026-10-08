@@ -157,8 +157,55 @@ static void agent_child_tick(void)
 
 #include "agent-sbs.h"
 
-#define AG_HELLO "it_agent v3\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
-    "launch frontmost lockstatus orientation dlicon halt type backspace uidump\n"
+/* `cadebug MASK VALUE`: Core Animation's debug colors, as Instruments' Core Animation checkboxes set them: the render
+ * server's flags become (flags & ~MASK) | (VALUE & MASK) (QuartzCore's CARenderServerSetDebugFlags; port 0 looks up
+ * com.apple.CARenderServer, in SpringBoard to 5.x and backboardd from 6.0; no sender check). The bits, the CA_COLOR_*
+ * environment variables' on 3.1.3 to 7.1.2: 0x1 flash updated regions, 0x2 copied images, 0x4 blended layers,
+ * 0x4000 misaligned images, 0x20000 offscreen-rendered. Replies with the flags now, "0x...". v4 */
+static int agent_cadebug(const char *args)
+{
+    char *end;
+    errno = 0;
+    unsigned long mask = strtoul(args, &end, 0);
+    if (errno || end == args || *end != ' ') return -EINVAL;
+    const char *rest = end + 1;
+    unsigned long value = strtoul(rest, &end, 0);
+    if (errno || end == rest || *end) return -EINVAL;
+    static void *qc;
+    if (!qc) qc = dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore", 2);
+    void (*set)(unsigned, unsigned, unsigned) = qc ? dlsym(qc, "CARenderServerSetDebugFlags") : 0;
+    unsigned (*get)(unsigned) = qc ? dlsym(qc, "CARenderServerGetDebugFlags") : 0;
+    if (!set || !get) return -ENOSYS;
+    set(0, (unsigned)mask, (unsigned)value);
+    ag_response_len = snprintf((char *)ag_response, 32, "0x%x\n", get(0));
+    return 0;
+}
+
+/* `statusbar` with the body UIKit's status bar override data, laid out for the running firmware by the host:
+ * +[UIStatusBarServer postStatusBarOverrideData:] (4.2 to 7.1.2), what Apple's internal Status Bar Overrides pane did.
+ * SpringBoard takes it only from a process entitled com.apple.UIKit.status-bar-override-allow
+ * (it_agent-entitlements.xml). A post replaces the whole set; all zeros clears it. v4 */
+static int agent_statusbar(const char *body, unsigned len)
+{
+    static unsigned data[4096 / sizeof(unsigned)];   /* aligned, as UIKit's struct is */
+    if (!len || len > sizeof(data)) return -EINVAL;
+    void *objc = dlopen("/usr/lib/libobjc.A.dylib", 2);
+    dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", 2);
+    void *(*cls)(const char *) = objc ? dlsym(objc, "objc_getClass") : 0;
+    void *(*sel)(const char *) = objc ? dlsym(objc, "sel_registerName") : 0;
+    void *(*msg)(void *, void *, ...) = objc ? dlsym(objc, "objc_msgSend") : 0;
+    void *server = cls ? cls("UIStatusBarServer") : 0, *pools = cls ? cls("NSAutoreleasePool") : 0;
+    if (!sel || !msg || !server || !pools) return -ENOSYS;
+    memset(data, 0, sizeof(data));
+    memcpy(data, body, len);
+    void *pool = msg(msg(pools, sel("alloc")), sel("init"));
+    msg(server, sel("postStatusBarOverrideData:"), data);
+    msg(pool, sel("drain"));
+    return 0;
+}
+
+#define AG_HELLO "it_agent v4\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
+    "launch frontmost lockstatus orientation dlicon halt type backspace uidump cadebug statusbar\n"
 
 static void agent_dispatch(unsigned size)
 {
@@ -194,6 +241,10 @@ static void agent_dispatch(unsigned size)
         if (!status) return; /* The target process commits the result. */
     } else if (!strcmp(op, "launch") || !strcmp(op, "frontmost") || !strcmp(op, "lockstatus") || !strcmp(op, "orientation")) {
         status = agent_sbs(op, args);
+    } else if (!strcmp(op, "cadebug")) {
+        status = agent_cadebug(args);
+    } else if (!strcmp(op, "statusbar")) {
+        status = agent_statusbar(body, body_len);
     } else if (!strcmp(op, "halt")) {
         extern int reboot2(int, const char *);
         if (reboot2(8, 0)) status = -errno;

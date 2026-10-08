@@ -72,6 +72,7 @@ typedef struct Pcf50633State {
 	bool addressing;      // next written byte selects the register address
 	uint8_t regs[256];    // backing register file so writes read back consistently
 	uint32_t rtc_latch;   // snapshot of the RTC counter, taken when 0x5C is read
+	int64_t rtc_offset;   // seconds the RTC runs from the host clock (pcf50633_set_rtc_epoch)
 	bool usb_cable;       // report a USB cable as present (usb_status_reg's usb_status_bits)
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
 	uint8_t shutdown_reg;   /* "shutdown-reg" property */
@@ -141,6 +142,8 @@ typedef struct Pcf50633State {
 // Update live cable status and latch the corresponding power-source event.
 void pcf50633_set_usb_cable(Pcf50633State *s, bool attached);
 void pcf50633_set_exton1(Pcf50633State *s, bool high);
+/* The machine's "rtc-epoch": the RTC reads `epoch` now (Unix seconds) and runs on; 0 is the host clock. */
+void pcf50633_set_rtc_epoch(Pcf50633State *s, uint64_t epoch);
 unsigned pcf50633_adc_for_level(unsigned percent);
 unsigned pcf50633_level_for_adc(unsigned counts);
 void pcf50633_update_battery(Pcf50633State *s);

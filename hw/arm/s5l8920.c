@@ -300,6 +300,7 @@ struct S5L8920MachineState {
     GuestPackage pkg;                    /* hw/arm/guest-package.c: it_boot and the GL shim's hello */
     GuestPasteboard pb;                  /* hw/arm/guest-pasteboard.c */
     IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
+    uint64_t rtc_epoch;                  /* "rtc-epoch": pcf50633_set_rtc_epoch */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     int pwroff_phase, pwroff_step, pwroff_tries;
 };
@@ -489,6 +490,9 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
         if (!strcmp(d->type, TYPE_PCF50633)) {
             s->pmu = PCF50633(slave);
             s->pmu->usb_cable = s->usb_attached;
+            /* the PMU's clock and the agent's time sync agree on a pinned date */
+            pcf50633_set_rtc_epoch(s->pmu, s->rtc_epoch);
+            ipod_agent_set_clock_offset(s->agent, s->pmu->rtc_offset);
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
             s->accel = LIS302DL(slave);
             if (s->board->accel_mount) {
@@ -907,6 +911,7 @@ static void s5l8920_init(MachineState *machine)
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
         qdev_prop_set_bit(bb, "gps", s->board->bb_gps);
+        qdev_prop_set_uint64(bb, "rtc-epoch", s->rtc_epoch);    /* SMS timestamps on the pinned date */
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
         if (s->imei && s->imei[0]) {
             object_property_set_str(OBJECT(bb), "imei", s->imei, &error_fatal);
@@ -1419,6 +1424,8 @@ static void s5l8920_instance_init(Object *obj)
     guest_pb_init(&s->pb, obj, "s5l8920");
     s->agent = ipod_agent_new();
     ipod_agent_publish(s->agent);
+    /* -M ...,rtc-epoch=N: the PMU clock reads N (Unix seconds) at power-on and runs on; 0 is the host's */
+    object_property_add_uint64_ptr(obj, "rtc-epoch", &s->rtc_epoch, OBJ_PROP_FLAG_READWRITE);
     object_property_add_str(obj, "agent-request", NULL, s5l8920_set_agent_request);
     object_property_add_str(obj, "agent-cancel", NULL, s5l8920_cancel_agent_request);
     object_property_add_str(obj, "agent-result", s5l8920_get_agent_result, NULL);

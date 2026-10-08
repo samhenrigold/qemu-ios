@@ -924,6 +924,7 @@ static void n45_machine_init(MachineState *machine)
         }
         /* 1.x takes its time zone only from the network: lockdownd has no TimeZone to set. */
         qdev_prop_set_bit(dev, "nitz", true);
+        qdev_prop_set_uint64(dev, "rtc-epoch", s->rtc_epoch);   /* NITZ tells a pinned date, not the host's */
         qdev_realize_and_unref(dev, NULL, &error_fatal);
         for (int i = 0; i < ARRAY_SIZE(controls); i++) {
             object_property_add_alias(OBJECT(machine), controls[i], OBJECT(dev), controls[i]);
@@ -1086,6 +1087,7 @@ static void n45_machine_init(MachineState *machine)
          * DT's pmu node: interrupt-parent gpio, interrupts <0x55 1>). */
         I2CSlave *pmu = i2c_slave_new("pcf50633", 0x73);
         s->pmu = PCF50633(pmu);
+        pcf50633_set_rtc_epoch(s->pmu, s->rtc_epoch);
         qdev_prop_set_uint8(DEVICE(pmu), "shutdown-reg", 0x0c);
         /* MBCS1 USBPRES|USBOK: a host on the cable. Without it the power source reads "ext 0",
          * the USB stack stops ("cable removed") and the device deep-sleeps after the boot. */
@@ -1393,6 +1395,8 @@ static bool n45_get_display_sleeping(Object *obj, Error **errp)
 
 static void n45_instance_init(Object *obj)
 {
+    /* -M ...,rtc-epoch=N: the PMU clock reads N (Unix seconds) at power-on and runs on; 0 is the host's */
+    object_property_add_uint64_ptr(obj, "rtc-epoch", &IPOD_TOUCH_1G_MACHINE(obj)->rtc_epoch, OBJ_PROP_FLAG_READWRITE);
     object_property_add_bool(obj, "display-sleeping", n45_get_display_sleeping, NULL);
     object_property_set_description(obj, "display-sleeping",
         "Guest-controlled LCD backlight is off; not PMU standby or shutdown");

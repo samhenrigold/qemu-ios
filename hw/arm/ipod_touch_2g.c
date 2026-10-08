@@ -1997,6 +1997,8 @@ static void ipod_touch_instance_init(Object *obj)
     IPOD_TOUCH_MACHINE(obj)->lcd_planes = true;
     IPOD_TOUCH_MACHINE(obj)->amc_mode = AMC_MODE_DECODE;
     IPOD_TOUCH_MACHINE(obj)->agent = ipod_agent_new();
+    /* -M ...,rtc-epoch=N: the PMU clock reads N (Unix seconds) at power-on and runs on; 0 is the host's */
+    object_property_add_uint64_ptr(obj, "rtc-epoch", &IPOD_TOUCH_MACHINE(obj)->rtc_epoch, OBJ_PROP_FLAG_READWRITE);
     ipod_agent_publish(IPOD_TOUCH_MACHINE(obj)->agent);
     object_property_add_str(obj, "agent-request", NULL, ipod_touch_set_agent_request);
     object_property_add_str(obj, "agent-cancel", NULL, ipod_touch_cancel_agent_request);
@@ -3462,6 +3464,9 @@ static void ipod_touch_machine_init(MachineState *machine)
     pcf50633_set_battery_adc(nms->pmu_state, nms->battery_adc);
     pcf50633_set_battery_drain(nms->pmu_state, nms->battery_drain);
     nms->pmu_state->charging_mode = nms->battery_charging;
+    /* the PMU's clock and the agent's time sync agree on a pinned date */
+    pcf50633_set_rtc_epoch(nms->pmu_state, nms->rtc_epoch);
+    ipod_agent_set_clock_offset(nms->agent, nms->pmu_state->rtc_offset);
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
     qdev_connect_gpio_out_named(DEVICE(pmu), "ap-power", 0,

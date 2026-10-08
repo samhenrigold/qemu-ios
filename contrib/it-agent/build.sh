@@ -6,7 +6,7 @@ cc6 "$HERE/it_agent.c" "$HERE/it_agent.o" -isystem "$(xcrun clang -print-resourc
 link6 -execute "$HERE/it_agent" "$HERE/it_agent.o"
 rm -f "$HERE/it_agent.o"
 
-"${LDID:-ldid}" -S"$HERE/../it-gles/sblaunch-entitlements.xml" "$HERE/it_agent"
+"${LDID:-ldid}" -S"$HERE/it_agent-entitlements.xml" "$HERE/it_agent"
 cc6 "$HERE/it_typein.c" "$HERE/it_typein.o"
 link6 -dylib "$HERE/it_typein.dylib" "$HERE/it_typein.o" -install_name /usr/lib/it_typein.dylib
 rm -f "$HERE/it_typein.o"

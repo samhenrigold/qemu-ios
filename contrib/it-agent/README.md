@@ -14,8 +14,8 @@ base64 body in QOM's `agent-request` string. `agent-result` returns
 `id status\n<base64 body>`. `agent-cancel` accepts an id. `agent-status` is
 absent/alive/stale.
 
-`ping` answers `it_agent v3\nops <space-separated op list>\n` (v2 the same without
-`putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
+`ping` answers `it_agent v4\nops <space-separated op list>\n` (v3 the same without
+`cadebug` and `statusbar`, v2 also without `putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
 every op it lacks, so a host detects capabilities from the ping reply. Statuses are 0, a child's exit status,
 or a negative errno.
 
@@ -37,6 +37,8 @@ or a negative errno.
 | orientation | | | `0/90/180/-90\n` | 7E18 ABI only, else -ENOSYS |
 | dlicon | `add <unique-id> [<bundle-id>]` or `cancel <unique-id>` | | | install placeholder (sbdlicon's SBS calls); -EAGAIN when SpringBoard declines. v2 |
 | halt | | | | reboot2(halt); await the PMU shutdown on the host |
+| cadebug | `mask value` | | flags now, `0x…\n` | Core Animation's debug colors: QuartzCore's `CARenderServerSetDebugFlags(0, mask, value)` (the render server's flags become `flags & ~mask \| value & mask`; 0x4 blended layers, 0x2 copied images, 0x4000 misaligned, 0x20000 offscreen, 0x1 flash updates, 3.1.3 to 7.1.2). v4 |
+| statusbar | | UIKit's status bar override data, laid out by the host for the firmware | | `+[UIStatusBarServer postStatusBarOverrideData:]` (4.2 to 7.1.2); SpringBoard takes it only from a process with `com.apple.UIKit.status-bar-override-allow` (`it_agent-entitlements.xml`). Each post replaces the last; zeros clear it. v4 |
 | type, backspace, uidump | | UTF-8 text (type) | | routed to it_typein in the foreground app |
 | exec | shell command | stdin | stdout+stderr | **deprecated**: needs `/bin/sh`, which a no-shell image lacks; kept only for old hosts |
 

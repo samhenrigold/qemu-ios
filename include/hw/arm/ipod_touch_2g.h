@@ -322,6 +322,7 @@ typedef struct {
 	GuestPasteboard pb;       /* hw/arm/guest-pasteboard.c */
 	GuestPackage pkg;         /* hw/arm/guest-package.c */
     IPodAgent *agent;
+    uint64_t rtc_epoch;       /* "rtc-epoch": pcf50633_set_rtc_epoch */
 } IPodTouchMachineState;
 
 /*

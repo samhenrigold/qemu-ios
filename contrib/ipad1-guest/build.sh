@@ -26,7 +26,7 @@ done
 cc6 "$HERE/../it-agent/it_agent.c" "$OUT/it_agent.o" -isystem "$(xcrun clang -print-resource-dir)/include"
 link6 -execute "$OUT/it_agent" "$OUT/it_agent.o"
 rm -f "$OUT/it_agent.o"
-"${LDID:-ldid}" -S"$HERE/../it-gles/sblaunch-entitlements.xml" "$OUT/it_agent"
+"${LDID:-ldid}" -S"$HERE/../it-agent/it_agent-entitlements.xml" "$OUT/it_agent"
 file "$OUT/it_agent"
 # it_heading: the compass probe (contrib/it-heading), not baked by default.
 # -D_FORTIFY_SOURCE=0: 3.2's libSystem has no __vsnprintf_chk.

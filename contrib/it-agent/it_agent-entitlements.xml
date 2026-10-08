@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  it_agent's entitlements. SpringBoard checks each on the caller:
+    com.apple.springboard.launchapplications   SBSLaunchApplicationWithIdentifier (the launch op; see
+                                               ../it-gles/sblaunch-entitlements.xml for what refusal looks like)
+    com.apple.UIKit.status-bar-override-allow  +[UIStatusBarServer postStatusBarOverrideData:] (the statusbar op);
+                                               without it SpringBoard logs "Only entitled processes may set status
+                                               bar override data" and drops the post (4.2.1 to 7.1.2)
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.springboard.launchapplications</key>
+	<true/>
+	<key>com.apple.UIKit.status-bar-override-allow</key>
+	<true/>
+</dict>
+</plist>

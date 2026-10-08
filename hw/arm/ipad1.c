@@ -1564,6 +1564,7 @@ static void ipad1_init(MachineState *machine)
 
         qdev_prop_set_int32(bb, "ifx-version", s->board->bb_ifx);
         qdev_prop_set_int32(bb, "ifx-max-data", s->board->bb_max_data);
+        qdev_prop_set_uint64(bb, "rtc-epoch", s->rtc_epoch);    /* SMS timestamps on the pinned date */
         object_property_add_child(OBJECT(s), "baseband-modem", OBJECT(bb));
         s->bb_modem = bb;
         if (s->imei && s->imei[0]) {

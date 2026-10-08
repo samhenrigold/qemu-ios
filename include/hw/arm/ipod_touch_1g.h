@@ -180,6 +180,7 @@ typedef struct IPodTouch1GMachineState {
     IPodTouchSYSICState *sysic;
     IPodTouchGPIOState *gpio;
     Pcf50633State *pmu;
+    uint64_t rtc_epoch;   /* "rtc-epoch": pcf50633_set_rtc_epoch */
     IPodTouchMultitouchState *mt;
     IPodTouchLCDState *lcd;
     S5L8900FMCState *fmc;
