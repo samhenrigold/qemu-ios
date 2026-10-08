@@ -16,7 +16,7 @@
  * mcc-mnc, signal-dbm, registered, sim-present, battery-percent (wired by the
  * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms; the actions
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
- * the observables call-state, emergency-call, last-dialed, last-mo-sms and
+ * the observables attached, power-offs, call-state, emergency-call, last-dialed, last-mo-sms and
  * mo-sms-count.
  *
  * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
@@ -527,6 +527,18 @@ static char *iosbb_get_call_state(Object *obj, Error **errp)
     return g_strdup(ios_bb_call_state(&IOS_BASEBAND(obj)->bb));
 }
 
+static bool iosbb_get_attached(Object *obj, Error **errp)
+{
+    return ios_bb_attached(&IOS_BASEBAND(obj)->bb);
+}
+
+static void iosbb_get_power_offs(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    int64_t n = IOS_BASEBAND(obj)->bb.power_offs;
+
+    visit_type_int(v, name, &n, errp);
+}
+
 static bool iosbb_get_emergency_call(Object *obj, Error **errp)
 {
     return ios_bb_emergency_call(&IOS_BASEBAND(obj)->bb);
@@ -998,6 +1010,12 @@ static void iosbb_instance_init(Object *obj)
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);
     object_property_set_description(obj, "call-state",
         "idle, dialing, alerting, incoming, active or held (first live call)");
+    object_property_add_bool(obj, "attached", iosbb_get_attached, NULL);
+    object_property_set_description(obj, "attached",
+        "The host's link is up and was last told +CREG registered (false while +CPWROFF holds the modem off)");
+    object_property_add(obj, "power-offs", "int", iosbb_get_power_offs, NULL, NULL, NULL);
+    object_property_set_description(obj, "power-offs",
+        "+CPWROFFs since the machine started: CommCenter switches the modem off whenever it restarts");
     object_property_add_bool(obj, "emergency-call", iosbb_get_emergency_call, NULL);
     object_property_set_description(obj, "emergency-call",
         "True while the call call-state describes is to an emergency number");

@@ -137,6 +137,7 @@ typedef struct IosBbCore {
     bool xemc_on;              /* +XEMC=1: emergency call start/end URCs */
     int cfun;
     bool off;                  /* +CPWROFF: powered down, silent until bb_rst/radio_on reset it */
+    unsigned power_offs;       /* +CPWROFFs since the machine started (kept across baseband resets) */
     int cops_format;
     bool cops_detached;        /* +COPS=2 */
     int creg_n, creg_ch;
@@ -205,6 +206,8 @@ void ios_bb_remote_answer(IosBbCore *bb);
 const char *ios_bb_call_state(const IosBbCore *bb);
 /* True while the first live call (the one call-state describes) is an emergency call. */
 bool ios_bb_emergency_call(const IosBbCore *bb);
+/* The host's link is up (not switched off) and the last +CREG it was sent says registered. */
+bool ios_bb_attached(const IosBbCore *bb);
 /* Whether the motor +xdrv=4 drives runs at bb->now_ms. */
 bool ios_bb_vibrating(const IosBbCore *bb);
 /* The numbers the modem treats as emergency numbers (TS 22.101 10.1.1). */

@@ -430,8 +430,8 @@ static void modem_refresh_bh(void *opaque)
     static const char *const strs[] = {
         "carrier", "mcc-mnc", "call-state", "last-dialed", "last-mo-sms",
     };
-    static const char *const bools[] = { "registered", "sim-present", "emergency-call" };
-    static const char *const ints[] = { "signal-dbm", "mo-sms-count" };
+    static const char *const bools[] = { "registered", "sim-present", "emergency-call", "attached" };
+    static const char *const ints[] = { "signal-dbm", "mo-sms-count", "power-offs" };
     Object *modem = modem_object();
     QDict *d = qdict_new();
     GString *json;

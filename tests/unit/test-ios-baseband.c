@@ -1267,13 +1267,17 @@ static void test_ifx(void)
     /* +CPWROFF: the OK, then silence (CommCenter's raw "at" pings must go unanswered,
      * or it waits out its ~30 s power-off timeout) until bb_rst resets the modem. */
     ios_bb_reset(&c);
+    c.last_creg = 1;
+    CHECK(ios_bb_attached(&c) && c.power_offs == 0);
     ifx_frame(&x, &c, "at+cpwroff\r", miso, 0x7fc, got);
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     check_str(got, "\r\nOK\r\n", "cpwroff OK");
+    CHECK(!ios_bb_attached(&c) && c.power_offs == 1);   /* what the app's status shows (power-offs, attached) */
     ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
     ios_bb_tick(&c, c.now_ms + 10000);
     CHECK(!ios_bb_ifx_pending(&x) && !ios_bb_next_due(&c));
     ios_bb_reset(&c);
+    CHECK(c.power_offs == 1 && !ios_bb_attached(&c));   /* counted across the reset, not registered yet */
     ifx_frame(&x, &c, "at\r", miso, 0x7fc, got);
     CHECK(ios_bb_ifx_pending(&x));              /* answering again */
 }

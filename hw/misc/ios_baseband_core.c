@@ -1460,6 +1460,11 @@ static int64_t vib_next_edge(const IosBbCore *bb)
     return 0;
 }
 
+bool ios_bb_attached(const IosBbCore *bb)
+{
+    return !bb->off && (bb->last_creg == 1 || bb->last_creg == 5);
+}
+
 bool ios_bb_emergency_call(const IosBbCore *bb)
 {
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
@@ -2138,6 +2143,7 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
          */
         at_ok(bb, ch);
         bb->off = true;
+        bb->power_offs++;
         TRACE("powered off (+cpwroff)\n");
         return;
     }
@@ -2943,6 +2949,7 @@ void ios_bb_reset(IosBbCore *bb)
     IosBbOutFn out = bb->out, data_out = bb->data_out;
     void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
     int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
+    unsigned power_offs = bb->power_offs;
 
     memcpy(operator_long, bb->operator_long, sizeof(operator_long));
     memcpy(operator_short, bb->operator_short, sizeof(operator_short));
@@ -2978,6 +2985,7 @@ void ios_bb_reset(IosBbCore *bb)
     bb->now_ms = now_ms;
     bb->wall_offset_ms = wall_offset_ms;
     bb->nitz = nitz;
+    bb->power_offs = power_offs;
 
     /* The FCS/CRC tables are lazy-initialized on first use; the mux rx path
      * can run before anything is ever sent, so make sure they exist. */
