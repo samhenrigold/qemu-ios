@@ -155,6 +155,10 @@ typedef struct IosBbCore {
     int temp_period_ms;        /* +xdrv=5,16,<s>: periodic +XDRVI: 5,17 temperature reports */
     int temp_ch;
     int64_t temp_due_ms;
+    /* +xdrv=4,0,<mode>,<level>,<period ms>,<on ms>: the vibration motor, which the M68 hangs off this
+     * modem. mode 0 stops it, 1 runs it once for <on>, 2 repeats <on> every <period> until stopped. */
+    int vib_mode, vib_period_ms, vib_on_ms;
+    int64_t vib_start_ms;
     bool xsim_pushed;          /* the host has been told about the current SIM */
     int next_call_id;
     IosBbCall calls[IOS_BB_MAX_CALLS];
@@ -201,6 +205,8 @@ void ios_bb_remote_answer(IosBbCore *bb);
 const char *ios_bb_call_state(const IosBbCore *bb);
 /* True while the first live call (the one call-state describes) is an emergency call. */
 bool ios_bb_emergency_call(const IosBbCore *bb);
+/* Whether the motor +xdrv=4 drives runs at bb->now_ms. */
+bool ios_bb_vibrating(const IosBbCore *bb);
 /* The numbers the modem treats as emergency numbers (TS 22.101 10.1.1). */
 bool ios_bb_is_emergency_number(const char *number);
 

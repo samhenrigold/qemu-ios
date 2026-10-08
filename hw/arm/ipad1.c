@@ -67,6 +67,7 @@
 #include "ui/console.h"
 #include "ui/input.h"
 #include "qapi/visitor.h"
+#include "hw/misc/ios_vibrator.h"
 
 /*
  * One A4 board: everything this machine does differently per product. The
@@ -122,6 +123,11 @@ typedef struct A4Board {
     /* buttons/ringerab's polarity (its GPIO function's flags 0x100): which level of pin 4 is "silent".
      * GPIO inputs rest high, which on an active-high switch is silent: every system sound muted. */
     bool ringer_active_high;
+    /* The vibration motor: whether there is one, the SoC PWM channel driving it (the 4.x DT's pwm/vibrator
+     * reg) and the motor driver's enable GPIO (the 6.x DT's pmu/vib-pwm function-enable; 0 = none). */
+    bool vibrator;
+    uint8_t vibrator_pwm;
+    uint16_t vibrator_enable;
 } A4Board;
 
 /* iPad 1 (K48AP): values measured on the real unit unless said otherwise. */
@@ -300,6 +306,7 @@ static const A4Board a4_n90 = {
     .bb_ifx = 2, .bb_max_data = 0x7fc,       /* DT spi2 protocol-version, max-data-size */
     .bb_mrdy = 0x0605, .bb_srdy = 0x0104,
     .ringer_active_high = true,              /* function-button_ringerab flags 0x100; K48's are 0 */
+    .vibrator = true, .vibrator_pwm = 1, .vibrator_enable = 0x0e07,
 };
 
 #define TYPE_IPAD1_MACHINE MACHINE_TYPE_NAME("ipad1")
@@ -1396,6 +1403,21 @@ static void ipad1_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8930_PKE_BASE,
                                 &IPOD_TOUCH_PKE(dev)->iomem);
+
+    /* PWM (hw/arm/s5l8920_pwm.c): the vibrator's channel drives the motor. */
+    dev = sysbus_create_simple("s5l8920.pwm", S5L8930_PWM_BASE, NULL);
+    if (s->board->vibrator) {
+        qdev_connect_gpio_out(dev, s->board->vibrator_pwm, ios_vibrator_line(OBJECT(machine)));
+    }
+    /*
+     * 6.x and 7.x drive the same motor another way: AppleD1815PMUPWM (the DT's pmu/vib-pwm) sets the
+     * PMU's PWM (0x6e enable, 0x6f duty) and raises the driver's enable GPIO for each buzz (startPWM /
+     * stopPWM). ponytail: the enable alone runs the motor; the PMU PWM's own enable is not gated in.
+     */
+    if (s->board->vibrator_enable) {
+        qdev_connect_gpio_out(s->gpio, S5L8930_GPIO_PIN(s->board->vibrator_enable),
+                              ios_vibrator_line(OBJECT(machine)));
+    }
 
     /* CDMA + AES filter; one interrupt line per channel. */
     dev = qdev_new(TYPE_S5L8930_CDMA);

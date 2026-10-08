@@ -60,6 +60,7 @@
 #include "hw/arm/guest-pasteboard.h"
 #include "hw/arm/ipod-agent.h"
 #include "qemu/guest-random.h"
+#include "hw/misc/ios_vibrator.h"
 
 /* Addresses and interrupts: N18AP 8C148 DT (arm-io maps child offsets at 0x80000000). */
 #define S5L8920_DRAM_BASE       0x40000000
@@ -77,6 +78,7 @@
 #define S5L8920_SDIO_BASE       0x80000000      /* SDHC, sdio,s5l8920x */
 #define S5L8920_SHA1_BASE       0x80100000
 #define S5L8920_PKE_BASE        0x83100000
+#define S5L8920_PWM_BASE        0x83500000
 #define S5L8920_CDMA_BASE       0x87000000
 #define S5L8920_AES_BASE        0x87800000
 #define S5L8920_CDMA_CHANNELS   28          /* reg 0x1c000 */
@@ -155,6 +157,9 @@ typedef struct S5L8920Board {
      * (the function's flags 0x100: active high). 0: none (the iPod). */
     uint16_t ringer;
     bool ringer_active_high;
+    /* The vibration motor: whether there is one, and the PWM channel driving it (DT pwm/vibrator's reg). */
+    bool vibrator;
+    uint8_t vibrator_pwm;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     const char *accel_mount;             /* the LIS302DL model's "mount" axes; NULL: as the N18's/N72's */
     S5L8920PowerKnob pwroff_knob;
@@ -216,6 +221,7 @@ static const S5L8920Board s5l8920_n88 = {
     .mt_profile = &mt_profile_n88,       /* N1F54 */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .ringer = 0x1403,                    /* function-button_ringerab flags 0: active low (the N90's is high) */
+    .vibrator = true, .vibrator_pwm = 0,
     /* A BCM4325 D1: AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1" (s=D1, P=N88 -> 4325b0/default.bin), at the
      * iPod 2G card model's own chip ID and SDIO core. */
     .wifi = {
@@ -745,6 +751,12 @@ static void s5l8920_init(MachineState *machine)
     dev = qdev_new(TYPE_IPOD_TOUCH_PKE);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(sysmem, S5L8920_PKE_BASE, &IPOD_TOUCH_PKE(dev)->iomem);
+
+    /* PWM (s5l8920_pwm.c): the vibrator's channel drives the motor. */
+    dev = sysbus_create_simple("s5l8920.pwm", S5L8920_PWM_BASE, NULL);
+    if (s->board->vibrator) {
+        qdev_connect_gpio_out(dev, s->board->vibrator_pwm, ios_vibrator_line(OBJECT(machine)));
+    }
 
     /* CDMA + AES: the A4's block with 28 of its channels wired. */
     dev = qdev_new(TYPE_S5L8930_CDMA);

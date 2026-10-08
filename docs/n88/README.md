@@ -93,6 +93,7 @@ Machine properties as the N18's (docs/n18/README.md).
 | I2C2 | TSL2561 0x49 (`s5l8930.tsl2561`, a TSL2581 layout variant; no threshold interrupt) | board data | H |
 | UART3 | BCM4325 HCI (`ipod_touch_bt.c`'s chardev); the CDMA receive chain from URXH is paced by the UART's FIFO | board data | H |
 | ISP | none: the DT's `isp` node is unmatched (`no_isp`), as the A4 machines' | board data | S |
+| PWM (0x83500000) | `s5l8920.pwm` (`hw/arm/s5l8920_pwm.c`): channel 0 (DT pwm/vibrator) runs the vibration motor, which the app hears (`qemu_ios_ui_vibrator`, `hw/misc/ios_vibrator.c`); channel 2 is the codec MCLK, unwired | shared | H |
 
 `explicit-start`: the s5l8920x firmware leaves FMI control at 3 or 5 between transfers and starts each
 with its own control write. The last page of a multi-page read follows a status poll, not a read command,

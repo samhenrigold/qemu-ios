@@ -99,6 +99,7 @@ the 1G's row, unchanged.
 | USB wrangler quirk | remove()'s vtable slot read from the matched instruction (0x94 in 1.0, 0x54 in 1.1) | P, as the 1G's | P |
 | UART1 receive FIFO | 16 deep on the M68 (`rx-size`): the 4-bit UFSTAT count wraps at 256 | property | R |
 | Baseband | `ios-baseband` on UART1 (H5, 27.010 mux, AT engine, radio nvram) | shared model | H |
+| Vibration motor | on the baseband, as CommCenter 1.0 drives it: `+xdrv=4,0,<mode>,<level>,<period>,<on>` (1 once, 2 repeating, 0 off); the modem's `vibrator` line to `qemu_ios_ui_vibrator` | shared model | H |
 | Bluetooth (UART3) | CSR BlueCore in H4 (`hw/arm/ipod_touch_bt.c`, `csr`): one Hardware Error for BlueTool's autobaud pattern, HCI command complete, BCCMD (0xFC00, descriptor 0xC2) answered as a vendor event 0xFF GETRESP; warm reset unanswered. Enough for BTServer's deepsleep.script ("Deep Sleep Entered!"). UART3 is 16 deep, as UART1 | H | H |
 | Camera, ALS | not modeled (I2C NACKs) | — | — |
 

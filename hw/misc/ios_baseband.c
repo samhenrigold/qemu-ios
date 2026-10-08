@@ -174,6 +174,7 @@ void ios_baseband_spi_done(DeviceState *dev, const uint8_t *unread_miso)
  * comes back in raw-AT mode, as CommCenter's recovery expects.
  */
 static void iosbb_machine_reset(void *opaque);
+static void iosbb_vibrator_update(IosBasebandState *s);
 
 static void iosbb_ctl(void *opaque, int n, int level)
 {
@@ -188,6 +189,7 @@ static void iosbb_ctl(void *opaque, int n, int level)
         ios_bb_reset(&s->bb);
         s->out_len = 0;
         timer_del(s->timer);
+        iosbb_vibrator_update(s);
         if (s->ifx_version) {
             ios_bb_ifx_modem_reset(&s->ifx);
             s->srdy_level = false;
@@ -223,6 +225,11 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     iosbb_arm(s, s->bb.now_ms + IOS_BB_LATENCY_MS);
 }
 
+static void iosbb_vibrator_update(IosBasebandState *s)
+{
+    qemu_set_irq(s->vibrator, ios_bb_vibrating(&s->bb));
+}
+
 static void iosbb_tick_timer(void *opaque)
 {
     IosBasebandState *s = opaque;
@@ -230,6 +237,7 @@ static void iosbb_tick_timer(void *opaque)
     int64_t due;
 
     ios_bb_tick(&s->bb, now);
+    iosbb_vibrator_update(s);
     if (s->ifx_version) {
         iosbb_srdy_update(s);
     } else {
@@ -691,6 +699,35 @@ static const VMStateDescription vmstate_ios_baseband_xemc = {
     }
 };
 
+static bool iosbb_vib_needed(void *opaque)
+{
+    return IOS_BASEBAND(opaque)->bb.vib_mode != 0;
+}
+
+/* The motor line follows the restored state (off unless the vibrator subsection came). */
+static int iosbb_post_load(void *opaque, int version_id)
+{
+    IosBasebandState *s = opaque;
+
+    s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    iosbb_vibrator_update(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_ios_baseband_vib = {
+    .name = "ios-baseband/vibrator",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iosbb_vib_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(bb.vib_mode, IosBasebandState),
+        VMSTATE_INT32(bb.vib_period_ms, IosBasebandState),
+        VMSTATE_INT32(bb.vib_on_ms, IosBasebandState),
+        VMSTATE_INT64(bb.vib_start_ms, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool iosbb_off_needed(void *opaque)
 {
     return IOS_BASEBAND(opaque)->bb.off;
@@ -711,6 +748,7 @@ static const VMStateDescription vmstate_ios_baseband = {
     .name = "ios-baseband",
     .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = iosbb_post_load,
     .fields = (const VMStateField[]) {
         /* Controls: re-set by the board at realize, but kept so a restored
          * device agrees with what QMP last set. */
@@ -802,6 +840,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         &vmstate_ios_baseband_spi,
         &vmstate_ios_baseband_off,
         &vmstate_ios_baseband_xemc,
+        &vmstate_ios_baseband_vib,
         NULL
     }
 };
@@ -820,6 +859,7 @@ static void iosbb_machine_reset(void *opaque)
     ios_bb_reset(&s->bb);
     s->out_len = 0;
     timer_del(s->timer);
+    iosbb_vibrator_update(s);
     if (s->ifx_version) {
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
         s->srdy_level = false;
@@ -953,6 +993,7 @@ static void iosbb_instance_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), iosbb_mrdy, "mrdy", 1);
     qdev_init_gpio_in_named(DEVICE(obj), iosbb_ctl, "ctl", 2);
     qdev_init_gpio_out_named(DEVICE(obj), &s->srdy, "srdy", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->vibrator, "vibrator", 1);
 
     object_property_add_str(obj, "call-state", iosbb_get_call_state, NULL);
     object_property_set_description(obj, "call-state",

@@ -60,6 +60,7 @@
 #include "hw/arm/s5l8900_lcd_panel.h"
 #include "hw/arm/s5l8900_multitouch_z1.h"
 #include "hw/misc/ios_baseband.h"
+#include "hw/misc/ios_vibrator.h"
 #include "hw/i2c/ipod_touch_i2c.h"
 #include "system/system.h"
 #include "system/reset.h"
@@ -927,6 +928,8 @@ static void n45_machine_init(MachineState *machine)
         for (int i = 0; i < ARRAY_SIZE(controls); i++) {
             object_property_add_alias(OBJECT(machine), controls[i], OBJECT(dev), controls[i]);
         }
+        /* The M68's vibration motor hangs off the baseband (CommCenter's +xdrv=4). */
+        qdev_connect_gpio_out_named(dev, "vibrator", 0, ios_vibrator_line(OBJECT(machine)));
         modem = ios_baseband_chardev(dev);
     }
 

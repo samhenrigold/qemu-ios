@@ -66,6 +66,10 @@ void qemu_ios_ui_modem_free(char *status);
  * qemu_ios_ui_rotate: the machine itself moves it (the iPad's power-off
  * gesture), so a relative step can land on the wrong side. */
 bool qemu_ios_ui_orientation(int value);
+/* The vibration motor (hw/misc/ios_vibrator.c): whether it runs now. pulses (may be NULL) counts its
+ * starts since the process began, so a buzz shorter than the caller's poll still shows. Always false
+ * on a machine without one (the iPods, the iPad). API 2.2. */
+bool qemu_ios_ui_vibrator(uint64_t *pulses);
 /* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
  * A generation owns one recording. Empty read = 0; failed/expired = -1.
  * Empty reads with seconds >= 0 mark silence through that capture time.
@@ -106,7 +110,7 @@ const char *qemu_ios_build_id(void);
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((2u << 16) | 1u)
+#define QEMU_IOS_API_VERSION ((2u << 16) | 2u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */

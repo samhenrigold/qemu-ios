@@ -1423,6 +1423,43 @@ const char *ios_bb_call_state(const IosBbCore *bb)
     return "idle";
 }
 
+bool ios_bb_vibrating(const IosBbCore *bb)
+{
+    int64_t t = bb->now_ms - bb->vib_start_ms;
+
+    if (bb->off || t < 0 || bb->vib_on_ms <= 0) {
+        return false;
+    }
+    switch (bb->vib_mode) {
+    case 1:
+        return t < bb->vib_on_ms;
+    case 2:
+        return bb->vib_period_ms > 0 && t % bb->vib_period_ms < bb->vib_on_ms;
+    default:
+        return false;
+    }
+}
+
+/* When ios_bb_vibrating next changes; 0 = it won't by itself. */
+static int64_t vib_next_edge(const IosBbCore *bb)
+{
+    int64_t t = bb->now_ms - bb->vib_start_ms;
+
+    if (bb->vib_on_ms <= 0 || t < 0) {
+        return 0;
+    }
+    if (bb->vib_mode == 1) {
+        return t < bb->vib_on_ms ? bb->vib_start_ms + bb->vib_on_ms : 0;
+    }
+    if (bb->vib_mode == 2 && bb->vib_period_ms > 0) {
+        int64_t cycle = t - t % bb->vib_period_ms;
+        int64_t edge = t % bb->vib_period_ms < bb->vib_on_ms ? cycle + bb->vib_on_ms : cycle + bb->vib_period_ms;
+
+        return bb->vib_start_ms + edge;
+    }
+    return 0;
+}
+
 bool ios_bb_emergency_call(const IosBbCore *bb)
 {
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
@@ -1968,6 +2005,21 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         bb->xsigstr_on = atoi(arg) == 1;
         at_ok(bb, ch);
         emit_xsigstr(bb);                        /* the current level at once, as on a change */
+        return;
+    }
+    if ((arg = arg_after(cmd, "xdrv=4,0,", NULL))) {
+        /*
+         * The vibration motor (CommCenter 1.0: 2,12,2000,1000 while ringing, 1,12,400,399 for an SMS,
+         * 0,0,0,0 to stop). The second field (12) is taken as a strength; it is not modeled.
+         */
+        int mode = 0, level = 0, period = 0, on = 0;
+
+        sscanf(arg, "%d,%d,%d,%d", &mode, &level, &period, &on);
+        bb->vib_mode = mode;
+        bb->vib_period_ms = period;
+        bb->vib_on_ms = on;
+        bb->vib_start_ms = bb->now_ms;
+        at_ok(bb, ch);
         return;
     }
     if ((arg = arg_after(cmd, "xdrv=5,16,", NULL))) {
@@ -2854,6 +2906,13 @@ int64_t ios_bb_next_due(const IosBbCore *bb)
     }
     if (bb->xsim_due_ms && (!due || bb->xsim_due_ms < due)) {
         due = bb->xsim_due_ms;
+    }
+    {
+        int64_t edge = vib_next_edge(bb);
+
+        if (edge && (!due || edge < due)) {
+            due = edge;
+        }
     }
     for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
         const IosBbCall *c = &bb->calls[i];

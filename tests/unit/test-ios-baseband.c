@@ -846,6 +846,47 @@ static void test_emergency_call(void)
 }
 
 /*
+ * The M68's vibration motor, which hangs off the modem: CommCenter 1.0 runs it once for an SMS
+ * (+xdrv=4,0,1,12,400,399), on 1 s of every 2 while ringing (2,12,2000,1000), and stops it (0,0,0,0).
+ */
+static void test_vibrator(void)
+{
+    int64_t t0 = tnow;
+
+    CHECK(!ios_bb_vibrating(&bb));
+    c_mux_str(1, "at+xdrv=4,0,1,12,400,399\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    CHECK(ios_bb_vibrating(&bb));
+    CHECK(ios_bb_next_due(&bb) && ios_bb_next_due(&bb) <= t0 + 399);
+    tick_to(t0 + 390);
+    CHECK(ios_bb_vibrating(&bb));
+    tick_to(t0 + 400);
+    CHECK(!ios_bb_vibrating(&bb));
+
+    t0 = tnow;
+    c_mux_str(1, "at+xdrv=4,0,2,12,2000,1000\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    tick_to(t0 + 990);
+    CHECK(ios_bb_vibrating(&bb));
+    tick_to(t0 + 1010);
+    CHECK(!ios_bb_vibrating(&bb));
+    tick_to(t0 + 1990);
+    CHECK(!ios_bb_vibrating(&bb));
+    tick_to(t0 + 2010);
+    CHECK(ios_bb_vibrating(&bb));
+    CHECK(ios_bb_next_due(&bb) && ios_bb_next_due(&bb) <= t0 + 3000);
+
+    c_mux_str(1, "at+xdrv=4,0,0,0,0,0\r");
+    pump();
+    expect_frame(1, "\r\nOK\r\n");
+    CHECK(!ios_bb_vibrating(&bb));
+    tick_to(tnow + 2000);
+    CHECK(!ios_bb_vibrating(&bb));
+}
+
+/*
  * The calls-sms doc's worked example 4.2: an SMS from 14155550100 saying
  * "Hello from 2007", acked with +CNMA, and read back with +CMGR.
  */
@@ -1317,6 +1358,7 @@ static void test_chain(void)
     test_incoming_call();
     test_outgoing_call();
     test_emergency_call();
+    test_vibrator();
     test_incoming_sms();
     test_outgoing_sms();
     test_incoming_sms_ucs2();

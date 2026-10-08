@@ -175,6 +175,8 @@ As N81, plus:
 | Ring/silent switch (buttons/ringerab, GPIO 0x004) | an active-high pad (its DT function flags 0x100; K48's are active low) held at ring; `ring-switch=on` is silent, settable at run time | board data | R |
 | Baseband (spi2, GPIOs) | DT node unmatched by `baseband=off`; the controller with nothing on it | P (until the cell stream's modem) | S |
 | Compass | AK8973 at the DT's 0x1e node (the unit has AK8975B at 0x0c/0x0d) | variant | H |
+| PWM (0x83500000) | `s5l8920.pwm` (`hw/arm/s5l8920_pwm.c`, the 3GS's block): channel 1 (4.x/5.x DT pwm/vibrator) runs the vibration motor (`qemu_ios_ui_vibrator`); channel 2, the camera strobe, unwired | shared | H |
+| Vibration motor, 6.x/7.x | their DT moves it to the D1815 (pmu/vib-pwm): AppleD1815PMUPWM sets the PMU's PWM (0x6e enable, 0x6f duty, stored only) and raises the motor driver's enable, GPIO 0x0e07, for each buzz; that pin is the motor's second drive | board data | H |
 
 ## iOS 6.0 beta 1 (10A5316k)
 

@@ -41,7 +41,7 @@
 #define S5L8930_CDMA_SIZE        0x26000
 #define S5L8930_AES_BASE         0x87800000   /* CDMA AES filter contexts, ctx n at n<<12 */
 #define S5L8930_AES_SIZE         0x9000
-#define S5L8930_PWM_BASE         0x83500000   /* codec MCLK source; unmodeled */
+#define S5L8930_PWM_BASE         0x83500000   /* PWM: vibrator, camera strobe, codec MCLK (s5l8920_pwm.c) */
 #define S5L8930_AMC_BASE         0x84100000   /* audio media codec registers */
 #define S5L8930_AMC_AUX_BASE     0x84300000   /* third AMC window, unmodeled */
 #define S5L8930_AMC_AUX_SIZE     0x5000

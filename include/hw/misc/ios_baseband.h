@@ -29,6 +29,7 @@ struct IosBasebandState {
     bool nitz;                    /* property: send the host's time zone on registration */
     IosBbIfx ifx;
     qemu_irq srdy;                /* out: "clock me" (edge to the AP's GPIO) */
+    qemu_irq vibrator;            /* out "vibrator": the motor +xdrv=4 runs (wired on the M68 only) */
     bool srdy_level;
     bool mrdy_level;              /* in: the AP wants a transfer */
     bool frame_wanted;            /* the AP set RUN on a frame without MRDY */

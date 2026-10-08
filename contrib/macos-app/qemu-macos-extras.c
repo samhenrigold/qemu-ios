@@ -35,6 +35,7 @@
 #include <mach-o/loader.h>
 
 #include "qemu-macos-extras.h"
+#include "hw/misc/ios_vibrator.h"
 
 /*
  * system/main.c (replaced by qemu-ios-entry.c) defined this; ui/cocoa.m still
@@ -744,6 +745,11 @@ bool qemu_ios_guest_package_report(int64_t *serial, int32_t *result)
 int32_t qemu_ios_gles_protocol(int64_t *serial)
 {
     return guest_pkg_gles_protocol(serial);
+}
+
+bool qemu_ios_ui_vibrator(uint64_t *pulses)
+{
+    return ios_vibrator_get(pulses);
 }
 
 uint32_t qemu_ios_api_version(void)
