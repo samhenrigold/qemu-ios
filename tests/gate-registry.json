@@ -178,6 +178,7 @@
     {"name": "qtest/ipod-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-chipid", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipad1-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
+    {"name": "qtest/s5l8920-sdio", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-usb-phy", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-lcd", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},
     {"name": "qtest/ipod-clock", "tier": "models", "prerequisites": ["qemu", "qtest-binary"], "missing": "fail"},

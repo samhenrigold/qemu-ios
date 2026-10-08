@@ -157,9 +157,7 @@ typedef struct S5L8920Board {
     bool ringer_active_high;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     S5L8920PowerKnob pwroff_knob;
-    const char *wifi_board;              /* the card's CIS VERS_1 board string; NULL = no Wi-Fi card */
-    const char *wifi_fw_version;
-    uint8_t wifi_mac[6];
+    BCMSDIOChip wifi;                    /* the Wi-Fi card, as AppleBCMWLAN matches it; prodid 0 = none */
 } S5L8920Board;
 
 /* iPod touch 3G (N18AP, S5L8922). */
@@ -184,9 +182,15 @@ static const S5L8920Board s5l8920_n18 = {
     },
     .pwroff_knob = { 57, 67, 240 },      /* off a 4.2.1 screendump of the sheet */
     /* A BCM4329 B1: AppleBCMWLAN's "N18 - 4329 B1" (s=B1, P=N18 -> 4329b1/n18.bin, whose version this is). */
-    .wifi_board = "P=N18",
-    .wifi_fw_version = "wl0: Oct 13 2010 15:39:53 version 4.221.38.1",
-    .wifi_mac = { 0x02, 0x00, 0x00, 0x18, 0x00, 0x01 },  /* synthetic, locally administered */
+    .wifi = {
+        .manfid = 0x02d0, .prodid = 0x4329,
+        .chipid = 0x00034329,            /* rev 3 = B1 */
+        .sdiod_base = 0x18011000,
+        .vers1 = { "", "", "s=B1", "P=N18" },
+        .no_common_funce = true,
+        .fw_version = "wl0: Oct 13 2010 15:39:53 version 4.221.38.1",
+        .mac = { 0x02, 0x00, 0x00, 0x18, 0x00, 0x01 },  /* synthetic, locally administered */
+    },
 };
 
 /* iPhone 3GS (N88AP, S5L8920); N88AP 8C148a DT. */
@@ -211,6 +215,16 @@ static const S5L8920Board s5l8920_n88 = {
     .mt_profile = &mt_profile_n88,       /* N1F54 */
     .buttons = { .hold = 0xb7, .menu = 0xb6, .volup = 0xb0, .voldown = 0xb1, .hold_menu_high = true },
     .ringer = 0x1403,                    /* function-button_ringerab flags 0: active low (the N90's is high) */
+    /* A BCM4325 D1: AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1" (s=D1, P=N88 -> 4325b0/default.bin), at the
+     * iPod 2G card model's own chip ID and SDIO core. */
+    .wifi = {
+        .manfid = 0x02d0, .prodid = 0x4325,
+        .chipid = CHIPCOMMON_CHIPID,
+        .sdiod_base = SDPCM_CORE_BASE,
+        .vers1 = { "", "", "s=D1", "P=N88" },
+        .no_common_funce = true,
+        .mac = { 0x02, 0x00, 0x00, 0x88, 0x00, 0x01 },  /* synthetic, locally administered */
+    },
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
         { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
@@ -664,19 +678,10 @@ static void s5l8920_init(MachineState *machine)
      * the IOP firmware's sdiodrv drives.
      */
     DeviceState *sdio = NULL;
-    if (s->board->wifi_board) {
-        BCMSDIOChip bcm4329 = {
-            .manfid = 0x02d0, .prodid = 0x4329,
-            .chipid = 0x00034329,                   /* rev 3 = B1 */
-            .sdiod_base = 0x18011000,
-            .vers1 = { "", "", "s=B1", s->board->wifi_board },
-            .no_common_funce = true,
-            .fw_version = s->board->wifi_fw_version,
-        };
+    if (s->board->wifi.prodid) {
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
 
-        memcpy(bcm4329.mac, s->board->wifi_mac, sizeof(bcm4329.mac));
-        ipod_touch_sdio_set_chip(card, &bcm4329);
+        ipod_touch_sdio_set_chip(card, &s->board->wifi);
         object_property_add_alias(OBJECT(machine), "wifi-bssid", OBJECT(card), "bssid");
         card->card_present = true;
         sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);

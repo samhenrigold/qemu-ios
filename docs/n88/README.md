@@ -7,6 +7,13 @@ compass, CS42L61 (the CS42L58 register model, as on the iPad) and CD3272. iOS 4.
 from a NAND store to an activated home screen, with touch, Home and Hold, powers off cleanly and keeps its
 data; an IPA installs through installation_proxy and AppSync and launches.
 
+Wi-Fi (2026-10-08): the board's BCM4325 D1 (AppleBCMWLANBusInterfaceSDIO's "N88 - 4325 D1": CIS s=D1 / P=N88,
+manufacturer 0x2d0, product 0x4325) behind the SDHC at 0x80000000, the same card model as the N18's at the
+iPod 2G card's chip ID and SDIO core. Before that the N88 had no card at all: iOS 6's AppleIOPSDIO read the
+unimplemented window ("SDIO Internal Clk Unstable", clockControl 0) and Settings showed Wi-Fi off. 4.2.1, 5.1.1
+and 6.1.6 join "qemu-ios" and take 10.0.2.15; 3.1.3's AppleBCMWLAN-1.25 stops at its N88 platform manager
+("Failed to get Baseband service"), as before. tests/qtest/s5l8920-sdio-test checks the card.
+
 ## What runs (2026-10-05)
 
 | Build | Boot | Touch, Home, Hold | Power-off + persist | IPA install + launch | GL app |
@@ -136,7 +143,7 @@ PASS; N18 unlock to the home screen with touch PASS.
 4. **Camera**: none (the isp node is unmatched). 4.x gave up on the unanswered ISP mailbox after a few 2 s
    waits; 3.1.3's ISP_waitCommunicationEnd (0xc054d17c) resets its count and busy-waits forever.
 5. As the N18: kboot with the NOR (no NAND boot blocks), K48 fuses and clock table, D1755 backlight and
-   wake latch, Wi-Fi.
+   wake latch.
 6. Every 4.x and 5.x build runs. The devices are FirmwareKit's
    (LightTouchMac n88-app catalog n88ap-*), prepared with a LightTouchDevice + this tree's libqemu-arm.dylib.
 7. **3.1.3** runs (FirmwareKit-prepared, catalog n88ap-7E18 with `bluetooth`). What it took:
