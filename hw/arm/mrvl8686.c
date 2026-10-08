@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -50,12 +51,6 @@ static void G_GNUC_PRINTF(1, 2) mrvl_trace(const char *fmt, ...)
 /* mrvl8686 core: begin (tests/ipod/test_mrvl8686.py compiles this part) */
 
 static void mrvl_card_send(Mrvl8686Card *c, const uint8_t *frame, uint32_t len);
-
-static uint16_t mrvl_le16(const uint8_t *p) { return p[0] | p[1] << 8; }
-static uint32_t mrvl_le32(const uint8_t *p) { return mrvl_le16(p) | (uint32_t)mrvl_le16(p + 2) << 16; }
-static uint32_t mrvl_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-static void mrvl_put16(uint8_t *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
-static void mrvl_put32(uint8_t *p, uint32_t v) { mrvl_put16(p, v); mrvl_put16(p + 2, v >> 16); }
 
 /* The firmware image's block CRC: CRC-32/MPEG-2 without the init/xorout,
  * stored big endian (checked against every block of the 3A101a image). */
@@ -90,8 +85,8 @@ static uint8_t *mrvl_upq_push(Mrvl8686Card *c, uint16_t type, uint32_t len)
     uint8_t *p = c->upq[slot];
     memset(p, 0, MRVL_UPQ_BYTES);
     c->upq_len[slot] = len + MRVL_SDIO_HDR;
-    mrvl_put16(p, len + MRVL_SDIO_HDR);
-    mrvl_put16(p + 2, type);
+    stw_le_p(p, len + MRVL_SDIO_HDR);
+    stw_le_p(p + 2, type);
     if (c->upq_count == 1) {
         mrvl_upq_kick(c);
     }
@@ -102,7 +97,7 @@ static void mrvl_event(Mrvl8686Card *c, uint32_t id)
 {
     uint8_t *p = mrvl_upq_push(c, MRVL_TYPE_EVENT, 4);
     if (p) {
-        mrvl_put32(p, id);
+        stl_le_p(p, id);
     }
 }
 
@@ -134,7 +129,7 @@ static bool mrvl_scan_hears_ap(Mrvl8686Card *c, const uint8_t *body, uint32_t n)
 {
     bool channel_ok = true;
     for (uint32_t off = 7; off + 4 <= n;) {
-        uint16_t type = mrvl_le16(body + off), len = mrvl_le16(body + off + 2);
+        uint16_t type = lduw_le_p(body + off), len = lduw_le_p(body + off + 2);
         const uint8_t *v = body + off + 4;
         if (off + 4 + len > n) {
             break;
@@ -163,19 +158,19 @@ static uint32_t mrvl_scan_response(Mrvl8686Card *c, uint8_t *r, bool hit)
     if (hit) {
         memcpy(e + 2, c->bssid, 6);
         e[8] = 45;                               /* -45 dBm */
-        mrvl_put32(e + 9, 0x00100000);           /* TSF */
-        mrvl_put16(e + 17, 100);                 /* beacon interval (TU) */
-        mrvl_put16(e + 19, 0x0001);              /* ESS, open */
+        stl_le_p(e + 9, 0x00100000);           /* TSF */
+        stw_le_p(e + 17, 100);                 /* beacon interval (TU) */
+        stw_le_p(e + 19, 0x0001);              /* ESS, open */
         n = 21 + mrvl_ap_ies(e + 21);
-        mrvl_put16(e, n - 2);
+        stw_le_p(e, n - 2);
     }
-    mrvl_put16(r, n);
+    stw_le_p(r, n);
     r[2] = hit;
     uint8_t *t = e + n;
-    mrvl_put16(t, MRVL_TLV_TSF);
-    mrvl_put16(t + 2, 8 * hit);
+    stw_le_p(t, MRVL_TLV_TSF);
+    stw_le_p(t + 2, 8 * hit);
     if (hit) {
-        mrvl_put32(t + 4, 0x00100000);
+        stl_le_p(t + 4, 0x00100000);
     }
     return 3 + n + 4 + 8 * hit;
 }
@@ -185,13 +180,13 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
     if (n < MRVL_CMD_HDR) {
         return;
     }
-    uint16_t code = mrvl_le16(cmd), size = MIN(mrvl_le16(cmd + 2), n);
+    uint16_t code = lduw_le_p(cmd), size = MIN(lduw_le_p(cmd + 2), n);
     const uint8_t *body = cmd + MRVL_CMD_HDR;
     uint32_t blen = size > MRVL_CMD_HDR ? size - MRVL_CMD_HDR : 0;
 
-    mrvl_trace("[MRVL] command 0x%04x size %u seq %u\n", code, size, mrvl_le16(cmd + 4));
+    mrvl_trace("[MRVL] command 0x%04x size %u seq %u\n", code, size, lduw_le_p(cmd + 4));
     /* Neither the sleep confirm nor deep sleep is answered: the firmware sleeps. */
-    if (code == MRVL_CMD_802_11_PS_MODE && blen >= 2 && mrvl_le16(body) == MRVL_PS_SLEEP_CONFIRM) {
+    if (code == MRVL_CMD_802_11_PS_MODE && blen >= 2 && lduw_le_p(body) == MRVL_PS_SLEEP_CONFIRM) {
         return;
     }
     if (code == MRVL_CMD_802_11_DEEP_SLEEP) {
@@ -208,14 +203,14 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
     switch (code) {
     case MRVL_CMD_GET_HW_SPEC:
         rlen = MAX(rlen, MRVL_CMD_HDR + 38);
-        mrvl_put16(rb + 0, 0x0002);              /* host interface version */
-        mrvl_put16(rb + 2, 0x0004);              /* hardware version */
-        mrvl_put16(rb + 4, 1);                   /* TxPDs */
-        mrvl_put16(rb + 6, 32);                  /* multicast addresses */
+        stw_le_p(rb + 0, 0x0002);              /* host interface version */
+        stw_le_p(rb + 2, 0x0004);              /* hardware version */
+        stw_le_p(rb + 4, 1);                   /* TxPDs */
+        stw_le_p(rb + 6, 32);                  /* multicast addresses */
         memcpy(rb + 8, c->mac, 6);
-        mrvl_put16(rb + 14, 0x10);               /* region: FCC */
-        mrvl_put16(rb + 16, 1);                  /* antennas */
-        mrvl_put32(rb + 18, 0x18094603);         /* release 9.70.3.p24 */
+        stw_le_p(rb + 14, 0x10);               /* region: FCC */
+        stw_le_p(rb + 16, 1);                  /* antennas */
+        stl_le_p(rb + 18, 0x18094603);         /* release 9.70.3.p24 */
         break;
     case MRVL_CMD_802_11_SCAN: {
         bool hit = mrvl_scan_hears_ap(c, body, blen);
@@ -232,9 +227,9 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
     case MRVL_CMD_802_11_ASSOCIATE_OLD: {
         bool ours = blen >= 6 && !memcmp(body, c->bssid, 6);
         memset(rb, 0, sizeof(r) - MRVL_CMD_HDR);
-        mrvl_put16(rb + 0, 0x0001);              /* capability */
-        mrvl_put16(rb + 2, ours ? 0 : 1);        /* IEEE status */
-        mrvl_put16(rb + 4, ours ? 0xc001 : 0);   /* AID 1 */
+        stw_le_p(rb + 0, 0x0001);              /* capability */
+        stw_le_p(rb + 2, ours ? 0 : 1);        /* IEEE status */
+        stw_le_p(rb + 4, ours ? 0xc001 : 0);   /* AID 1 */
         rlen = MRVL_CMD_HDR + 6 + mrvl_ap_ies(rb + 6);
         c->associated = ours;
         /* Both requests are answered as the old one: the driver only
@@ -248,21 +243,21 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
         break;
     case MRVL_CMD_802_11_RSSI:
         rlen = MAX(rlen, MRVL_CMD_HDR + 8);
-        mrvl_put16(rb + 0, 47);                  /* SNR */
-        mrvl_put16(rb + 2, 92);                  /* noise floor, -dBm */
-        mrvl_put16(rb + 4, 47);
-        mrvl_put16(rb + 6, 92);
+        stw_le_p(rb + 0, 47);                  /* SNR */
+        stw_le_p(rb + 2, 92);                  /* noise floor, -dBm */
+        stw_le_p(rb + 4, 47);
+        stw_le_p(rb + 6, 92);
         break;
     case MRVL_CMD_802_11_MAC_ADDR:
         rlen = MAX(rlen, MRVL_CMD_HDR + 8);
-        if (!mrvl_le16(rb)) {
+        if (!lduw_le_p(rb)) {
             memcpy(rb + 2, c->mac, 6);
         }
         break;
     case MRVL_CMD_802_11_RF_TX_POWER:
         rlen = MAX(rlen, MRVL_CMD_HDR + 6);
-        if (!mrvl_le16(rb)) {
-            mrvl_put16(rb + 2, 13);
+        if (!lduw_le_p(rb)) {
+            stw_le_p(rb + 2, 13);
             rb[4] = 18;
             rb[5] = 5;
         }
@@ -274,9 +269,9 @@ static void mrvl_handle_cmd(Mrvl8686Card *c, const uint8_t *cmd, uint32_t n)
     default:
         break;                                   /* accepted as sent */
     }
-    mrvl_put16(r, code | MRVL_CMD_RESP);
-    mrvl_put16(r + 2, rlen);
-    mrvl_put16(r + 6, 0);                        /* result: success */
+    stw_le_p(r, code | MRVL_CMD_RESP);
+    stw_le_p(r + 2, rlen);
+    stw_le_p(r + 6, 0);                        /* result: success */
     uint8_t *p = mrvl_upq_push(c, MRVL_TYPE_CMD, rlen);
     if (p) {
         memcpy(p, r, rlen);
@@ -289,7 +284,7 @@ static void mrvl_handle_tx(Mrvl8686Card *c, const uint8_t *pd, uint32_t n)
     if (n < MRVL_TXPD_LEN) {
         return;
     }
-    uint32_t loc = mrvl_le32(pd + 8), len = mrvl_le16(pd + 12);
+    uint32_t loc = ldl_le_p(pd + 8), len = lduw_le_p(pd + 12);
     if (loc > n || len > n - loc || len < 14 || !c->associated) {
         return;
     }
@@ -311,12 +306,12 @@ static bool mrvl_card_rx(Mrvl8686Card *c, const uint8_t *eth, uint32_t len)
     if (!p) {
         return false;
     }
-    mrvl_put16(p + 0, 0x0001);                   /* status: OK */
+    stw_le_p(p + 0, 0x0001);                   /* status: OK */
     p[2] = 47;                                   /* SNR */
-    mrvl_put16(p + 4, plen);
+    stw_le_p(p + 4, plen);
     p[6] = 92;                                   /* noise floor */
     p[7] = 11;                                   /* 54 Mb/s */
-    mrvl_put32(p + 8, MRVL_RXPD_LEN);            /* packet location */
+    stl_le_p(p + 8, MRVL_RXPD_LEN);            /* packet location */
     uint8_t *f = p + MRVL_RXPD_LEN;
     if (snap) {
         memcpy(f, eth, 12);
@@ -433,10 +428,10 @@ static void mrvl_card_writeb(Mrvl8686Card *c, uint32_t addr, uint8_t val)
 /* The helper's view of a 16-byte request: an EEPROM read or a block header. */
 static void mrvl_helper_request(Mrvl8686Card *c, const uint8_t *b)
 {
-    uint32_t cmd = mrvl_le32(b);
+    uint32_t cmd = ldl_le_p(b);
 
     if (cmd == MRVL_HELPER_GETMEM) {
-        uint32_t off = mrvl_le32(b + 8), len = mrvl_le16(b + 6);
+        uint32_t off = ldl_le_p(b + 8), len = lduw_le_p(b + 6);
         c->getmem_off = MIN(off, MRVL_EEPROM_SIZE);
         c->getmem_len = MIN(len, MRVL_EEPROM_SIZE - c->getmem_off);
         c->scratch = c->getmem_len;
@@ -444,7 +439,7 @@ static void mrvl_helper_request(Mrvl8686Card *c, const uint8_t *b)
         c->ul_rdy = true;
         return;
     }
-    if (mrvl_crc32(b, 12) != mrvl_be32(b + 12)) {
+    if (mrvl_crc32(b, 12) != ldl_be_p(b + 12)) {
         c->rd_base = MRVL_FW_HDR_LEN | 1;           /* CRC error */
         return;
     }
@@ -456,7 +451,7 @@ static void mrvl_helper_request(Mrvl8686Card *c, const uint8_t *b)
         mrvl_trace("[MRVL] firmware up: %u blocks, %u bytes\n", c->fw_blocks, c->fw_bytes);
         return;
     }
-    uint32_t len = mrvl_le32(b + 8);
+    uint32_t len = ldl_le_p(b + 8);
     if (cmd != MRVL_FW_CMD_DATA || len < 4 || len > 0x800) {
         c->rd_base = MRVL_FW_HDR_LEN | 1;
         return;
@@ -470,7 +465,7 @@ static void mrvl_card_write(Mrvl8686Card *c, const uint8_t *buf, uint32_t len)
     switch (c->stage) {
     case MRVL_STAGE_BOOTROM:
         if (len >= 4) {
-            uint32_t n = mrvl_le32(buf);
+            uint32_t n = ldl_le_p(buf);
             if (!n) {
                 mrvl_trace("[MRVL] helper up (%u bytes)\n", c->helper_bytes);
                 c->stage = MRVL_STAGE_HELPER;
@@ -487,7 +482,7 @@ static void mrvl_card_write(Mrvl8686Card *c, const uint8_t *buf, uint32_t len)
             }
         } else if (len >= c->rd_base) {
             c->fw_want_data = false;
-            if (mrvl_crc32(buf, c->rd_base - 4) != mrvl_be32(buf + c->rd_base - 4)) {
+            if (mrvl_crc32(buf, c->rd_base - 4) != ldl_be_p(buf + c->rd_base - 4)) {
                 c->rd_base = MRVL_FW_HDR_LEN | 1;
             } else {
                 c->fw_bytes += c->rd_base;
@@ -498,8 +493,8 @@ static void mrvl_card_write(Mrvl8686Card *c, const uint8_t *buf, uint32_t len)
         break;
     case MRVL_STAGE_FIRMWARE:
         if (len >= MRVL_SDIO_HDR && !c->asleep) {
-            uint32_t plen = MIN(mrvl_le16(buf), len);
-            uint16_t type = mrvl_le16(buf + 2);
+            uint32_t plen = MIN(lduw_le_p(buf), len);
+            uint16_t type = lduw_le_p(buf + 2);
             if (plen >= MRVL_SDIO_HDR && type == MRVL_TYPE_CMD) {
                 mrvl_handle_cmd(c, buf + MRVL_SDIO_HDR, plen - MRVL_SDIO_HDR);
             } else if (plen >= MRVL_SDIO_HDR && type == MRVL_TYPE_DATA) {

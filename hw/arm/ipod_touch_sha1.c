@@ -1,4 +1,5 @@
 #include "hw/arm/ipod_touch_sha1.h"
+#include "hw/arm/sha1_compress.h"
 #include "exec/cpu-common.h"
 #include "migration/vmstate.h"
 
@@ -48,47 +49,6 @@ bool ipod_touch_sha1_last_hash(IPodTouchSHA1State *s, uint8_t out[20])
     }
     memcpy(out, s->last_hash, sizeof(s->last_hash));
     return true;
-}
-
-#define ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
-
-/* One SHA1 compression round over a 64-byte block, in place on state[]. */
-static void sha1_compress(uint32_t state[5], const uint8_t block[64])
-{
-    uint32_t w[80];
-    uint32_t a, b, c, d, e;
-    int i;
-
-    for (i = 0; i < 16; i++) {
-        w[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
-               ((uint32_t)block[i * 4 + 2] << 8) | (uint32_t)block[i * 4 + 3];
-    }
-    for (i = 16; i < 80; i++) {
-        w[i] = ROTL(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    }
-
-    a = state[0]; b = state[1]; c = state[2]; d = state[3]; e = state[4];
-
-    for (i = 0; i < 80; i++) {
-        uint32_t f, k;
-        if (i < 20) {
-            f = (b & c) | (~b & d);
-            k = 0x5a827999;
-        } else if (i < 40) {
-            f = b ^ c ^ d;
-            k = 0x6ed9eba1;
-        } else if (i < 60) {
-            f = (b & c) | (b & d) | (c & d);
-            k = 0x8f1bbcdc;
-        } else {
-            f = b ^ c ^ d;
-            k = 0xca62c1d6;
-        }
-        uint32_t tmp = ROTL(a, 5) + f + e + k + w[i];
-        e = d; d = c; c = ROTL(b, 30); b = a; a = tmp;
-    }
-
-    state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
 }
 
 /* Publish the current chaining state for the PKE forge, big-endian. */

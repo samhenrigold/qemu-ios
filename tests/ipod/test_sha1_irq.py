@@ -7,8 +7,8 @@ source=(root/'hw/arm/ipod_touch_sha1.c').read_text()
 header=(root/'include/hw/arm/ipod_touch_sha1.h').read_text()
 assert 'sha1_run(s, value & 0x4);' in source
 state=re.search(r'typedef struct IPodTouchSHA1State.*?} IPodTouchSHA1State;',header,re.S)[0]
-functions=[re.search(r'^#define ROTL.*?\n',source,re.M)[0]]
-for name in ['sha1_trace','sha1_compress','sha1_publish','sha1_clear_irq','sha1_run']:
+functions=[(root/'include/hw/arm/sha1_compress.h').read_text()]
+for name in ['sha1_trace','sha1_publish','sha1_clear_irq','sha1_run']:
  functions.append(re.search(r'^(?:static )?(?:bool|void) '+name+r'\([^)]*\)\s*\{.*?^}',source,re.M|re.S)[0])
 code=r'''
 #include <assert.h>

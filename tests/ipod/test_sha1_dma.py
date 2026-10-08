@@ -36,7 +36,7 @@ static void cpu_physical_memory_read(uint64_t a, void *p, size_t n) {
  if(n>biggest_read)biggest_read=n;
  memcpy(p,memory+a,n);
 }
-''' + constants + '\n' + state + '\n' + production + '\n' + f'static const uint8_t expected[20]={{{expected}}};\n' + r'''
+''' + (root / 'include/hw/arm/sha1_compress.h').read_text() + constants + '\n' + state + '\n' + production + '\n' + f'static const uint8_t expected[20]={{{expected}}};\n' + r'''
 #define W(o,v) ipod_touch_sha1_write(&s,(o),(v),4)
 int main(void) {
  const unsigned n=0x1824000, padded=n+64;
