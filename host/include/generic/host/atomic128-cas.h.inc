@@ -11,8 +11,7 @@
 #ifndef HOST_ATOMIC128_CAS_H
 #define HOST_ATOMIC128_CAS_H
 
-/* TCTI's gadgets cannot express the 128-bit CAS sequence. */
-#if defined(CONFIG_ATOMIC128) && !defined(CONFIG_TCG_THREADED_INTERPRETER)
+#if defined(CONFIG_ATOMIC128)
 static inline Int128 ATTRIBUTE_ATOMIC128_OPT
 atomic16_cmpxchg(Int128 *ptr, Int128 cmp, Int128 new)
 {

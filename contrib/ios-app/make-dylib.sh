@@ -9,7 +9,6 @@
 #
 #     make-dylib.sh device            # real iPhone/iPad
 #     TCG=interp make-dylib.sh device # the standalone interpreter build
-#     TCG=tcti make-dylib.sh device   # the threaded interpreter build
 #     make-dylib.sh sim               # iOS Simulator
 #
 # The backend is baked into the dylib's name so the app can carry both and
@@ -43,8 +42,7 @@ esac
 case "$TCG" in
 jit)    ;;
 interp) BUILD="$BUILD-interp" ;;
-tcti)   BUILD="$BUILD-tcti" ;;
-*)      echo "TCG must be jit, interp or tcti" >&2; exit 2 ;;
+*)      echo "TCG must be jit or interp" >&2; exit 2 ;;
 esac
 LIBNAME="libqemu-arm-$TCG.dylib"
 OUT="$BUILD/$LIBNAME"

@@ -7,19 +7,15 @@
 #     build-ios.sh device      # real iPhone/iPad  (the target that matters)
 #     build-ios.sh sim         # iOS Simulator     (convenience only)
 #
-# TCG BACKEND, selected with TCG=jit (default), TCG=interp or TCG=tcti. All
+# TCG BACKEND, selected with TCG=jit (default) or TCG=interp. Both
 # are worth building: the app ships them and picks at launch.
 #
 #   jit     native arm64 codegen, ~4x faster, but iOS only permits executable
 #           memory while a debugger is attached, so it is development-only.
 #   interp  no executable memory at all, so it runs standalone from the home
 #           screen -- which is the only way an ordinary launch can work.
-#   tcti    UTM's threaded-code interpreter: also no executable memory, but it
-#           dispatches through precompiled aarch64 gadgets instead of a switch,
-#           so it is a lot faster than interp. aarch64 hosts only.
 #
-# Each backend gets its own build directory (build-ios, build-ios-interp,
-# build-ios-tcti).
+# Each backend gets its own build directory (build-ios, build-ios-interp).
 #
 # Optimization flags (PGO_PROFILE / PGO_GENERATE, see below) only reach the
 # build through configure, so changing them needs RECONFIGURE=1.
@@ -58,8 +54,7 @@ esac
 case "$TCG" in
 jit)    ;;
 interp) BUILD="$BUILD-interp" ;;
-tcti)   BUILD="$BUILD-tcti" ;;
-*)      echo "TCG must be jit, interp or tcti" >&2; exit 2 ;;
+*)      echo "TCG must be jit or interp" >&2; exit 2 ;;
 esac
 
 [ -d "$SYSROOT" ] || { echo "no sysroot at $SYSROOT" >&2; exit 1; }
@@ -68,7 +63,6 @@ export PKG_CONFIG_LIBDIR="$SYSROOT/lib/pkgconfig"
 case "$TCG" in
 jit)    TCG_FLAGS="" ;;
 interp) TCG_FLAGS="--enable-tcg-interpreter" ;;
-tcti)   TCG_FLAGS="--enable-tcg-threaded-interpreter" ;;
 esac
 
 # OPTIMIZATION FLAGS.
@@ -107,9 +101,7 @@ esac
 # (vnc/sdl/cocoa), so nothing on the hot path is missing from the profile.
 #
 # Two real limits on that reuse:
-#   - It is only valid for TCG=interp. The tcti backend runs different code
-#     (tcg/tcti), which the macOS TCI profile never executed, so tcti needs its
-#     own profile collected against a tcti build.
+#   - It is only valid for TCG=interp.
 #   - Functions absent from the profile are treated as cold. That is harmless
 #     for iOS-only glue, but it means the profile must be REGENERATED whenever
 #     the hot files change shape, or clang silently starts optimizing a changed

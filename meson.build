@@ -935,10 +935,6 @@ if have_tcg
   endif
   if get_option('tcg_interpreter')
     tcg_arch = 'tci'
-  elif get_option('tcg_threaded_interpreter')
-    # tcg/aarch64-tcti targets the QEMU 10.0 backend interface; QEMU 11
-    # replaced it (tcg-target-has.h, the outop tables), so it is not built.
-    error('TCTI has not been ported to this QEMU\'s TCG backend interface')
   endif
   add_project_arguments('-iquote', meson.current_source_dir() / 'tcg' / tcg_arch,
                         language: all_languages)
@@ -2566,7 +2562,6 @@ config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
 if have_tcg
   config_host_data.set('CONFIG_TCG', 1)
   config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
-  config_host_data.set('CONFIG_TCG_THREADED_INTERPRETER', tcg_arch.endswith('tcti'))
 endif
 config_host_data.set('CONFIG_TPM', have_tpm)
 config_host_data.set('CONFIG_TSAN', get_option('tsan'))
@@ -4874,8 +4869,6 @@ summary_info += {'TCG support':       config_all_accel.has_key('CONFIG_TCG')}
 if config_all_accel.has_key('CONFIG_TCG')
   if get_option('tcg_interpreter')
     summary_info += {'TCG backend':   'TCI (TCG with bytecode interpreter, slow)'}
-  elif get_option('tcg_threaded_interpreter')
-    summary_info += {'TCG backend':   'TCTI (TCG with threaded-dispatch interpreter, less slow)'}
   else
     summary_info += {'TCG backend':   'native (@0@)'.format(cpu)}
   endif
