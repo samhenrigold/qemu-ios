@@ -56,6 +56,9 @@ extern int setenv(const char *, const char *, int);
 extern int socket(int, int, int);
 extern int ioctl(int, unsigned long, ...);
 extern unsigned sleep(unsigned);
+struct tv32 { long sec; int usec; };      /* struct timeval on 32-bit ARM */
+extern int gettimeofday(struct tv32 *, void *);
+extern int sysctlbyname(const char *, void *, unsigned long *, void *, unsigned long);
 struct passwd {   /* Darwin's, up to pw_dir */
     char *pw_name, *pw_passwd;
     unsigned pw_uid, pw_gid;
@@ -375,6 +378,17 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
     return (status >> 8) & 0xff;
 }
 
+/* Seconds since the kernel booted (kern.boottime); 0 if unknown. */
+static long uptime(void)
+{
+    struct tv32 boot, now;
+    unsigned long n = sizeof(boot);
+
+    if (sysctlbyname("kern.boottime", &boot, &n, 0, 0) || gettimeofday(&now, 0))
+        return 0;
+    return now.sec - boot.sec;
+}
+
 /*
  * Data Roaming on, once per SIM. On the emulated network, the test PLMN 001/01 (4.2.1's CarrierLab bundle),
  * CommCenter counts packet data as roaming and keeps it off unless Data Roaming is on
@@ -382,17 +396,24 @@ static unsigned as_mobile(int what, const char *const *jobs, unsigned njobs)
  * InternationalRoamingEDGE in CommCenter's own user's preferences (it runs as _wireless and reads it with
  * kCFPreferencesCurrentUser). CommCenter itself sets it false whenever it sees a new SIM (an ICCID other
  * than the com.apple.commcenter ICCID it stored), so this follows the same rule: for each stored ICCID this
- * job has not handled yet (the com.qemu.it-prefs RoamingSetForICCID marker; "none" before CommCenter stores
- * one), Data Roaming goes on, and the user's later choice for that SIM stands. Settings changes it through CommCenter, which
- * holds it in memory, so CommCenter is unloaded around the write and loaded again.
+ * job has not handled yet (the com.qemu.it-prefs RoamingSetForICCID marker), Data Roaming goes on, and the
+ * user's later choice for that SIM stands. CommCenter holds the switch in memory (Settings changes it through
+ * CommCenter), so CommCenter is unloaded around the write and loaded again.
+ *
+ * That reload switches the modem off (+CPWROFF) and, with no packet data flowing to show it gone, CommCenter
+ * takes ~30 s to bring it back: no calls or SMS meanwhile. So it happens only early in the boot, while the
+ * device is still coming up: the ICCID is waited for until ROAMING_BY seconds after boot, and if CommCenter
+ * has not stored one by then (4.2.1 often stores it only from the second boot with a SIM), nothing is done now
+ * and the next boot, whose CommCenter stores it at once, does it. The old version waited 30 s after Wi-Fi came
+ * up and then reloaded anyway, ~60 s into a first boot, taking calls and SMS away for half a minute after the
+ * device was in use.
  */
-#define ICCID_WAIT 30    /* seconds to wait for CommCenter to store a SIM's ICCID */
+#define ROAMING_BY 40   /* seconds since boot: later, the reload would take the modem from a device in use */
 
 static int roaming_step(int write)
 {
     struct passwd *pw = getpwnam("_wireless");
     const void *mine, *marker, *cc, *iccid = 0, *done;
-    unsigned waited = 0;
 
     if (!pw || setgid(pw->pw_gid) || setuid(pw->pw_uid) || setenv("HOME", pw->pw_dir, 1)) {
         say("could not become _wireless; Data Roaming left alone", "", "");
@@ -401,10 +422,12 @@ static int roaming_step(int write)
     if (!cf_load())
         return 0;
     mine = str("com.qemu.it-prefs"), marker = str("RoamingSetForICCID"), cc = str("com.apple.commcenter");
-    while (sync(cc), !(iccid = get(str("ICCID"), cc)) && waited++ < ICCID_WAIT)
+    while (sync(cc), !(iccid = get(str("ICCID"), cc)) && uptime() < ROAMING_BY)
         sleep(1);
-    if (!iccid)                 /* 4.2.1 stores it only from the second boot with a SIM: set it now too */
-        iccid = str("none");
+    if (!iccid) {
+        say("CommCenter has stored no ICCID yet; Data Roaming is left to the next boot", "", "");
+        return 0;
+    }
     done = get(marker, mine);
     if (done && equal(done, iccid))
         return 0;
@@ -429,22 +452,14 @@ static int as_wireless(int write)
     return (status >> 8) & 0xff;
 }
 
-/*
- * Twice at most: when no ICCID was stored yet, the reloaded CommCenter stores one and treats the SIM as new
- * (Data Roaming back off), so the second pass sets it again for that ICCID.
- */
 static void roaming(void)
 {
-    int pass;
-
-    if (!file_has(COMMCENTER, ROAMING))
+    if (!file_has(COMMCENTER, ROAMING) || !as_wireless(0))
         return;
-    for (pass = 0; pass < 2 && as_wireless(0); pass++) {
-        if (launchctl("unload", COMMCENTER_JOB))
-            return;
-        as_wireless(1);
-        say(COMMCENTER_JOB, launchctl("load", COMMCENTER_JOB) == 0 ? " reloaded" : " reload failed", "");
-    }
+    if (launchctl("unload", COMMCENTER_JOB))
+        return;
+    as_wireless(1);
+    say(COMMCENTER_JOB, launchctl("load", COMMCENTER_JOB) == 0 ? " reloaded" : " reload failed", "");
 }
 
 /* Wait up to secs seconds for en0 (Wi-Fi) to have an IPv4 address; 1 if it did. */
@@ -501,6 +516,7 @@ int main(void)
     }
     retire_baked();
     as_mobile(2, jobs, n);          /* first: the seal boot halts 40 s in, and Wi-Fi can take longer */
+    roaming();                      /* early, before Wi-Fi: its CommCenter reload must come before the device is in use */
     for (j = 0; j < n && !streq(jobs[j], LOCATIOND_JOB); j++)
         ;
     if (j < n && wifi_up(120))
@@ -517,7 +533,6 @@ int main(void)
         if (stopped & (1u << j))
             say(jobs[j], launchctl("load", jobs[j]) == 0 ? " reloaded" : " reload failed",
                 locationd & (1u << j) ? " (Wi-Fi up)" : "");
-    roaming();                      /* last: it can wait for CommCenter to see the SIM */
     _exit(0);
     return 0;
 }
