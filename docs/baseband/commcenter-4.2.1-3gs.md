@@ -141,6 +141,10 @@ These hold for the 3GS unless its v1 trace says otherwise.
   CommCenter never installs the bundle. Then there is no com.apple.carrier.plist link, no stored
   `ICCID`, no "Cellular Data Network" row, no APN setup and no `+cgdcont`, so there is no packet data at
   all. The fake SIM holds EF_SST (services 1-4) and EF_AD; other files answer 94 04.
+  "Carrier Lab" is what Settings > General > About shows as Carrier (CarrierName and the bundle's
+  CFBundleVersion, "Carrier Lab 9.0"); the status bar and About's Network row show the modem's operator name.
+  Editing CarrierName in the bundle's carrier.plist breaks its signature: CommCenter then installs no bundle
+  (no Carrier row, no `+cgdcont`, no data), so the name stays Apple's.
 * **Roaming (open)**: with CarrierLab installed, the status bar shows the network as home (`+creg` 1;
   CommCenter's registration getter at 0x3b9c0 returns 4 = home), but packet data still counts as
   international roaming. With Data Roaming off, Safari says "Data Roaming is turned off". With
@@ -166,7 +170,9 @@ These hold for the 3GS unless its v1 trace says otherwise.
     to the web proxy at 10.0.2.100:3128 (`IOS_BB_TRACE=2` shows each uplink packet's addresses). That
     address exists only as the Wi-Fi netdev's guestfwd, so the cellular netdev needs the same guestfwd
     (`-netdev user,id=cell0,guestfwd=tcp:10.0.2.100:3128-...`), as the app gives wifi0.
-  * Each such restart resets the baseband (raw `at` pings into the mux, then BB_RST/RADIO_ON). The modem
+  * Each such restart resets the baseband: `+cpwroff`, then raw `at` pings until the modem stops answering,
+    then BB_RST/RADIO_ON. The modem goes silent after `+cpwroff` (SRDY stays low); while it kept clocking
+    frames, CommCenter waited out a ~30 s power-off timeout first, at "Searching...". The modem
     keeps the AP's v2 credits across that reset (the kext keeps its count), else the re-init's URCs
     starve it and the phone sits at "Searching..." (fixed in 05fb82752f). With that fix, data works on a
     fresh device's first boot.
