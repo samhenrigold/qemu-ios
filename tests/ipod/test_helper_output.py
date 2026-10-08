@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Host helper output must fail on deferred disk errors, without guest firmware."""
 from pathlib import Path
-import struct
 import subprocess
 import tempfile
 import zipfile
-import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='ltm-helper-output-') as temporary:
     work = Path(temporary)
     source = ROOT / 'contrib/macos-app/ipod-helper.c'
     helper, failing = work / 'helper', work / 'full-disk-helper'
-    run('cc', '-Wall', '-Wextra', source, '-lz', '-o', helper)
+    run('cc', '-Wall', '-Wextra', source, '-o', helper)
     # Inject only the OS's deferred close error, without exhausting real disk.
     shim = work / 'close.c'
     shim.write_text('''#include <stdio.h>
@@ -35,19 +33,7 @@ int test_fclose(FILE *stream) {
 }
 ''')
     run('cc', '-Dfclose=test_fclose', '-c', source, '-o', work / 'helper.o')
-    run('cc', work / 'helper.o', shim, '-lz', '-o', failing)
-
-    page = b'fixture' + bytes(4160 - 7)
-    manifest = zlib.compress(struct.pack('<BI', 0, 1))
-    packed = work / 'fixture.itnand'
-    packed.write_bytes(b'ITNANDP1' + struct.pack('<II', 1, len(manifest)) + manifest + zlib.compress(page))
-    good_pages, bad_pages = work / 'pages', work / 'bad-pages'
-    good_pages.mkdir()
-    bad_pages.mkdir()
-    run(helper, 'nand-unpack', packed, good_pages)
-    assert (good_pages / 'cs0/1.page').read_bytes() == page
-    run(failing, 'nand-unpack', packed, bad_pages, ok=False)
-    assert not (bad_pages / 'cs0/1.page').exists()
+    run('cc', work / 'helper.o', shim, '-o', failing)
 
     ipa = work / 'fixture.ipa'
     member = 'Payload/Fixture.app/Fixture'
@@ -60,15 +46,4 @@ int test_fclose(FILE *stream) {
     run(failing, 'ipa-chmod', ipa, output, member, ok=False)
     assert not output.exists()
 
-    data, blob = work / 'input', work / 'fixture.blob'
-    data.write_bytes(b'authored fixture')
-    run(helper, 'blob-pack', blob, f'fixture={data}')
-    unpacked = work / 'unpacked'
-    run(helper, 'blob-unpack', blob, unpacked)
-    assert (unpacked / 'fixture').read_bytes() == data.read_bytes()
-    run(failing, 'blob-unpack', blob, work / 'bad-unpacked', ok=False)
-    assert not (work / 'bad-unpacked/fixture').exists()
-    run(failing, 'blob-pack', work / 'bad.blob', f'fixture={data}', ok=False)
-    assert not (work / 'bad.blob').exists()
-
-print('PASS: helper round trips, deferred output errors')
+print('PASS: ipa-chmod, deferred output errors')

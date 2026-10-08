@@ -39,7 +39,7 @@ is the wire contract).
 | `contrib/it-*` | Guest helpers for the iPod (armv6, built with `contrib/armv6-toolchain`): `it-agent` (the guest agent), `it-gles` (MBX GL shim), `it-boot` (guest-package loader), `it-pasteboard`, `it-media`, `it-keybag`, `it-seal`, … each with its own README |
 | `contrib/gles-public`, `contrib/ipad1-guest`, `contrib/appsync` | the GL front end (one OpenGLES.framework replacement for every 2.x-5.x firmware, iPad and iPod; `docs/ipad1/gles-public-seam.md`); iPad-side helpers: `ipad1-guest/build.sh` builds `it_pbd` (pasteboard bridge) and `it_ethlink` (raises the USB Ethernet link) for armv7 from the shared sources; the AppSync interposer dylib |
 | `contrib/guest-package` | `mkpkg.py` and `VERSION`: the versioned guest-tools package format the loader installs at boot |
-| `contrib/macos-app` | `make-dylib-macos.sh` (the app's dylib), `entitlements.plist` (the app's helper entitlements), `nandpack.py` |
+| `contrib/macos-app` | `make-dylib-macos.sh` (the app's dylib), `entitlements.plist` (the app's helper entitlements), `ipod-helper.c` (the app's `ipa-chmod`) |
 | `imgtools/` | NAND/HFS/img3 tools and older one-offs. Devices are made by LightTouchMac's Swift FirmwareKit: `firmwarekit create --catalog CATALOG --id BOARD-BUILD --ipsw IPSW --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; k48ap and 4.x n72ap also take `--helper` with the LightTouchDevice executable). `device.py create` and the `*_device.py` names only translate their inputs and call it (`research/python-preparer/README.md`) |
 | `manifests/` | One declared-inputs manifest per build (`ipad1-7B367/7B500/8C148`, `ipod2g-5F138/7E18/8C148`) |
 | `tests/ipod/`, `tests/ipad1/`, `tests/guest-package/` | The gates below |

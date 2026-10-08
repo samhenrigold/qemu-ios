@@ -14,7 +14,7 @@ A package is what contrib/it-boot/it_boot.c installs as /usr/local/lighttouch/pk
 Its jobs run the package's binaries through /usr/local/lighttouch/current, so they are
 rewritten here; hooks replace stock-path files (the preparer keeps a .baked copy of each).
 
-The .itpack is nandpack's idea (contrib/macos-app/nandpack.py) for arbitrary files: one
+The .itpack holds arbitrary files in one
 custom magic, a JSON index and one zlib stream, so the notary service, which opens any
 archive it recognizes and rejects the unsigned guest Mach-Os inside, sees neither.
 """
