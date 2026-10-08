@@ -156,6 +156,7 @@ typedef struct S5L8920Board {
     uint16_t ringer;
     bool ringer_active_high;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
+    const char *accel_mount;             /* the LIS302DL model's "mount" axes; NULL: as the N18's/N72's */
     S5L8920PowerKnob pwroff_knob;
     BCMSDIOChip wifi;                    /* the Wi-Fi card, as AppleBCMWLAN matches it; prodid 0 = none */
 } S5L8920Board;
@@ -233,6 +234,10 @@ static const S5L8920Board s5l8920_n88 = {
         { 0, 0x1e, TYPE_S5L8930_AK8973 },
         { 2, 0x49, TYPE_S5L8930_TSL2561 },
     },
+    /* DT accelerometer orientation 7 where the N18's (and the N72's) is 4: bits 0 and 1 more, which negate x
+     * and y in AppleLIS302DL, as the M68's 0 to the N45's 3. The model reads as the N18's part; without this
+     * the 3GS took Home-left (4) for Home-right (3) and drew landscape upside down (issues 23, 43). */
+    .accel_mount = "-1,-2,3",
     .pwroff_knob = { 57, 67, 240 },
 };
 
@@ -416,6 +421,9 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             continue;
         }
         slave = i2c_slave_new(d->type, d->addr);
+        if (!strcmp(d->type, TYPE_LIS302DL) && s->board->accel_mount) {
+            qdev_prop_set_string(DEVICE(slave), "mount", s->board->accel_mount);
+        }
         if (!strcmp(d->type, TYPE_PCF50633)) {
             /*
              * D1755: the D1759's Dialog layout one event byte wider. Events
@@ -450,6 +458,9 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             s->pmu->usb_cable = s->usb_attached;
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
             s->accel = LIS302DL(slave);
+            if (s->board->accel_mount) {
+                lis302dl_apply_orientation(s->accel, 1);   /* init ran before the mount was set */
+            }
             /* the iPod/iPad machines' names, which the app's tilt and shake set */
             object_property_add_alias(OBJECT(s), "accel-orientation", OBJECT(slave), "orientation");
             object_property_add_alias(OBJECT(s), "accel-x", OBJECT(slave), "x");
