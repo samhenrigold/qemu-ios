@@ -62,7 +62,7 @@ build/qemu-system-arm -M iPod-Touch-1G,bootrom=$F/bootrom_s5l8900,iboot=$F/iboot
 
 The CPU is the default arm1176 (`-cpu max` faults in iBoot). NOR is written by iBoot/the kernel, so
 copy it. SpringBoard configures at about 60 s of guest time; `screendump` then. Keys: Cmd+Shift+H home,
-Cmd+L power (headless: QMP `input-send-event` for taps, as `tests/ipod/regress.py` does).
+Cmd+L power (headless: QMP `input-send-event` for taps).
 
 Machine properties: `bootrom`, `iboot`, `nand`, `nand-overlay`, `usb-tcp-addr` (host:port of
 usbmuxd-qemu's QEMU backend, else `IT_USB_TCP`; empty = no cable), `usb-wrangler-quirk` (bool, default
@@ -75,7 +75,7 @@ unit), and the read-only
 A GL device: `firmwarekit create --catalog CATALOG --id n45ap-3A101a --ipsw
 ~/Developer/qemu-ios-files/ipod1g/iPod1,1_1.1_3A101a_Restore.ipsw --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`;
 `--guest-tools DIR` unless it is the app bundle's `firmwarekit`) writes OUT/{nand,iBoot.bin,nor.bin,device.lock.json}; boot it
-with those in place of the set's files, or `tests/ipod/regress.py --device OUT --checks boot,gles`. Keep the
+with those in place of the set's files, or LightTouchMac's `swift run --package-path tests/sessions sessions single OUT`. Keep the
 guest awake in a test (a tap on an empty spot every 15-20 s): it does not wake from sleep yet.
 
 Traces (`-trace NAME`): `ipod_touch_lcd_log`, `ipod_touch_multitouch_log`, `s5l8900_fmc_log`, `s5l8900_adm_log`, `ipod_touch_timer_log`, `ipod_touch_clock_log`.

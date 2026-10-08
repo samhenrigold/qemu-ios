@@ -46,12 +46,12 @@ Emulator-side findings:
   refused cube-map mipmaps, so the cube stayed incomplete. Metal then logged
   `GLD_TEXTURE_INDEX_CUBE_MAP is unloadable` and sampled zero: the Apple logo and screen bezel came out
   black. The screen quad's clownfish lock screen is the app's own texture and was always right. Test:
-  `tests/ipod/test_gles_cubemap.py`.
+  `tests/slice/ipod-gles-cubemap.c`.
 - Every boot, SpringBoard included, logs one host-driver line `UNSUPPORTED (log once): POSSIBLE
   ISSUE: unit 0 GLD_TEXTURE_INDEX_2D is unloadable ... using zero texture`, plus about 14
   `[gles] texture ... mean=0` uploads. This is baseline noise, not per-app.
 
-Run it: `tests/ipad1/app-compat.py run ~/Downloads/ios3 --nand <private clone> --out DIR
+It was run as (`app-compat.py` is retired; see git history at 5508b504b8): `tests/ipad1/app-compat.py run ~/Downloads/ios3 --nand <private clone> --out DIR
 --jobs 16 --limit 16` (one batch per call; batches resume from `DIR/results/*.json`). The
 harness pins the new icon into page 1's first free cell via springboardservices
 (`sbicons set`), so it never swipes between pages.
@@ -113,7 +113,7 @@ harness pins the new icon into page 1's first free cell via springboardservices
 52 unique bundle ids from the 59 candidates for 4.2.1 (the 3.2.2 set, DoodleJump 3.7 and KP by Bing, and
 NetGauge 26, MinimumOS 4.1, new here), each on its own overlay of a fresh `ipad1_device.py` device made
 from `manifests/ipad1-8C148.json` with `appsync: true` and the 4.2.1 activation hook (GL CoreAnimation).
-Same harness as above: `tests/ipad1/app-compat.py run ~/Downloads/ios3 --device DEVICE --out DIR
+Same (since retired) harness as above: `tests/ipad1/app-compat.py run ~/Downloads/ios3 --device DEVICE --out DIR
 --jobs 16 --limit 16`, one batch per call. `--device` takes the device's nand, kboot, die-id and a
 private NOR copy, and lifts the MinimumOS ceiling to the device's iOS version.
 
@@ -328,11 +328,11 @@ How we'd pull one for this compat pass:
    `MinimumOSVersion <= 3.2` and iPad or iPhone family.
 2. Fetch the single `.ipa` via `https://legacystore.app/ipa/<id>` (follows to archive.org)
    or the archive.org URL directly.
-3. **Check it's decrypted** (`cryptid 0`) before use — `app-compat.py inventory <dir>` does
-   this. This is the real gate: most archived App Store copies are original **FairPlay-
+3. **Check it's decrypted** (`cryptid 0`) before use (the retired `app-compat.py inventory <dir>` did
+   this). This is the real gate: most archived App Store copies are original **FairPlay-
    encrypted** binaries, which the emulator cannot run (AppSync bypasses signing, not
    FairPlay). Only decrypted/cracked copies or developer builds install here.
-4. Feed the decrypted `.ipa` to `app-compat.py run` (below).
+4. Feed the decrypted `.ipa` to the launch pass (`app-compat.py run` above, now retired).
 
 No bulk downloads — pull individual IPAs on request. The 60 IPAs already in
 `~/Downloads/ios3` are all decrypted and cover the candidate set for now.

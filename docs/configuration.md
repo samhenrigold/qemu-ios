@@ -22,8 +22,7 @@ compatible and emits a deprecation warning when used. The option controls
 hardware presence, not output volume or decoding, and is immutable after the
 machine starts. `-M iPod-Touch,help` lists the property and its type.
 
-The regression harness accepts `--audio-hw auto|on|off`. Omitting it preserves
-the existing environment/default path. `tests/ipod/test_audio_config.py` checks
+The retired regression harness accepted `--audio-hw auto|on|off`. `tests/slice/ipod-audio-config.c` checks
 default behavior, alias precedence, explicit auto, invalid values and rejection
 of changes after startup.
 
@@ -32,15 +31,15 @@ any `IT_OSK` value, and the option cannot change after startup. The launcher’s
 `--keyboard` / `--appsync` flags and Light Touch now use this property. The app
 also passes its USB session through the existing `usb-tcp-addr` option rather
 than changing process-wide `IT_USB_TCP`. Agent text insertion is unchanged.
-`test_osk_config.py` checks alias presence, explicit precedence and immutability.
+`tests/slice/ipod-osk-config.c` checks alias presence, explicit precedence and immutability.
 
 The existing Bluetooth HCI controller uses `bt` and `bt-latency-us`. Both are
 startup-only, and explicit options override aliases. A user-supplied UART1
 chardev still takes precedence over the built-in controller. Reply delay is
 stored per controller and converted to nanoseconds without signed overflow;
 invalid, negative and oversized legacy values are rejected. These controls do
-not add Bluetooth peers. `test_bt_config.py` checks the real paused machine,
-including aliases, boundaries and runtime rejection.
+not add Bluetooth peers. `test_bt_config.py` checked the real paused machine,
+including aliases, boundaries and runtime rejection (retired; see git history at 5508b504b8).
 
 ## Boot-argument scheduling
 
@@ -64,8 +63,8 @@ Legacy scheduling aliases are resolved once during startup with strict bounded
 integer parsing, and emit deprecation warnings. Explicit properties take priority
 even over malformed aliases. Reset reuses these resolved settings. The
 machine's defaults are 0 ms / 200 writes / 250 ms, what every iPod boot uses. The paused native matrix in
-`test_time_dilation_config.py` covers defaults, aliases, explicit precedence,
-boundaries, malformed input and runtime mutation rejection.
+`test_time_dilation_config.py` covered defaults, aliases, explicit precedence,
+boundaries, malformed input and runtime mutation rejection (retired; see git history at 5508b504b8).
 
 ## Firmware profiles
 

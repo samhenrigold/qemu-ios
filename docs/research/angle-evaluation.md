@@ -10,10 +10,9 @@ not yet the production renderer.
 ```
 bash scripts/build-angle-prototype.sh /tmp/new-angle-evaluation
 bash tests/ipad1/angle-probe.sh /tmp/new-angle-evaluation/angle
-python3 tests/ipad1/angle-export-audit.py \
-  build-fidelity/libqemu-arm-softmmu.a.p/hw_arm_gles-host.c.o \
-  /tmp/new-angle-evaluation/angle/out/ltm-metal/libGLESv2.dylib
 ```
+
+(The export audit, `tests/ipad1/angle-export-audit.py`, is retired; see git history at 5508b504b8.)
 
 ANGLE is pinned to `8cd050f07ebd65cce269fc92e36699fc03b20ac3`; depot_tools
 is pinned to `9b264039190fa270f3fc44779b4e26b43008ba41`. Upstream DEPS
@@ -90,7 +89,7 @@ The concrete replacement boundaries are:
 | Drawable/surface | EGL offscreen surface/context binding plus GLES FBO presentation/readback; prove accepted CA drawable sizes and all guest surface orders | IOSurface metadata, guest memory pitch/format, writeback and dirty tracking |
 | Snapshots | Replace `glGetTexImage` with format-aware FBO/readback or retained uploads; capture API-specific ES state and rebuild sharegroups in dependency order | Persistent guest object names, surface state and migration ABI |
 | Shader compilation | Submit GLES source directly to the ES backend after validating guest memory | Guest string/length validation, program object identity and shader snapshots |
-| Acceptance | Run `regress.py` (qualified home frame, shadow, persistence), `snapshot-check.py`, `jank.py`, and the app corpus against two actual backend binaries | Existing thresholds and guest additions; no new golden frames derived from the candidate |
+| Acceptance | Run LightTouchMac's `sessions single` and the app corpus against two actual backend binaries (the `regress.py`, `snapshot-check.py` and `jank.py` checks first named here are retired) | Existing thresholds and guest additions; no new golden frames derived from the candidate |
 
 These probes use native EGL API calls, not the guest transport. At this stage there was no
 second guest-capable backend binary to compare: linking the executor to
@@ -124,9 +123,9 @@ The host carries this field per context. Snapshot blob version 4 saves it;
 version 3 remains readable with unknown API. Unsupported values are refused
 at creation and rejected by the snapshot field reader. This is compatible
 CGL groundwork for EGL, not an ANGLE backend or an ES emulation claim.
-`test_gles_context.py` exercises the actual guest constructor, new/old host
+`tests/slice/ipod-gles-context.c` exercises the actual guest constructor, new/old host
 forms, native context isolation and shared texture lifetime;
-`test_gles_api_snapshot.py` exercises the actual host field codec, including
+`tests/slice/ipod-gles-api-snapshot.c` exercises the actual host field codec, including
 v3 compatibility and corrupt API rejection.
 
 The 44 desktop symbol adaptations and CGL-specific snapshot capture remain.

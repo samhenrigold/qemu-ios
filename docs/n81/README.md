@@ -46,39 +46,23 @@ Verified 2026-10-04 on `a4-boards`:
 ## How to boot
 
 Assets (never committed) live in `~/Developer/qemu-ios-files/n81/`: the IPSW (Apple's, sha1
-6a890696...), `keys.txt` (from api.ipsw.me) and the outputs below. Since FirmwareKit has no n81
-recipe yet, a device is the iPad 4.x pipeline run by hand:
+6a890696...). LightTouchMac's FirmwareKit makes the device, with the activation hook, the guest package and
+the keybag (the hand-run `imgtools/ipad1_*.py` pipeline this listed is retired; see git history at 5508b504b8):
 
 ```
 N=~/Developer/qemu-ios-files/n81
-imgtools/ipad1_fw.py $N/iPod4,1_4.2.1_8C148_Restore.ipsw $N/keys.txt $N/dec
-# identity.json: firmwarekit's KBoot synthesizes it (the Python tool is gone)
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-imgtools/ipad1_nand.py mbr --geometry k48-16g --system-mib 1280 $N/mbr.bin
-imgtools/ipad1_rootfs.py build --rootfs $N/dec/rootfs.dmg --pristine $N/dec/rootfs.dmg --mbr $N/mbr.bin \
-  --out $N/userland --stash none --lockdown none
-imgtools/ipad1_rootfs.py bake $N/userland/pristine --activation-hook ACTIVATION_HOOK   # patch_lockdownd.py
-imgtools/ipad1_nand.py build --geometry k48-16g --mbr $N/mbr.bin --kernelcache $N/dec/kernelcache.mach \
-  --system $N/userland/pristine/system.img --data $N/userland/pristine/data.img --out $N/userland/nand-pristine
-mkdir $N/dev1; cp -cR $N/userland/nand-pristine $N/dev1/nand
-python3 -c 'open("'$N'/dev1/nor.bin","wb").write(b"\xff"*0x100000)'
-# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
+firmwarekit create --catalog CATALOG --id n81ap-8C148 --ipsw $N/iPod4,1_4.2.1_8C148_Restore.ipsw --out $N/dev1
 ```
-
-The activation hook is the iPad 8C148 one (`qemu-ios-files/ipad1/offline-activation-8C148/patch_lockdownd.py`).
-The iPod's lockdownd is byte-identical to the iPad's (same SHA-256), and the hook finds its branch by
-pattern. The build needs `contrib/gles-public/build.sh`, `contrib/ipad1-guest/build.sh` and
-`contrib/guest-package/build.sh` first.
 
 Boot it (the writable NOR keeps effaceable, so give each run its own copy):
 
 ```
-build/qemu-system-arm -M iPod-Touch-4G,kboot=$N/kboot.bin,nand=$N/dev1/nand,nand-overlay=OV,nor-rw=OV/nor.bin \
+build/qemu-system-arm -M iPod-Touch-4G,kboot=$N/dev1/kboot.bin,nand=$N/dev1/nand,nand-overlay=OV,nor-rw=OV/nor.bin \
   -display none -serial file:serial.log -qmp unix:/tmp/n81.sock,server,nowait
 ```
 
-Gates: `tests/ipad1/regress.py --machine iPod-Touch-4G --device $N/dev1 --kboot $N/dev1/kboot.bin --nor
-$N/dev1/nor.bin --checks boot,persist,afc,usbmux,wifi`. The machine selects the scanout size for touch
+Gates: LightTouchMac's `swift run --package-path tests/sessions sessions single $N/dev1` (`tests/ipad1/regress.py`,
+which ran them here, is retired). The machine selects the scanout size for touch
 coordinates, the unlock slider, the lit threshold (the plugged-in iPod's lock screen is the charging battery
 on black, about 30% lit) and the DeviceClass.
 
@@ -91,7 +75,7 @@ with no refusals.
 
 Every iPod4,1 build from api.ipsw.me, prepared by the pipeline under "How to boot" with three generic
 additions, then run through the gates below. Keys: api.ipsw.me's key pages (`keys/ipsw/iPod4,1/BUILD`),
-rendered into the key-page text `ipad1_fw.py` reads; an entry whose key is "0" is a key nobody published.
+rendered into the key-page text `ipad1_fw.py` (since retired) read; an entry whose key is "0" is a key nobody published.
 
 - **Activation**: FirmwareKit's pattern-based recognizer (LightTouchMac `Packages/FirmwareKit/Sources/CActivation/
   activation.c`, built as its standalone CLI) is the `--activation-hook`; it finds the development shortcut in
@@ -101,7 +85,7 @@ rendered into the key-page text `ipad1_fw.py` reads; an entry whose key is "0" i
 - **NAND signature epoch**: `ipad1_nand.py build` writes NANDDRIVERSIGN's '0' + PE_nand_epoch read off the kernel
   (2 from 4.3.5's IOFlashStorage 410.4).
 
-Gates (each run alone; `tests/ipad1/regress.py --machine iPod-Touch-4G --device D --kboot K --nor N`):
+Gates (each run alone; `tests/ipad1/regress.py --machine iPod-Touch-4G --device D --kboot K --nor N`, since retired):
 `boot` (lit, unlock, Hold locks; 5.x: lockdown Activated and Setup Assistant's first page), `usbmux`, `afc`,
 `persist` (guest power-off, marker survives), `wifi`; then `tests/ipad1/app-install.py` with the same
 arguments: Setup Assistant walked on 5.x, the Harness IPA installed through installation_proxy (AppSync),

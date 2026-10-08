@@ -15,17 +15,13 @@ explicitly: each wraps the same DATA encryption key under a different GID.
 ```sh
 firmwarekit create --catalog CATALOG --id k48ap-7B500 --ipsw IPSW \
   --out /path/to/device --helper LIGHTTOUCHDEVICE
-python3 tests/ipad1/regress.py --device /path/to/device
+swift run --package-path tests/sessions sessions single /path/to/device   # in LightTouchMac
 ```
 
 CATALOG is LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; LIGHTTOUCHDEVICE is the
 LightTouchDevice executable. FirmwareKit takes the iBoot32Patcher next to
 `firmwarekit` first, then `FIRMWAREKIT_IBOOT_PATCHER` or `IBOOT32PATCHER`,
-then PATH. `tests/ipad1/fresh-device.sh IPSW OUT --helper LIGHTTOUCHDEVICE`
-creates one and runs boot and persist. Test defaults point to
-`~/Developer/qemu-ios-files/ipad1/repro/default-iboot`; create it explicitly or
-pass `--device`. Older direct-kernel NAND stores lack the IMG3 kernelcache and
-must be rebuilt before using this default.
+then PATH.
 
 The generated NOR DeviceTree enables HSIC for the emulated USB keyboard, as
 the former direct-kernel DeviceTree did. This is board configuration data,
@@ -57,22 +53,14 @@ has the expected size, and differs from the input. Its `-a` environment boot
 argument patch crashes this iBoot version; use the builder's `-b` path.
 
 The NAND system volume must contain the original IPSW **img3** kernelcache at
-`/System/Library/Caches/com.apple.kernelcaches/kernelcache`. Add
-`--kernelcache /path/to/ipsw/kernelcache.release.k48` to the existing
-`ipad1_rootfs.py build` command. Then bake and seal the store using the normal
-[rootfs workflow](../research/userland-boot.md). Do not rebuild the shared golden store;
-prepare a separate store for iBoot. The one-time sealing boot deliberately
+`/System/Library/Caches/com.apple.kernelcaches/kernelcache`. `firmwarekit create` puts it there (the
+`ipad1_rootfs.py` workflow this described is retired; see git history at 5508b504b8). The one-time sealing boot deliberately
 halts before displaying the lock screen.
 
 ```sh
 build/qemu-system-arm \
   -machine ipad1,iboot=/path/to/device/iBoot.bin,nor=/path/to/device/nor.bin,gid-blobs=/path/to/device/gid-blobs.bin,die-id=WORD2:WORD3,nand=/path/to/device/nand,nand-overlay=/path/to/overlay \
   -serial stdio
-
-python3 tests/ipad1/iboot-check.py \
-  --iboot /path/to/prepared/iBoot.bin --nor /path/to/prepared/nor.bin \
-  --gid-blobs /path/to/device/gid-blobs.bin --die-id WORD2:WORD3 \
-  --nand /path/to/nand --out /tmp/k48-check --unlock
 ```
 
 Take WORD2:WORD3 from the device identity.json `die-id` pair; a zero identity
@@ -177,20 +165,10 @@ is an explicit different security configuration, not a claim that retail fuses
 accept an unpersonalized restore. Synthetic identity ECID and chip revision
 now agree with what the ROM derives from the die-ID words.
 
-On macOS the [libirecovery transport adapter](../../contrib/libirecovery-qemu/README.md)
-connects unmodified host executables to emulated USB. It is a private replacement
-transport library, not a native physical USB device. Build it, then run:
-
-```sh
-python3 tests/ipad1/restore-smoke.py \
-  --device ~/Developer/qemu-ios-files/ipad1/repro/default-iboot \
-  --rom ~/Developer/qemu-ios-files/ipad1/securerom/SecureROM-574.4-RELEASE.dump \
-  --ipsw ~/Downloads/ipad1-ios32-feasibility/iPad1,1_3.2.2_7B500_Restore.ipsw \
-  --libirecovery /tmp/libirecovery-qemu
-```
-
-The test starts isolated recovery and usbmux sockets, selects only the synthetic
-ECID, and invokes stock `idevicerestore -c -z`. `-c` disables TSS personalization
+On macOS the libirecovery transport adapter (`contrib/libirecovery-qemu`) connected unmodified host executables
+to emulated USB, and `tests/ipad1/restore-smoke.py` drove a stock restore through it. Both are retired, with no
+replacement; see git history at 5508b504b8. The test started isolated recovery and usbmux sockets, selected only the synthetic
+ECID, and invoked stock `idevicerestore -c -z`. `-c` disables TSS personalization
 and invokes the host tool's legacy limera1n flow; no custom firmware is supplied.
 A separate stock `irecovery -f` test also boots the unmodified iBSS directly,
 without that exploit flow. For 7B500 the restore path uses iBSS as its recovery
@@ -201,7 +179,7 @@ ramdisk/DeviceTree/kernel upload, USB handoff to usbmuxd, and successful
 `idevicerestore -z` termination after detecting restore mode. The ROM and
 firmware files are supplied locally and are never repository artifacts.
 
-`--erase` extends this test to a disposable APFS clone of the device NAND and a
+`--erase` extended this test to a disposable APFS clone of the device NAND and a
 private NOR with boot images erased (identity/NVRAM retained). It never restores
 the selected source device in place. Logs and the disposable flash remain in
 `--out` for inspection. Without `--out`, the test creates a temporary directory.

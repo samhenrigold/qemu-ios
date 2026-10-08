@@ -78,7 +78,7 @@ related: it matches `IOProviderClass = AppleARMIICDevice` with
 
 ### The running device exposes no communications-class interface
 
-`contrib/ipod-touch-usbdesc.py` walks the complete descriptor set over the
+`contrib/ipod-touch-usbdesc.py` (retired; see git history at 5508b504b8) walked the complete descriptor set over the
 tcp_usb transport. Against a booted 2.1.1 device, every configuration:
 
 ```
@@ -100,7 +100,7 @@ there is no IAD, and no CDC ethernet networking functional descriptor
 (`CS_INTERFACE` subtype 0x0f) appears anywhere. Configuration 3's interface 1 is
 the usbmux endpoint pair, which is what `usbmuxd` already uses.
 
-Reproduce with:
+It was reproduced with (retired; see git history at 5508b504b8):
 
 ```
 python3 contrib/ipod-touch-usbdesc.py 1330 105
@@ -633,7 +633,7 @@ com.probe.launchctl.plist            uid 501 gid 20    (newly created)
 ```
 
 **launchd ignores a LaunchDaemon plist that is not owned by root**, silently -
-no spawn, no log, no crash. `imgtools/editimg.py` runs as the host user, so any
+no spawn, no log, no crash. `imgtools/editimg.py` ran as the host user, so any
 file it *creates* is owned by uid 501; a file it *rewrites in place* keeps the
 inode's original root ownership, which is why the configd edit worked and the
 new plists did not.

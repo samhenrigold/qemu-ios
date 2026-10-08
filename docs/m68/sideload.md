@@ -32,23 +32,22 @@ metadata in `uikit1.h` (class-dump headers, in effect), and a `UIApplication` su
 
 | Step | What | Why |
 |---|---|---|
-| Link stubs | `contrib/armv6-toolchain/mktbd.py ROOT /path/in/root OUT.tbd` writes a `.tbd` (install name, versions, exported symbols) for each library the app uses | There was never an SDK. Linking against the firmware's own binaries means two-level binding names only symbols 1.0 has. Modern `ld` and `nm` refuse the 1.x binaries themselves (`LC_PREBIND_CKSUM`), so `mktbd.py` reads the symbol table directly |
+| Link stubs | `machotool tbd ROOT /path/in/root OUT.tbd` (`contrib/armv6-toolchain/machotool.c`) writes a `.tbd` (install name, versions, exported symbols) for each library the app uses | There was never an SDK. Linking against the firmware's own binaries means two-level binding names only symbols 1.0 has. Modern `ld` and `nm` refuse the 1.x binaries themselves (`LC_PREBIND_CKSUM`), so `machotool tbd` reads the symbol table directly |
 | Compile | `cc6 ... -fobjc-runtime=macosx-fragile-10.5` (armv6, `-marm`, LEGACY_LINK `-ffixed-r9`) | 1.0's runtime is the fragile ABI: an `__OBJC` segment, classes referenced as `.objc_class_name_X`. clang still emits that ABI for ARM |
-| Link | `link6 -execute` with the stubs, LEGACY_LINK=1 (non-PIE, `crt1old.c`, `mkold.py --legacy`) | What 1.x dyld and libSystem take (contrib/armv6-toolchain/README.md) |
+| Link | `link6 -execute` with the stubs, LEGACY_LINK=1 (non-PIE, `crt1old.c`, `machotool mkold --legacy`) | What 1.x dyld and libSystem take (contrib/armv6-toolchain/README.md) |
 | Initializers | `main` looks up `__dyld_make_delayed_module_initializer_calls` through its own `__DATA,__dyld` section and calls it | 1.x dyld (the Tiger one) defers library initializers until crt1 asks for them. libobjc's initializer registers the image callback that fixes class and selector references, so without this call the first message crashes in `objc_msgSend` on a class-name string. `crt1old.c` is shared with plain-C helpers that run on 2.x and 3.x, where adding a `__dyld` section also changes how dyld orders initializers, so it does not make this call |
 | Subclass ivars | A UIKit class the app subclasses is declared at its real instance size (UIApplication 12 bytes, UIView 28, read from the class metadata) | The fragile ABI fixes a subclass's ivar offsets at compile time, right after the declared superclass. Declared empty, HelloApp's ivars overwrote UIApplication's own and taps stopped reaching the app. class-dump headers had the ivars for this reason |
 
 The bundle is `Hello` (non-PIE armv6, entry at crt1old's `start`), `Info.plist` (CFBundleExecutable,
 CFBundleIdentifier, CFBundleName; the stock apps' keys), `PkgInfo` and a 57x57 `icon.png` (drawn by
-`icon.py`). It needs no signature.
+`icon.c`). It needs no signature.
 
-## Installing: `imgtools/sideload1x.py`
+## Installing: `imgtools/sideload1x.py` (retired)
 
-```
-imgtools/sideload1x.py --nand DEV/nand --overlay OVL Hello.app [More.app ...] [--remove Old.app]
-```
+`imgtools/sideload1x.py` is retired, with no replacement yet; see git history at 5508b504b8. It was run as
+`imgtools/sideload1x.py --nand DEV/nand --overlay OVL Hello.app [More.app ...] [--remove Old.app]`.
 
-The script writes into the overlay the emulator boots with (`nand-overlay=OVL`) and never into the
+The script wrote into the overlay the emulator boots with (`nand-overlay=OVL`) and never into the
 device's base. It works on a device fresh from FirmwareKit and on one that has been booted, as long as
 that device was powered off from the guest. It reads the system volume through the legacy FTL's own
 context, mounts it read-write on the host, copies the bundles into `/Applications`, removes the files

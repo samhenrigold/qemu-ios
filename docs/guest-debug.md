@@ -13,7 +13,7 @@ Measured 2026-10-04 with lldb-2103 on 1.0 (M68, 1A543a), 3.1.3 (iPod touch 2G, 7
 
 Kernel: `xnu-procs` lists every process and `xnu-current` names the running one. User: `xnu-images --pid
 <SpringBoard>` from a sysroot made with `dsc_extract.py`, then `xnu-break SpringBoard mach_msg` stops in SpringBoard
-with symbolized library frames. `tests/ipad1/debug-check.py` runs both passes on the kboot boards.
+with symbolized library frames. `tests/ipad1/debug-check.py` (retired; see git history at 5508b504b8) ran both passes on the kboot boards.
 
 | Board, build | Kernel | User | debugserver (DDI, `ddi-check.py`, 2026-10-06) |
 |---|---|---|---|
@@ -24,14 +24,13 @@ with symbolized library frames. `tests/ipad1/debug-check.py` runs both passes on
 | N90 4.2.1 8C148 | not run | not run | PASS with the 4.2 DDI: attach 13 s, all steps; this debugserver also has no qRegisterInfo, and reports its breakpoint trap with subcode 0, which lldb shows as EXC_BREAKPOINT |
 | N90 7.1.2 11D257 | PASS | PASS (318 images, `debug-check.py` all PASS; `<redacted>` locals) | PASS with the 7.1 DDI (11D167), mounted by `ideviceimagemounter`: attach 25 s, all steps |
 
-KERNEL for these: the decrypted kernelcache (FirmwareKit's cache, or `img3_decrypt` + `complzss` from
-`imgtools/ipad1_fw.py` with the catalog row's `kernelcache` key). kboot does not slide the kernel, so lldb loads it
+KERNEL for these: the decrypted kernelcache (FirmwareKit's cache). kboot does not slide the kernel, so lldb loads it
 at its file address on 6.x and 7.x too. The sysroot: the decrypted rootfs's `dyld_shared_cache_armv7` through
 `dsc_extract.py`, plus `usr/lib/dyld` and SpringBoard.
 
 ## debugserver from a DeveloperDiskImage (4.x to 7.x)
 
-`tests/ipad1/ddi-check.py` runs the whole thing on a kboot board and is the recipe:
+`tests/ipad1/ddi-check.py` (retired; see git history at 5508b504b8) ran the whole thing on a kboot board and was the recipe:
 
 ```
 tests/ipad1/ddi-check.py --machine n88 --device DEV --product-version 6.1.6 \
@@ -83,9 +82,9 @@ bootrom.
 | Board | How |
 |---|---|
 | M68 1.0 | `RUN=/tmp/x tools/boot.py SECS --extra '-gdb tcp:127.0.0.1:PORT'` (qemu-ios-files/m68/tools) |
-| iPod 2G 3.1.3 | the `iPod-Touch` command line from `tests/ipod/regress.py` plus `-gdb tcp:127.0.0.1:PORT`, with `IT_DIRECT_IBOOT`, `IT_TVOUT_READY=1` and `IT_LCD_BRIGHT=255` in the environment (`tests/ipod/regress.py` `boot_env`; without them it stays in iBoot) |
-| iPad 3.2.2 | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT' tests/ipad1/boot-smoke.py ...`, or the `ipad1` machine line it prints |
-| N81, N90, N18, N88 (kboot) | `IPAD1_QEMU_EXTRA='-gdb tcp:127.0.0.1:PORT'` with any `tests/ipad1` harness and `--machine iPod-Touch-4G`, `iPhone-4`, `n18` or `n88 --device DEV`; `tests/ipad1/debug-check.py` does it and runs both passes. Target arch `armv7-apple-ios` |
+| iPod 2G 3.1.3 | an `iPod-Touch` command line plus `-gdb tcp:127.0.0.1:PORT`, with `IT_DIRECT_IBOOT`, `IT_TVOUT_READY=1` and `IT_LCD_BRIGHT=255` in the environment (without them it stays in iBoot; the retired `tests/ipod/regress.py` `boot_env` set them, see git history at 5508b504b8) |
+| iPad 3.2.2 | an `ipad1` machine command line plus `-gdb tcp:127.0.0.1:PORT` (the retired `tests/ipad1/boot-smoke.py` took it as `IPAD1_QEMU_EXTRA`; see git history at 5508b504b8) |
+| N81, N90, N18, N88 (kboot) | the `iPod-Touch-4G`, `iPhone-4`, `n18` or `n88` machine line plus `-gdb tcp:127.0.0.1:PORT` (the retired `tests/ipad1` harnesses took it as `IPAD1_QEMU_EXTRA`, and `debug-check.py` ran both passes; see git history at 5508b504b8). Target arch `armv7-apple-ios` |
 
 Then:
 

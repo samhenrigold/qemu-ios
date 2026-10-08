@@ -21,7 +21,7 @@ reload, reboot (system_reset), rejoin, Safari again. All passed after one fix:
   load, and the join panicked the guest in AppleBCMWLAN::setLinkState (IO80211Interface's link-state getter,
   8F190 pc 0x80656f7c, reads +0xc4 of a NULL interface). A real dongle only joins when the host asks, which
   it does through that interface. `IT_WIFI_AUTOJOIN` takes fractions; regress `wifi-early` (0.01 s)
-  reproduces the old panic deterministically. Host check: tests/ipod/test_sdio_autojoin.py.
+  reproduces the old panic deterministically. Host check: tests/slice/ipod-sdio-autojoin.c.
 
 ## Status (2026-09-27): works, stock stack, no guest changes
 
@@ -227,7 +227,7 @@ The chip-specific numbers to pin from the kext before writing code:
 
 - **In tree:** `hw/arm/ipod_touch_sdio.c` + docs/networking.md. It's a BCM4325
   dongle driven by 3.1.3's `AppleBCM4325` through the S5L8900 SDIO host, to
-  association, DHCP and Safari. `tests/ipod/regress.py --checks wifi` guards it.
+  association, DHCP and Safari. `tests/ipod/regress.py --checks wifi` guarded it (now LightTouchMac's `sessions single`).
   Lines 1-878 are the card and dongle; 879+ are CMD execution and that SoC's host
   controller. The split we need is already visible in the file.
 - **Public:** nothing that emulates the dongle side of a BCM43xx.

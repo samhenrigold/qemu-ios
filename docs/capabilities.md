@@ -67,7 +67,7 @@ empty value disables injection; values longer than 255 bytes and changes after
 startup are rejected. Add `-v` for
 verbose text on the panel; serial logging works without it. The earliest kernel
 banner precedes serial initialization, but driver startup and `BSD root:` are
-captured. `tests/ipod/regress.py --checks serial-console` verifies those outputs.
+captured. (The `serial-console` check of the retired `tests/ipod/regress.py` verified those outputs; see git history at 5508b504b8.)
 
 The local asset launcher `qemu-ios-files/ios3/run-ios3.sh --console` enables both
 serial and verbose boot.
@@ -120,36 +120,17 @@ and all 1,835,008 HFS allocation blocks passed fsck. See
 Device-free checks (no firmware modifications):
 
 ```sh
-python3 tests/ipod/test-gles-boundaries.py
-python3 tests/ipod/test_fmss_persistence.py
-python3 tests/ipod/test_regress.py
-python3 tests/ipod/test_launch.py
-python3 tests/ipod/test_pmu_shutdown.py
-python3 tests/ipod/test_wdt_reset.py
-python3 tests/ipod/test_armv6_toolchain.py
+tests/gate.sh --quick    # every tests/slice/*.c (GLES boundaries, FMSS persistence, PMU shutdown, WDT reset, ...) and tests/*/*-test.sh
 ```
 
 The GLES check compiles actual boundary handlers under ASan/UBSan. The NAND
 check injects host-I/O failures into the real C write path. App filesystem and
 packaging checks live in the LightTouchMac repository.
 
-Run the actual device checks with a **new output directory** and a real IPA:
-
-```sh
-python3 tests/ipod/regress.py \
-  --qemu build-native14/qemu-build/qemu-system-arm \
-  --base-nand "$HOME/Developer/qemu-ios-files/nand-current" \
-  --checks boot,afc,usbtcp,appinstall,applaunch,gles,restart,persist,fsck \
-  --ipa /absolute/path/to/decrypted.ipa \
-  --out /tmp/ipod-check-new-run
-```
-
-The harness writes only its disposable overlay. It needs localhost sockets,
-USB client tools, built guest helpers and a NAND containing `it_agent` (no SSH)
-for native launch/shutdown checks. Inspect SKIPs: exit zero alone does not mean
-every optional check ran. `tests/ipod/run-regression.sh` is the same harness
-with the tiers spelled out; `tests/ipod/fresh-device.sh` runs it on a device
-built from a manifest.
+Device checks (boots of prepared devices) are LightTouchMac's
+`swift run --package-path tests/sessions sessions single <BASE>` and its Release
+plan's prepare matrix. The former `tests/ipod/regress.py` harness is retired;
+see git history at 5508b504b8.
 
 On September 4, boot, AFC byte integrity, USB TCP, exact IPA installation and
 foreground launch, and the GLES test pattern passed against `nand-ultimate`.

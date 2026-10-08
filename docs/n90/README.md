@@ -151,18 +151,17 @@ looks like a silent lockdown. Strip identity.udid, or boot with `baseband=on,ime
 
 ## How to boot
 
-The same hand pipeline as N81 (`../n81/README.md`, "How to boot"), with `n90` paths and
-`synth_identity(seed, "16g", "n90")`. Assets are in `~/Developer/qemu-ios-files/n90/`. Apple's IPSW
+As N81 (`../n81/README.md`, "How to boot"): `firmwarekit create --id n90ap-8C148`, with `n90` paths. Assets are in `~/Developer/qemu-ios-files/n90/`. Apple's IPSW
 iPhone3,1_4.2.1_8C148 has md5 93957e7b...; its real SHA-1 is 366b28e9..., not the b8b485c1... api.ipsw.me lists.
 
 ```
-build/qemu-system-arm -M iPhone-4,kboot=$N/kboot.bin,nand=$N/dev1/nand,nand-overlay=OV,nor-rw=OV/nor.bin \
+build/qemu-system-arm -M iPhone-4,kboot=$N/dev1/kboot.bin,nand=$N/dev1/nand,nand-overlay=OV,nor-rw=OV/nor.bin \
   -display none -serial file:serial.log -qmp unix:/tmp/n90.sock,server,nowait
 ```
 
-Gates: `tests/ipad1/regress.py --machine iPhone-4 --device $N/dev1` (the device's `device.lock.json` says
-`boot_strategy kboot`, so its kboot.bin and nor.bin are used), and `tests/fresh-device.sh n90ap-...` once
-FirmwareKit has the recipe.
+Gates: LightTouchMac's `swift run --package-path tests/sessions sessions single $N/dev1` on a `firmwarekit create
+--id n90ap-BUILD` device (`tests/ipad1/regress.py` and `tests/fresh-device.sh`, which these were, are retired;
+see git history at 5508b504b8).
 
 ## Models
 

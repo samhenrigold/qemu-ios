@@ -28,6 +28,6 @@ the enable register from the saved generic register bank and start with no
 pending event; version 1 falls back to its old frame-enable behavior. The old
 render field remains in the wire layout for compatibility.
 
-`tests/ipod/test_lcd_irq.py` exercises masked frames, delayed enable, partial W1C,
+`tests/slice/ipod-lcd-irq.c` exercises masked frames, delayed enable, partial W1C,
 mask removal and old/current restore under ASan/UBSan. Native evidence and the
 broader acceptance status are recorded in `docs/archive/plan-progress.md`.

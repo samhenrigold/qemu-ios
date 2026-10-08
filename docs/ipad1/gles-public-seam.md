@@ -2,8 +2,8 @@
 
 2026-09-29. The survey behind `contrib/gles-public` (one OpenGLES.framework replacement for every emulated iOS).
 Static reading of each firmware's shared cache (or, on 2.x, its framework binaries); no emulator runs.
-Regenerate the tables with `contrib/gles-public/seam_survey.py` (usage in its header; the inputs are the
-rootfs files named under "Builds").
+The tables came from `contrib/gles-public/seam_survey.py` (the inputs are the rootfs files named under "Builds");
+it is retired, with no replacement (see git history at 5508b504b8).
 
 ## Builds
 

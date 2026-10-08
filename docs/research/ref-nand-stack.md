@@ -1,4 +1,4 @@
-> Status: research, superseded by `hw/arm/s5l8930_h2fmi.c` and `imgtools/ipad1_nand.py`.
+> Status: research, superseded by `hw/arm/s5l8930_h2fmi.c` and LightTouchMac's `firmwarekit create`.
 
 # A4 (iPad1,1 / K48AP / iOS 3.2 7B367) NAND stack — findings for a synthetic-NAND generator and an H2FMI model
 

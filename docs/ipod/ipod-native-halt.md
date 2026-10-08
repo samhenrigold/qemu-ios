@@ -14,6 +14,9 @@ QEMU, and usbmuxd bridge: two guest-origin SHUTDOWN events, byte-identical
 persistence after reboot, and a full 1,835,008-block HFS check. The volume
 attributes were `0x80000100`, including the clean-unmount bit.
 
+The commands below are retired; see git history at 5508b504b8; `tests/slice/ipod-pmu-shutdown.c` and
+`tests/guest-package/armv6-toolchain-test.sh` (both in `tests/gate.sh --quick`) replace the first two.
+
 ```sh
 python3 tests/ipod/test_pmu_shutdown.py
 python3 tests/ipod/test_armv6_toolchain.py

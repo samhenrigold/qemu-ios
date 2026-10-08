@@ -19,13 +19,13 @@ in `../archive/ipad1-PLAN.md`; what follows are the parts of it that still gover
 | `guest-services.md` | What guest code the iPad carries and why (AppSync dylib, pasteboard) |
 | `app-compat.md`, `app-compat-results.md` | The app-compatibility inventory and results (3.2.2 and 4.2.1) |
 | `addresses-7B500.md` | Firmware addresses re-derived for 7B500 |
-| `gli-dispatch-7B500.tsv`, `gli-dispatch-8C148.tsv` | GL dispatch layouts derived offline (`contrib/ipad1-gles/glitsv.py`): the reference the shim's runtime discovery was checked against, no longer a build input |
+| `gli-dispatch-7B500.tsv`, `gli-dispatch-8C148.tsv` | GL dispatch layouts derived offline (`contrib/gles-public/glitsv.py`, since retired): the reference the shim's runtime discovery was checked against, no longer a build input |
 | `hw1-probes.log`, `screens/` | Register probes from the real unit; evidence screenshots (put new evidence in `qemu-ios-files`) |
 
 The research that preceded the models (A4 SoC and board references, the kernel MMIO and IOP mailbox
 contracts, the NAND stack, the SGX and GL notes, the keyboard/network study, the Bluetooth keyboard
-scoping) is in `../research/`; each file says what superseded it. Gates: `../../tests/ipad1/regress.py`
-and `../../tests/ipad1/fresh-device.sh` (see the repository README).
+scoping) is in `../research/`; each file says what superseded it. Gates: `../../tests/gate.sh` and LightTouchMac's
+`sessions single` (see the repository README).
 
 ## Principle: vanilla guest (Sam, 2026-09-27)
 The iPod needed guest services because its USB was limited. The iPad on 3.2.2 doesn't: prefer faithful
@@ -80,14 +80,14 @@ table (works / degraded / fails + cause) in `app-compat.md`. Failures feed back 
 ## Verification
 
 Every milestone is checked against a real-iPad reference: serial logs, IORegistry dumps, screenshots.
-`regress.py`-style harness per machine; the iPod machine's suite must stay green through every shared-model
+A boot harness per machine (now LightTouchMac's `sessions single`); the iPod machine's suite must stay green through every shared-model
 refactor.
 
 GL reference device (7B500): `~/Developer/qemu-ios-files/ipad1/gl-ref-7B500/device`, made 2026-10-04 by
 `firmwarekit create --id k48ap-7B500` with guest tools exported from 3fe54ad978 (package serial 15). The older
 `repro/default-iboot` and `repro/glcov-7B500-ui` devices predate 56c2958bef, which installs the GL front end as
 OpenGLES at preparation, so their `--checks gles` always fails with "no GL-path line". On the reference,
-`tests/fresh-device.sh k48ap-7B500` with `CHECKS=boot,persist,gles` passes: the GL bridge refuses nothing and
+`tests/fresh-device.sh k48ap-7B500` (since retired) with `CHECKS=boot,persist,gles` passed: the GL bridge refuses nothing and
 the home frame reference qualifies.
 
 Debt: only 7B500 has a qualified home reference. On fresh FirmwareKit k48ap-8C148 (4.2.1) and k48ap-9B206 (5.1.1)
@@ -100,7 +100,7 @@ as 7B500's was (`ca_ogl=false`, the software renderer) or on the physical iPad.
 Out works: CS42L61 + Mikey (i2c0 0x39; the codec waits for its 'mikey' function) -> AppleARMIISAudio ->
 CDMA ch 0x1a (16 x 4 KiB IOAudio ring, streamed in 10 ms virtual-time steps) -> i2s0 FIFO ->
 `-audio driver=wav|coreaudio`. Boot, lock, unlock and Notes keyboard clicks land in the WAV (correlation
-0.86-0.92 against the rootfs files at 1.00x); `tests/ipad1/audio-check.py` checks boot/unlock/lock/unlock.
+0.86-0.92 against the rootfs files at 1.00x); the since-retired `tests/ipad1/audio-check.py` checked boot/unlock/lock/unlock.
 Rate: the I2S frame rate is read from PMGR NCO n (+4 = 64 * fs, written by the NCOFrequency function when
 the device rate is set). The device stays at 44.1 kHz; every on-device sound is 11.025-44.1 kHz and the HAL
 resamples to it. 48 kHz media: Safari (USB Ethernet, USB keyboard) playing a 48 kHz stereo 1 kHz tone WAV
@@ -110,8 +110,8 @@ from a host HTTP server (Range requests needed, or the player shows a crossed-ou
 Microphone (2026-09-27): i2s0 RX (+0x34 command, +0x38 FIFO) reads frames from a QEMU input voice (the
 Mac's microphone under `-audio coreaudio`) or, with the test-only `-global
 driver=s5l8930.i2s,property=tone-hz,value=N`, a synthetic stereo sine; CDMA ch 0x1b streams it into the
-guest's ring with the same pacing as playback. `tests/ipad1/mic-check.py` builds `contrib/ipad1-mictest`
-(an AudioQueue input recorder) into a scratch store and checks a 10 s recording in the guest: 1000.0 Hz from
+guest's ring with the same pacing as playback. The since-retired `tests/ipad1/mic-check.py` built `contrib/ipad1-mictest`
+(an AudioQueue input recorder) into a scratch store and checked a 10 s recording in the guest: 1000.0 Hz from
 a 1000 Hz tone (440.0 from 440), 44025 frames/s, 0 discontinuities. Needed on the way: back-to-back chains keep
 one sample clock (a late go used to drop ~3% at every 64 KiB boundary) and 1 ms pacing steps (the HAL reads
 input up to 96 frames behind its clock; 10 ms steps left it reading stale frames every cycle). Shazam 1.5.3 (installed on golden-appsync) records through it:
@@ -125,8 +125,7 @@ receive chains park instead of reading zeros (36d1915323). BTServer's retries th
 a ~1 s stall about every 12 s. That's BluetoothManager blocking on BTServer: respcheck measured
 1.07-1.19 s taps at a ~12 s period. With BTServer unloaded on nand-jb, every tap took 191 ms
 (control: 790 ms on every tap). Hiding the DT node (uart3/bluetooth compatible=none) does not help.
-So `ipad1_rootfs.py bake` sets `Disabled` in `com.apple.BTServer.plist` by default
-(`--keep-bluetooth` to skip). With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
+So `ipad1_rootfs.py bake` (since retired) set `Disabled` in `com.apple.BTServer.plist` by default. With it, respcheck shows 16/16 taps at 178-201 ms and Settings >
 General shows Bluetooth grayed as **Unavailable** (screens/settings-bluetooth-unavailable.png).
 Sam: no Bluetooth is fine.
 

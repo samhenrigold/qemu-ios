@@ -51,7 +51,7 @@ transaction state at the select boundary; read data no longer treats MOSI bytes
 as command sentinels. Reset deasserts NOR select and clears the write latch.
 The digitizer retains its existing framing; SPI R_PIN is not routed to NOR.
 
-`tests/ipod/test_nor_transactions.py` passes ASan/UBSan for FSEL bounds and output
+`tests/slice/ipod-nor-transactions.c` passes ASan/UBSan for FSEL bounds and output
 levels, command-looking bytes during reads, JEDEC ID and interrupted addresses.
 NVRAM partition tests pass. Native 7E18 NVRAM transactions and confirmed shutdown
 pass (`/tmp/it-nor-cs-native.log`); a fresh 5F138 ROM boot reaches Home
@@ -65,7 +65,7 @@ programming with page-buffer wrap and flash AND semantics, and 4/32/64 KiB erase
 Mutations commit when GPIO releases chip select. The fixed 1 MiB flash array and
 in-flight command state are included in VMState v2, with bounds checked on load.
 Version 1 snapshots reload the original image because they contained no writes.
-`test_nor_snapshot.py` verifies native migration of flash contents and an
+`test_nor_snapshot.py` (retired; see git history at 5508b504b8) verified native migration of flash contents and an
 unfinished page program using paused machines before any GL context exists.
 
 Operations complete synchronously; busy timing and per-sector protection are
@@ -79,7 +79,7 @@ A native 7E18 reboot reads back the new NVRAM variable after the guest emits
 status-unprotect, erase and page-program commands
 (`/tmp/it-nor-program-reboot-direct.log`). Merely setting a variable and issuing
 a host reset loses the kernel's unflushed cache; that is not a flash test.
-`test_nor_guest.py` exercises the native flush/reboot path on a disposable NAND.
+`test_nor_guest.py` (retired; see git history at 5508b504b8) exercised the native flush/reboot path on a disposable NAND.
 
 The checked-in native guest test passes through confirmed untethered shutdown
 with QEMU exit 0 in 55.2 seconds (`/tmp/it-nor-guest-final.log`).
@@ -100,9 +100,9 @@ failure sets EPE, stops the VM and remains visible through Light Touch's storage
 failure status across reset. Snapshot restore synchronizes the saved flash on
 the first bus transaction, after incoming block backends activate.
 
-`test_nor_snapshot.py --persistent` covers migration, an in-flight page program,
+`test_nor_snapshot.py --persistent` (retired; see git history at 5508b504b8) covered migration, an in-flight page program,
 a fresh process, base preservation and rejected files/concurrent writers.
-`test_nor_guest.py --persistent` verifies native iOS NVRAM across reboot and a
+`test_nor_guest.py --persistent` verified native iOS NVRAM across reboot and a
 complete process restart; both guests shut down cleanly (82.5 seconds total,
 `/tmp/it-nor-persistent-guest.log`). Synchronous durable writes are appropriate
 for the small, infrequent NVRAM workload; NOR timing remains instantaneous.

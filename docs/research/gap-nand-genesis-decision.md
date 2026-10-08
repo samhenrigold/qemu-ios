@@ -1,4 +1,4 @@
-> Status: research, superseded by `imgtools/ipad1_nand.py` and `hw/arm/s5l8930_h2fmi.c` (the generated store and the FMI model).
+> Status: research, superseded by LightTouchMac's `firmwarekit create` and `hw/arm/s5l8930_h2fmi.c` (the generated store and the FMI model).
 
 # iPad1,1 / iOS 3.2 (7B367) NAND: kernel format/restore paths vs. offline generator — findings
 

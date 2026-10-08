@@ -61,7 +61,7 @@ is explicitly refused rather than concealed.
 
 ## Offline legacy conversion
 
-Research command:
+Research command (retired; see git history at 5508b504b8):
 
 ```sh
 python3 imgtools/nand_store_convert.py OLD_NAND NEW_NAND --legacy-zero-pages erased

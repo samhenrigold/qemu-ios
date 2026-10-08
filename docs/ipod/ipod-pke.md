@@ -43,10 +43,10 @@ and interrupt delivery are not modeled; both tested boot drivers poll START.
 
 Checks:
 
-- `python3 tests/ipod/test_pke.py`: production handlers with ASan/UBSan,
+- `tests/slice/ipod-pke.c`: production handlers with ASan/UBSan,
   512/1024/2048-bit RSA, arbitrary exponents, compatibility mode, short results,
   invalid commands, full SRAM bounds and saved-state validation.
-- `python3 tests/ipod/test_pke_snapshot.py`: native paused-machine migration,
+- `tests/ipod/test_pke_snapshot.py` (retired; see git history at 5508b504b8): native paused-machine migration,
   with high SRAM segments, signs and a loaded modulus different from SRAM.
 - Native 5F138 reaches Home; 7E18 passes firmware/agent acceptance and confirmed
   guest shutdown. Temporary native evidence is recorded in the plan tracker.

@@ -34,7 +34,7 @@ and 6.1.6 join "qemu-ios" and take 10.0.2.15; 3.1.3's AppleBCMWLAN-1.25 stops at
   the s5l8922x build), and it drives the H2FMI its own way: FMC at +0x400 and ECC at +0x800 inside the DT's
   4 KiB window, READ ID read a byte at a time (go 0x10 after 0x90), a blank page reported by ECC summary
   bit 6, and every transfer started by a control write of its own (`explicit-start`, below). Chips identify
-  (0xB614D5AD on both buses), VFL opens on an epoch-3 store (`ipad1_nand.py --epoch 3`, the IPSW's SCEP),
+  (0xB614D5AD on both buses), VFL opens on an epoch-3 store (the IPSW's SCEP),
   the YaFTL R/O restore takes seconds, BSD root disk0s1, fsck clean, launchd.
 - Data protection: effaceable storage and NVRAM on the N88's NOR, formatted with the system keybag by the
   restore-ramdisk one-shot (firmwarekit's keybag step, ramdisk 038-0082-001); kb_load passes.
@@ -62,35 +62,18 @@ and 6.1.6 join "qemu-ios" and take 10.0.2.15; 3.1.3's AppleBCMWLAN-1.25 stops at
 
 ## How to boot
 
-Assets under `~/Developer/qemu-ios-files/n88/` (never committed): the 8C148a IPSW, its keys page, the
-`ipad1_fw.py` output in `dec/`, `identity.json`, `mbr.bin` (as on the N18).
-
-Device with AppSync, the GL front end and the activation hook (`contrib/appsync/build.sh`,
-`contrib/gles-public/build.sh` and `build-apps.sh` first):
+Assets under `~/Developer/qemu-ios-files/n88/` (never committed): the 8C148a IPSW. LightTouchMac makes the
+device, with AppSync, the GL front end, the guest package and the activation hook, and boots it (the
+`imgtools/ipad1_*.py` and `tests/ipad1/app-install.py` recipe this listed is retired; see git history at
+5508b504b8):
 
 ```
 F=~/Developer/qemu-ios-files/n88
-imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
-    --out $F/userland-gl --lockdown none --stash none --no-usb-net --no-web-proxy --no-ca-ogl --appsync --gles
-python3 -c "import sys; sys.path.insert(0, 'imgtools'); import ipad1_rootfs as r, os
-d = '$F/userland-gl/pristine'
-with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
-    r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
-imgtools/ipad1_nand.py build --no-whitening --epoch 3 --geometry k48-16g --mbr $F/mbr.bin \
-    --kernelcache $F/dec/kernelcache.mach --system $F/userland-gl/pristine/system.img \
-    --data $F/userland-gl/pristine/data.img --out $F/userland-gl/nand
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-mkdir $F/dev4; cp -cR $F/userland-gl/nand $F/dev4/nand
-python3 -c "open('$F/dev4/nor.bin','wb').write(b'\xff'*0x100000)"
-# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-build/qemu-system-arm -M n88,kboot=$F/kboot-nor.bin,nand=$F/dev4/nand,nand-overlay=OV,nor-rw=NORCOPY \
-    -display none -serial file:serial.log -qmp unix:/tmp/n88.qmp,server,nowait
-tests/ipad1/app-install.py --machine n88 --device $F/dev4 --kboot $F/kboot-nor-nov.bin --nor $F/dev4/nor.bin \
-    --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
+firmwarekit create --catalog CATALOG --id n88ap-8C148a --ipsw $F/iPhone2,1_4.2.1_8C148a_Restore.ipsw --out $F/dev
+swift run --package-path tests/sessions sessions single $F/dev      # in LightTouchMac
 ```
 
-(`ipad1_rootfs.py bake` instead of the bare hook also adds the guest tools and package, and disables
-BTServer; it needs `contrib/ipad1-guest/build.sh` and `contrib/guest-package/build.sh`.) The writable NOR holds effaceable and NVRAM: give each run its own copy. The
+The writable NOR holds effaceable and NVRAM: give each run its own copy. The
 lock screen powers the digitizer down after a few idle seconds: press Home before a drag. A tap is a press
 and release under ~0.1 s; a slower one is a long press (icons wiggle).
 
@@ -184,28 +167,14 @@ PASS; N18 unlock to the home screen with touch PASS.
     vendor type 0x100014 gives two VFL banks per CE, so 2048-page superblocks whose TOC needs two pages: the R/O
     restore read past the TOC and built a garbage map ("mismatch between lpn and metadata at lpn 0 meta -1").
     3.0's own AppleS5L8920XIOPFMI table (0xc041cf60) gives this part on 2 buses x 4 CEs vendor type **0x10001**, one
-    bank per CE: 1024-page superblocks, whose TOC fits one page. `ipad1_nand.py --geometry k48-16g-v1` builds that
+    bank per CE: 1024-page superblocks, whose TOC fits one page. `ipad1_nand.py --geometry k48-16g-v1` (since retired) built that
     store. (The table refuses 2+2 CEs, "2-bus not supported", and gives 1x4 0x100014, so a single-bus map does not
     help.) With it, 3.0 restores its context, mounts root and reaches an activated lock screen ("No Service"), and
     `regress.py --machine n88 --product-version 3.0` passes usbmux, afc (all five sizes) and persist (one run; the
     power-off gesture missed once at load ~50). The other 3.0 differences, as N18 3.1.x: `--sig-flags 4`, an
     unjournaled 8 KiB data volume, and the kboot DT guards (3.0's DT has no raw-panel-id or snum slots).
-    Recipe:
-
-    ```
-    F=<work>; N=~/Developer/qemu-ios-files/n88
-    imgtools/ipad1_fw.py $N/ipsw/iPhone2,1_3.0_7A341_Restore.ipsw keys-7A341.txt $F/dec
-    imgtools/ipad1_nand.py mbr --geometry k48-16g-v1 --system-mib 1280 $F/mbr.bin
-    imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
-        --out $F/userland --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
-    # activation_hook(FirmwareKit's activation.c CLI) on userland/pristine/system.img
-    imgtools/ipad1_nand.py build --no-whitening --epoch 2 --sig-flags 4 --geometry k48-16g-v1 --mbr $F/mbr.bin \
-        --kernelcache $F/dec/kernelcache.mach --system $F/userland/pristine/system.img \
-        --data $F/userland/pristine/data.img --out $F/nand
-    # firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-    tests/ipad1/regress.py --machine n88 --kboot $F/kboot.bin --nand $F/nand --nor <erased 1 MiB> \
-        --product-version 3.0 --checks usbmux,afc,persist --jobs 1
-    ```
+    `firmwarekit create --id n88ap-7A341` builds it (the Python recipe this listed is retired; git history at
+    5508b504b8).
 
     The home screen draws in full: the status-bar-only frames were shots taken before SpringBoard loaded its icons.
     Boot it with the modem (`baseband=on`, as regress and the app do): without one, CommCenter's SPI reset loop starves

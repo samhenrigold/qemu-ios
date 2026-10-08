@@ -38,11 +38,11 @@ is the wire contract).
 | `hw/arm/`, `include/hw/arm/` | The three machines and their peripherals, plus the shared host pieces above |
 | `contrib/it-*` | Guest helpers for the iPod (armv6, built with `contrib/armv6-toolchain`): `it-agent` (the guest agent), `it-gles` (MBX GL shim), `it-boot` (guest-package loader), `it-pasteboard`, `it-media`, `it-keybag`, `it-seal`, … each with its own README |
 | `contrib/gles-public`, `contrib/ipad1-guest`, `contrib/appsync` | the GL front end (one OpenGLES.framework replacement for every 2.x-5.x firmware, iPad and iPod; `docs/ipad1/gles-public-seam.md`); iPad-side helpers: `ipad1-guest/build.sh` builds `it_pbd` (pasteboard bridge) and the other iPad helpers for armv7 from the shared sources; the AppSync interposer dylib |
-| `contrib/guest-package` | `mkpkg.py` and `VERSION`: the versioned guest-tools package format the loader installs at boot |
+| `contrib/guest-package` | `mkpkg.c` and `VERSION`: the versioned guest-tools package format the loader installs at boot |
 | `contrib/macos-app` | `make-dylib-macos.sh` (the app's dylib), `entitlements.plist` (the app's helper entitlements), `ipod-helper.c` (the app's `ipa-chmod`) |
-| `imgtools/` | NAND/HFS/img3 tools and older one-offs. Devices are made by LightTouchMac's Swift FirmwareKit: `firmwarekit create --catalog CATALOG --id BOARD-BUILD --ipsw IPSW --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; k48ap and 4.x n72ap also take `--helper` with the LightTouchDevice executable). `device.py create` and the `*_device.py` names only translate their inputs and call it (`research/python-preparer/README.md`) |
+| `imgtools/lldb` | lldb scripting for guest debugging (`xnu.py`). Devices are made by LightTouchMac's Swift FirmwareKit: `firmwarekit create --catalog CATALOG --id BOARD-BUILD --ipsw IPSW --out OUT` (CATALOG: LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; k48ap and 4.x n72ap also take `--helper` with the LightTouchDevice executable) |
 | `manifests/` | One declared-inputs manifest per build (`ipad1-7B367/7B500/8C148`, `ipod2g-5F138/7E18/8C148`) |
-| `tests/ipod/`, `tests/ipad1/`, `tests/guest-package/` | The gates below |
+| `tests/slice/`, `tests/ipod/`, `tests/ipad1/`, `tests/guest-package/` | The gates below |
 | `scripts/ccninja`, `scripts/configure-patched-ffmpeg` | Build helpers |
 | `docs/` | Ours are the `.md` files; the `.rst`/`.txt` tree is upstream QEMU's. See "Documentation" |
 
@@ -52,7 +52,7 @@ Firmware, images and the private work area (`~/Developer/qemu-ios-files`) are ne
 
 Configure against the patched FFmpeg, not Homebrew's: the iPod H.264 bridge needs
 `contrib/ffmpeg/h264-chunk-er.patch`, and a tree linked against stock FFmpeg fails
-`tests/ipod/test_h264_snapshot.py` ("slice decode failed") while looking identical. The helper defaults
+`tests/slice/ipod-h264-slices.c` while looking identical. The helper defaults
 `FFMPEG_PREFIX` to the prefix `~/Developer/qemu-ios/build-native14` was built with.
 
 ```sh
@@ -85,36 +85,26 @@ helper ABI or the entitlements change.
 One command, three tiers:
 
 ```sh
-tests/gate.sh --quick    # host only, about a minute: every host-side unit check, in parallel
-tests/gate.sh --full     # quick + the iPod and iPad regression suites (default tiers), one after the other
-tests/gate.sh --fresh    # full + both fresh-device.sh: run when imgtools/, manifests/ or contrib/ change
+tests/gate.sh --quick    # host only: every tests/slice/*.c, tests/*/*-test.sh and the GL name table check, in parallel
+tests/gate.sh --models   # the device qtests and test-ios-baseband from the build next to QEMU
+tests/gate.sh --all      # both
 ```
 
-One line per check (PASS, FAIL, SKIP with the reason, XFAIL for a check the script lists as known failing
-on today's tree, XPASS once it passes again); non-zero exit only on FAIL; every log under the printed
-directory. Unit checks that launch the emulator, or take a NAND or a movie on the command line, are SKIP in
-every tier and are run by hand. The suites keep their own input defaults, except that the iPod suite runs with
-`--stage-gles-shim` (the gate judges this tree's host and guest shim together, not the shipping image's older
-baked shim); `QEMU=` overrides the emulator (default `build/qemu-system-arm`). The table below is what each
-tier is made of.
-
-Every headless boot passes `-audio driver=none`. The harnesses pick their own ports, write only their
-own overlays, and signal only processes they started.
+One line per check (PASS or FAIL with seconds); non-zero exit on any FAIL; every log under the printed
+directory. `QEMU=` overrides the emulator (default `build/qemu-system-arm`).
 
 | Gate | What it covers | Inputs |
 |---|---|---|
-| `tests/ipod/run-regression.sh` (= `tests/ipod/regress.py`) | The iPod suite. Default tier: `boot, fsck, persist, appinstall, applaunch, gles, agent, audio`; `--with-apps` adds `afc, usbtcp, wifi, respring, restart`; `--quick` is boot + AFC; `--checks a,b`; `--check-prereqs` lists what is missing and runs nothing. Each check guards a bug that shipped; the docstring in `regress.py` says which | `build/qemu-system-arm`, a NAND with `it_agent` (`~/Developer/qemu-ios-files/nand-current`), the usbmuxd fork and libimobiledevice tools for USB checks, `contrib/it-harness/build/Harness.ipa` for app checks |
-| `tests/ipad1/regress.py` | The iPad suite, built on the iPod harness: `boot, usbmux, afc, persist, wifi, net, audio`; opt-in `shadow`; `--device DIR` boots a `firmwarekit create` output through its own iBoot, NOR and keys | golden-pristine or a device directory, the usbmuxd fork |
-| `tests/fresh-device.sh BOARD-BUILD IPSW OUT [create options]`; `tests/ipod/fresh-device.sh IPSW OUT`, `tests/ipad1/fresh-device.sh IPSW OUT` (`ENTRY`, default n72ap-7E18 / k48ap-7B500) | A new device from the catalog entry (`firmwarekit create`), then the board's default checks (`boot,fsck,persist` on n72ap, `boot,persist` on k48ap, `boot` on n45ap). Run these when `contrib/` changes | The IPSW; `FIRMWAREKIT`, `FIRMWAREKIT_CATALOG`; `--helper` among the create options for k48ap and 4.x n72ap |
-| `python3 tests/ipod/test_*.py`, `tests/ipad1/test_*.py`, `tests/guest-package/test_*.py` | Host-only unit checks, one file at a time (about 120 under `tests/ipod`); the GLES boundary and guest-package checks compile the real C under ASan/UBSan | No emulator for most; a few `*_guest.py` boot one |
-| `tests/ipad1/boot-smoke.py`, `restore-smoke.py`, `iboot-check.py`, `app-compat.py`, `audio-check.py`, `mic-check.py`, `snapshot-check.py` | Single-purpose iPad drivers: how far a boot got, a stock restore ramdisk through SecureROM and emulated DFU/recovery USB, a boot through iBoot, the app-compatibility pass, audio out and in, a live snapshot round trip | Per docstring |
+| `tests/slice/run.sh tests/slice/<board>-<name>.c` | Host-only unit checks, one file each: the `SLICE` lines at the top name the code under test, compiled under ASan/UBSan | No emulator |
+| `tests/*/*-test.sh` | Guest-package, toolchain and loader checks | No emulator |
 
-The known-failing list at the top of `tests/gate.sh` names each unit check whose C slice or harness mock has
-fallen behind the tree, with the reason; delete a line there once its check passes again.
+Boots of prepared devices are LightTouchMac's: `swift run --package-path tests/sessions sessions single <BASE>`
+(also `phone`, `local-network`, `proxy-trust`, `helper`), and its Release plan's prepare matrix (`firmwarekit
+create` on each route, then a boot). Every headless boot passes `-audio driver=none`.
 
 The export for the app (`contrib/export-guest-artifacts.sh`, "Build" above) is gated on the LightTouchMac side:
-its `scripts/build-release.py --stage guest` runs the export from the commit pinned in `build-support/sources.json`
-and validates the staged tree against `manifest.json`; a pin bump is a LightTouchMac commit.
+its `scripts/build-guest-tools.sh` runs the export from the commit pinned in `build-support/sources.json`
+and `scripts/vendor` checks the staged tree against `manifest.json`; a pin bump is a LightTouchMac commit.
 
 ## Documentation
 

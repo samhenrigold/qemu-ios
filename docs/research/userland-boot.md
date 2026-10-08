@@ -1,4 +1,4 @@
-> Status: research, superseded by the manifest pipeline (`imgtools/device.py`, `../ipod/from-ipsw.md`) and `../ipad1/iboot.md`; the seal step it describes is `imgtools/ipad1_seal.py`.
+> Status: research, superseded by LightTouchMac's `firmwarekit create` and `../ipad1/iboot.md`. The `imgtools/*.py` and `tests/ipad1/*.py` commands below are retired; see git history at 5508b504b8.
 
 # iPad 1 / 7B500: first userland attempt (root mount → launchd → SpringBoard)
 

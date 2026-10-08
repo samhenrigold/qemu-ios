@@ -39,9 +39,9 @@ saved as command state.
 
 Tests:
 
-- `tests/ipod/test_mbx_fill.py`: source decoder under ASan/UBSan, exact output
+- `tests/ipod/test_mbx_fill.py` (retired; see git history at 5508b504b8): source decoder under ASan/UBSan, exact output
   on discontiguous synthetic pages; malformed/late-hole/MMIO/batch refusals.
-- `tests/ipod/test_mbx_fill_handler.py`: actual production handlers under
+- `tests/slice/ipod-mbx-fill-handler.c`: actual production handlers under
   ASan/UBSan, exact output and IRQ/mask/W1C, old-tail refusal, late invalid PTE,
   injected DMA failure withholding completion, reset and unsupported startup.
 - `tests/qtest/ipod-mbx-status-test.c`: actual production board DMA/pixels,

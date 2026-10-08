@@ -7,13 +7,12 @@ LightTouchMac's `LightTouchMac/Resources/firmware-catalog.json`; 4.x builds also
 
 ```
 firmwarekit create --catalog CATALOG --id n72ap-7E18 --ipsw IPSW --out OUT
-tests/ipod/fresh-device.sh IPSW OUT                            # create + boot, fsck, persist
-tests/ipod/regress.py --qemu build/qemu-system-arm --device OUT --checks boot
 ```
 
+Boot it with LightTouchMac's `swift run --package-path tests/sessions sessions single <BASE>`.
+
 `OUT` holds `nand/` (page directory), `nor.bin`, `iBoot.bin` (3.x+ only), `gid-blobs.bin`, `identity.json`
-(mode 600), `device.lock.json`, `create.log`. `regress.py --device OUT` picks all four up (explicit
-`--base-nand/--nor/--direct-iboot/--gid-blobs` win).
+(mode 600), `device.lock.json`, `create.log`. The `regress.py` runs cited below (retired; see git history at 5508b504b8) took `--device OUT`.
 
 ## Status
 
@@ -253,7 +252,7 @@ only at iBoot's 128-byte SHSH. Wrapping that SHSH reproduces the dump's image
 area exactly. With signature forging disabled, gdb reaches the stock iBoot
 entry through SecureROM and LLB; serial then reaches xnu-1228.7.27 and userland.
 The remaining screen stall at lit=9852 is independent of NOR validation.
-`tests/ipod/test_nor_wrapping.py` checks mixed/all/no wrapping and preservation
+`tests/ipod/test_nor_wrapping.py` (retired; see git history at 5508b504b8) checked mixed/all/no wrapping and preservation
 of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 
 ## Inventory: what the shipping image (nand-current.new) depends on, and where each comes from now
@@ -283,7 +282,7 @@ of signed bytes; a generated 5F138 NOR matches the traced corrected NOR exactly.
 ### Remaining emulator compatibility behavior
 
 - hw/arm/it_iboot.c (board-agnostic; the iPod machine calls it after staging iBoot) finds by
-  pattern, in any iPod touch 2G iBoot (2.1.1 .. 4.2.1, pinned by tests/ipod/test_iboot_literals.py):
+  pattern, in any iPod touch 2G iBoot (2.1.1 .. 4.2.1, pinned by tests/slice/ipod-iboot-literals.c):
   the build's security epoch
   (the floor its epoch helper applies to the chip ID fuse field: 1/2 on 2.x, 3 on iBoot-596 = 3.0,
   4 from iBoot-636 on), which the SYSIC model returns in POWER_ID[31:24] in place of the LLB's
@@ -741,7 +740,7 @@ existing model defaults and explicit fuse properties retain their behavior.
 Light Touch supplies the per-unit, seed-derived ECID for new and legacy N72
 bases; the emulator does not fabricate a USB descriptor or alter guest memory.
 
-`tests/ipod/dfu-ibss.py` uses an all-erased private NOR and a private NAND
+`tests/ipod/dfu-ibss.py` (retired; see git history at 5508b504b8) used an all-erased private NOR and a private NAND
 overlay to query stock SecureROM, upload an unmodified stock iBSS, and verify
 the same nonzero ECID in both guest-generated USB descriptors. It requires the
 emulator-only libirecovery transport adapter and preserves source storage.
@@ -1025,7 +1024,7 @@ sequencer completion fidelity follows from the selector fix.
 Research addresses identify stock artifacts for reproducible tests; they are not
 emulator runtime dispatch keys. The READ-ID programs are at file offset `0x25330`
 in 7E18 iBoot and `0x25a60` in 8C148 iBoot, captured in
-`tests/ipod/test_fmss_script.py`. Stock 5F138 kernel scripts are bulk VA
+`tests/slice/ipod-fmss-script.c`. Stock 5F138 kernel scripts are bulk VA
 `0xc05f3970` / file `0x5ca970`, read VA `0xc05f3560` / file `0x5ca560`, and status
 VA `0xc05f2520` / file `0x5c9520`.
 
@@ -1091,7 +1090,7 @@ D24 stop. D24 remains unsupported: permitting it before establishing the
 physical spare producer would expose the previously demonstrated duplicate
 spare overwrite. Trace success or program END is not a NAND completion gate.
 
-`tests/ipod/test_fmss_script_trace.py` compiles the actual trace and sequencer
+`tests/slice/ipod-fmss-script-trace.c` compiles the actual trace and sequencer
 handlers under ASan/UBSan. It compares traced/untraced guest transaction
 counts, results and output, verifies unsupported auxiliary writes are visible
 and payloads are omitted, and checks the exact record cap/single marker.

@@ -74,41 +74,22 @@ All 8 steps pass, including setup.
 
 ## How to boot
 
-Assets under `~/Developer/qemu-ios-files/n18/` (never committed): the 8C148 IPSW, its keys rendered as a
-keys page, `ipad1_fw.py` output in `dec/`.
+Assets under `~/Developer/qemu-ios-files/n18/` (never committed): the 8C148 IPSW. LightTouchMac makes and boots the
+device (the `imgtools/ipad1_*.py` steps this listed are retired; see git history at 5508b504b8):
 
 ```
 F=~/Developer/qemu-ios-files/n18
-imgtools/ipad1_fw.py $F/iPod3,1_4.2.1_8C148_Restore.ipsw $F/keys-8C148.txt $F/dec
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-imgtools/ipad1_nand.py mbr --geometry k48-16g --system-mib 1280 $F/mbr.bin
-imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
-    --out $F/userland --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl
-imgtools/ipad1_nand.py build --no-whitening --geometry k48-16g --mbr $F/mbr.bin \
-    --kernelcache $F/dec/kernelcache.mach --system $F/userland/pristine/system.img \
-    --data $F/userland/pristine/data.img --out $F/userland/nand-pristine
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-mkdir -p /tmp/n18-ovl
-build/qemu-system-arm -M n18,kboot=$F/kboot.bin,nand=$F/userland/nand-pristine,nand-overlay=/tmp/n18-ovl \
-    -display none -serial file:/tmp/n18.log
+firmwarekit create --catalog CATALOG --id n18ap-8C148 --ipsw $F/iPod3,1_4.2.1_8C148_Restore.ipsw --out $F/dev
+swift run --package-path tests/sessions sessions single $F/dev      # in LightTouchMac
 ```
 
 `--no-whitening`: the N18/N88 DTs have no `metadata-whitening`, and WMR refuses a whitened store ("Metadata
 whitening not supported"). The NAND geometry is the iPad's 16 GB Hynix part (the IOP firmware's chip table
 knows it); the unit's own part is not modeled yet.
 
-For data protection (4.x needs effaceable storage and a system keybag) build the kboot with `--nor`, make
-a device from a copy of the store and an erased 1 MiB NOR, and run the one-shot on them; for the lock screen
-to unlock, give lockdownd the activation strategy when building the system image (`ipad1_rootfs.py`'s
-`activation_hook`, as `bake --activation-hook` does):
-
-```
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-mkdir -p $F/dev; cp -cR $F/userland/nand-pristine $F/dev/nand
-python3 -c "open('$F/dev/nor.bin','wb').write(b'\xff'*0x100000)"
-# firmwarekit's keybag step (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-build/qemu-system-arm -M n18,kboot=$F/kboot-nor.bin,nand=$F/dev/nand,nand-overlay=/tmp/n18-ovl,nor-rw=$F/dev/nor.bin ...
-```
+For data protection (4.x needs effaceable storage and a system keybag) the device needs a writable NOR
+and the keybag, and for the lock screen to unlock, lockdownd needs the activation strategy; `firmwarekit
+create` makes all three.
 
 The lock screen turns the panel off after a few idle seconds and the digitizer with it (the personality's
 `DisablePowerForUILock`): press Home (`qom-set /machine button-home true`, then false) before a drag.
@@ -124,20 +105,9 @@ pasteboard work as on the iPad. `battery-level` (0-100, the D1755's ADC), `batte
 ### App install
 
 The system image needs AppSync and the GL front end (`contrib/appsync/build.sh`,
-`contrib/gles-public/build.sh` and `build-apps.sh`). Add the activation hook, then build the store and the
-keybag as above:
-
-```
-imgtools/ipad1_rootfs.py build --rootfs $F/dec/rootfs.dmg --pristine $F/dec/rootfs.dmg --mbr $F/mbr.bin \
-    --out $F/userland-app --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --appsync --gles
-python3 -c "import sys; sys.path.insert(0, 'imgtools'); import ipad1_rootfs as r, os
-d = '$F/userland-app/pristine'
-with r.Mounted(d + '/system.img', d + '/mnt-system') as m:
-    r.activation_hook('$HOOK', os.path.join(m.mnt, r.LOCKDOWND))"    # HOOK: offline-activation-8C148/patch_lockdownd.py
-# ipad1_nand.py build ... --out $F/userland-app/nand; dev3 = a copy + erased NOR; then firmwarekit's keybag step
-tests/ipad1/app-install.py --machine n18 --device $F/dev3 --kboot $F/kboot-nor-nov.bin --nor $F/dev3/nor.bin \
-    --product-version 4.2.1 --ipa Harness.ipa --gl-tap 0.5,0.165 --out $F/runs/app
-```
+`contrib/gles-public/build.sh`); `firmwarekit create` adds them and the activation hook. The
+`ipad1_rootfs.py`/`app-install.py` recipe this listed is retired (git history at 5508b504b8); the app
+check is `sessions single` (it installs an IPA; `--launch` launches it).
 
 ### iOS 3.1.3 (7E18)
 
@@ -164,22 +134,11 @@ The model side:
   error).
 - 4.2.1 passes usbmux, AFC, persist and Wi-Fi with this change (the FirmwareKit fk-dev device).
 
-```
-F=~/Developer/qemu-ios-files/n18-fw            # keys: api.ipsw.me/v4/keys/ipsw/iPod3,1/7E18, as a key page
-imgtools/ipad1_fw.py $F/iPod3,1_3.1.3_7E18_Restore.ipsw $F/keys-7E18.txt $F/dec-7E18
-imgtools/ipad1_rootfs.py build --rootfs $F/dec-7E18/rootfs.dmg --pristine $F/dec-7E18/rootfs.dmg --mbr $F/mbr.bin \
-    --out $F/userland-7E18 --lockdown none --no-usb-net --no-web-proxy --no-ca-ogl --data-block-size 8192 --data-unjournaled
-# activation_hook(offline-activation-8C148/patch_lockdownd.py) on userland-7E18/pristine/system.img, as above
-imgtools/ipad1_nand.py build --no-whitening --sig-flags 4 --geometry k48-16g --mbr $F/mbr.bin \
-    --kernelcache $F/dec-7E18/kernelcache.mach --system $F/userland-7E18/pristine/system.img \
-    --data $F/userland-7E18/pristine/data.img --out $F/userland-7E18/nand-pristine
-# firmwarekit's KBoot (Light Touch, Packages/FirmwareKit) makes this now; the Python tool is gone
-tests/ipad1/regress.py --machine n18 --kboot $F/kboot-7E18.bin --nand $F/userland-7E18/nand-pristine \
-    --product-version 3.1.3 --checks usbmux,afc,persist
-```
+The `imgtools/ipad1_*.py` and `tests/ipad1/regress.py` commands this listed are retired (git history at
+5508b504b8); `firmwarekit create --id n18ap-7E18` builds it with these differences and `sessions single`
+boots it.
 
-3.x has no data protection, so it needs no NOR and no keybag. `tests/ipad1/regress.py` now passes
-IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l8930.h2fmi,...`; the dotted
+3.x has no data protection, so it needs no NOR and no keybag. For `-global driver=s5l8930.h2fmi,...` the dotted
 `-global s5l8930.h2fmi.x=` form splits at the type name's own dot and silently does nothing.
 
 ### iOS 3.1.1 (7C145, 7C146) and 3.1.2 (7D11)
@@ -187,7 +146,7 @@ IPAD1_QEMU_EXTRA to QEMU, as boot-smoke.py does. Use it with `-global driver=s5l
 The two 3.1.1 builds and 3.1.2 pass usbmux, AFC, persist and Wi-Fi (2026-10-05), built exactly as 3.1.3
 (their restore ramdisks are 018-6115-001 for 7C146 and 018-6155-014 for 7D11; the 3.x store needs no keybag). 7C145 in detail:
 Built exactly as 3.1.3, with the same four differences (`--sig-flags 4`, the unjournaled 8 KiB data volume,
-the kboot DT guards, the unchanged 8C148 lockdownd hook): substitute 7C145 for 7E18 in the commands above
+the kboot DT guards, the unchanged 8C148 lockdownd hook): `firmwarekit create --id n18ap-7C145`
 (keys from api.ipsw.me/v4/keys/ipsw/iPod3,1/7C145). It boots to an activated home screen, and usbmux, AFC,
 persist and Wi-Fi pass (2026-10-05). It needed no model change of its own. One gesture fix came out of it:
 in about one 3.1.1 persist run in three, the touch landed on the power-off knob (its label faded) but the knob
@@ -203,7 +162,7 @@ NOR kboot, plus the keybag one-shot with the build's own restore ramdisk). Each 
 screen, and usbmux, AFC, persist and Wi-Fi pass for each (2026-10-05). 4.0, 4.1, 4.3 and 4.3.5 were also
 unlocked to the home screen by a drag. What differs per build:
 
-| Build | keybag `--ramdisk` | `ipad1_nand.py --epoch` (Restore.plist SCEP) |
+| Build | keybag ramdisk | store epoch (Restore.plist SCEP) |
 |---|---|---|
 | 4.0 8A293 | 018-6307-378-ramdisk.dmg | 1 |
 | 4.0.2 8A400 | 018-8095-012-ramdisk.dmg | 1 |
@@ -234,9 +193,8 @@ unlocked to the home screen by a drag. What differs per build:
 
 `tests/ipad1/app-install.py --machine n18` passes every step on 3.1.3, 4.0, 4.1, 4.3 and 4.3.5 (2026-10-05): install
 through installation_proxy and AppSync, icon pinned to page 1, launch, the Harness's GLES row through the
-bridge (readback PASS, no refusals), then guest power-off. Build the system image with `--appsync --gles`
-(4.x: `build4x`-style plus the keybag, as 4.2.1's "App install" recipe; 3.1.3: as its section above). Two
-tool changes:
+bridge (readback PASS, no refusals), then guest power-off. `firmwarekit create` builds the system image with them. Two
+tool changes (in the since-retired Python tools):
 - `ipad1_rootfs.py --appsync`: 3.x names installd's job `com.apple.installd`, and 4.x names it
   `com.apple.mobile.installd`. Both names are now tried.
 - app-install.py: springboardservices answers on a locked 4.0, so the icon step passed with the screen still

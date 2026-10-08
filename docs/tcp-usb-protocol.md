@@ -222,12 +222,12 @@ from 1 KB to 8 MB, and `ideviceinstaller install` completes.
 
 Note for anyone testing this: a `put` followed by a `get` therefore exercises the
 NAND model as well as this transport, and a failure is as likely to be there. To
-test the USB read path on its own, inject files into the image offline with
-`imgtools/editimg.py` and read those. Validate with SHA-256 rather than size —
+test the USB read path on its own, inject files into the image offline (formerly with
+`imgtools/editimg.py`, retired; see git history at 5508b504b8) and read those. Validate with SHA-256 rather than size —
 every bug in this area so far has produced the right size with the wrong bytes.
 ## Testing without an emulator
 
 `fake_device.py` in the host repository replays this protocol, which lets the
 backend be exercised without a five-minute boot.
-`contrib/ipod-touch-usbhost.py` in this repository is the reverse: a minimal
-host bridge that drives `reset -> enumdone -> GET_DESCRIPTOR(DEVICE)`.
+`contrib/ipod-touch-usbhost.py` (retired; see git history at 5508b504b8) was the reverse: a minimal
+host bridge that drove `reset -> enumdone -> GET_DESCRIPTOR(DEVICE)`.

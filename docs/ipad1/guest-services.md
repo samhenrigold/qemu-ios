@@ -78,12 +78,11 @@ unbridged. The source is in git history.
 
 ```
 contrib/ipad1-guest/build.sh                  # build/ipad1-guest/{it_pbd,it_prefs,...}, armv7, ldid -S
-imgtools/ipad1_rootfs.py bake OUT/pristine    # both into /usr/local/bin + their com.qemu.* jobs, root:wheel via the catalog
-imgtools/ipad1_nand.py build ...              # rebuild the store
+firmwarekit create ...                        # the device with them (was ipad1_rootfs.py bake + ipad1_nand.py build, retired)
 ```
 
 - `contrib/armv6-toolchain/armv6.sh` takes `GUEST_ARCH=armv7` (the 3.2 SDK,
-  cpusubtype 9, `-marm`). `mkold.py` turns `LC_MAIN` into `LC_UNIXTHREAD`, so
+  cpusubtype 9, `-marm`). `machotool mkold` turns `LC_MAIN` into `LC_UNIXTHREAD`, so
   this is a plain executable, not the dylib-in-`sleep` workaround from
   ../research/hw2-regs/README-native-code-on-3.2.2.md. That has not yet been proven on 3.2.2
   hardware.

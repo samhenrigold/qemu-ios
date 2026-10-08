@@ -48,7 +48,7 @@ A native Add City test searched for `Q`, displayed `Fixture City, CA`, selected
 it and persisted the exact opaque ID `ltm:37.323,-122.032:Fixture`. This confirms
 that new search results need not use Yahoo IDs.
 
-Run `python3 tests/ipod/test_stock_services_guest.py` with the built emulator,
+`tests/ipod/test_stock_services_guest.py` (retired; see git history at 5508b504b8) ran with the built emulator,
 proxy and sibling firmware/dependencies. It uses a fresh overlay and local HTTP
 fixture, saves a screenshot for forecast review, checks persisted city names,
 and requires guest-confirmed shutdown. Add `--stocks` to verify ten persisted
@@ -110,7 +110,7 @@ asks the user to remove/re-add the city. Search names are currently English.
 Unknown/missing forecast values fail the update; previous guest data is retained.
 Polar sunrise/sunset values without a valid time remain unsupported.
 
-`python3 tests/ipod/test_stock_services_guest.py --live-weather` uses a fresh
+`tests/ipod/test_stock_services_guest.py --live-weather` (retired; see git history at 5508b504b8) used a fresh
 guest, captures the initial Fahrenheit screen, searches Cupertino, adds the new
 city, switches to Celsius and checks the display preference and persisted six-day
 forecasts for all cities. Stock Weather retains Fahrenheit data and converts

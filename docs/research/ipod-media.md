@@ -101,11 +101,11 @@ buffer has independent ownership and requires an acknowledged completion.
 Runnable checks (the PCM reference is decoded from the actual source movie):
 
 ```sh
-python3 tests/ipod/test_amc_aac.py
-python3 tests/ipod/test_codec_clock.py
-ffmpeg -i Intro.mov -vn -ar 44100 -ac 2 -f s16le reference.pcm
-python3 tests/ipod/test_pcm_capture.py capture.pcm reference.pcm
+tests/slice/run.sh tests/slice/ipod-amc-aac.c
+tests/slice/run.sh tests/slice/ipod-codec-clock.c
 ```
+
+The PCM capture comparison (`test_pcm_capture.py`) is retired; see git history at 5508b504b8.
 
 The AAC check uses ASan/UBSan against the actual C helpers, including a cyclic
 DMA chain, DRAM boundary rejection, bounded buffering of 1000 frames, independent
@@ -170,7 +170,7 @@ handling or exact hardware error status.
 Success reports `0x1074=1`, errors `=2`; `0x10c0=0` clears IRQ. Software-reset
 bits at `0x1004` self-clear. No successful completion is reported on failure.
 
-`tests/ipod/test_h264_reader.py` checks the MMIO reader under ASan/UBSan.
+`tests/slice/ipod-h264-reader.c` checks the MMIO reader under ASan/UBSan.
 `tests/ipod/test_h264_native.py` compares the actual native bridge and every
 DMA pixel against original native decoding. It derives short-term reference
 lists and weighted duplicates from ffmpeg-parsed original headers, and covers
@@ -289,9 +289,9 @@ input formats, or hardware-exact chroma filtering/rounding. Unsupported jobs
 report an error and complete without modifying their output; that completion
 prevents deadlock but is not a claim that the transfer was rendered correctly.
 
-`tests/ipod/test_scaler.py` checks conversion, padding, invalid DMA, interrupt
+`tests/slice/ipod-scaler.c` checks conversion, padding, invalid DMA, interrupt
 mask/ack and reset under ASan/UBSan. Native graphics checks are
-`test_gles_context.py`, `test_gles_surface.py`, and `test-gles-boundaries.py`.
+`tests/slice/ipod-gles-context.c`, `tests/slice/ipod-gles-surface.c`, and `test-gles-boundaries.py`.
 The first scaler-enabled guest (`83691`) decoded all 180 movie frames but
 sampled stale imported textures, producing black video. The subsequent texture
 refresh change remains under guest validation. Its shutdown check failed while
@@ -320,7 +320,7 @@ AppleM2CLCD at `c05e3640..c05e3efc` in the 7E18 kernel:
   transition quad. RGB controls use premultiplied BGRA in window 2.
 
 The register bank is latched at vblank and included in LCD VMState version 2.
-The sanitizer check is `python3 tests/ipod/test_lcd_planes.py`. It covers NV12
+The sanitizer check is `tests/slice/run.sh tests/slice/ipod-lcd-planes.c`. It covers NV12
 conversion, rotated scanout, premultiplied controls, stride padding and invalid
 DMA. A private guest run in `/tmp/it-blitz-spore-85097` displays moving decoded
 color-pattern video throughout all six seconds, with the status bar visible.
@@ -373,7 +373,7 @@ writing voltage commands to `18/20`; starts use 1 or 3, and the driver polls
 busy bit 0 before reusing the channel. The new `ipodtouch.swi` device completes
 those commands synchronously, preserving configuration and command words.
 It models the firmware handshake, not voltage waveform timing or host voltage.
-`python3 tests/ipod/test_swi.py` checks repeated commands on both channels.
+`tests/slice/run.sh tests/slice/ipod-swi.c` checks repeated commands on both channels.
 
 With that fix, `/tmp/it-blitz-spore-86217` plays the original MPEG-4 intro with
 correct controls and orientation, then successfully answers both SSH and
@@ -559,7 +559,7 @@ but exposes a separate audio channel-alignment defect: the second clip matches
 only after shifting the native capture by one S16 sample. The I2S ring is cleared
 on reset while its lifetime byte counter survives; using that counter to pad
 the next FIFO reset inserts an incorrect half-frame. Alignment now follows the
-retained ring position. `tests/ipod/test_i2s_alignment.py` covers stale lifetime
+retained ring position. `tests/slice/ipod-i2s-alignment.c` covers stale lifetime
 counts, true partial frames, and ring wrap. Repeat `98666` passes both complete
 264,821-frame stereo clips at native capture offsets 2,443,814 and 5,016,569,
 with maximum error one S16 step. All 360 video frames remain byte-exact, USB
@@ -592,7 +592,7 @@ and left/right enables in bits 1/0. The model now handles those controls and
 their gain table, with host PCM scaling, clipping and a bounded
 `IT_I2S_GAIN_DB` calibration override. The raw I2S tap remains before amplification;
 native unity comparisons require accounting for output gain. Amplifier checks
-are in `tests/ipod/test_audio_volume.py`. Native run `201` matches independently
+are in `tests/slice/ipod-audio-volume.c`. Native run `201` matches independently
 scaled I2S samples exactly at 15 stable windows covering +6, +4, +2, 0, −4, −6,
 −10 and −16 dB and the return to +2 dB. Its entire final 5.5 seconds also matches,
 so the end of the clip is not cut off by amplifier shutdown. USB and clean guest
@@ -642,7 +642,7 @@ the offline result at sample 108,544 (`2770`, `2839`, `2928`, `2977`). Priming
 or enlarging the probe's buffer did not fix that ordering bug. AMC now publishes
 the queued PCM before returning input ownership; error completions likewise
 follow valid queued output and the final error buffer. The actual timer path
-is covered in `tests/ipod/test_amc_aac.py`.
+is covered in `tests/slice/ipod-amc-aac.c`.
 
 Fixed run `3096` matches all 278,528 stereo output frames of the physical LC
 reference within one S16 step. The checked-in probe repeats both selections
@@ -677,7 +677,7 @@ queue boundary. Reopening happens on the existing device timer, outside the
 audio callback's voice iteration. Reset discards the queue; new writes replace
 metadata along with their samples.
 
-`tests/ipod/test_audio_volume.py` executes the real push/drain/rate-change path
+`tests/slice/ipod-audio-volume.c` executes the real push/drain/rate-change path
 and covers partial frames, ring wrap and later control changes. Clock checks
 still require immediate DMA pacing changes while host playback retains queued
 formats. Native repeat `3859` passes all 264,822 resampled MP3 output frames,
@@ -698,7 +698,7 @@ enabling playback does not make active decoder/graphics state migratable.
 
 ### H.264 reference identity across slices
 
-`tests/ipod/test_h264_slices.py` reproduces a later slice changing its active
+`tests/slice/ipod-h264-slices.c` reproduces a later slice changing its active
 reference list. The original continuation key included the list order/count,
 so a valid change failed before decoding. Continuations now match physical
 Y/UV plane pairs to the picture's initially seeded DPB and explicitly reorder
@@ -796,7 +796,7 @@ then all 180 weighted CABAC pictures. The concatenated NV12 capture matches
 both references byte-for-byte, with no bit-reader exhaustion. USB remains
 responsive and native PMU shutdown completes successfully.
 
-`tests/ipod/make_h264_pcm_movie.py output.mov` reproduces the PCM fixture
+`tests/ipod/make_h264_pcm_movie.py output.mov` (retired; see git history at 5508b504b8) reproduced the PCM fixture
 without firmware or game assets and writes independently constructed pixels to
 `output.nv12`. It verifies the movie with an ordinary FFmpeg decode. Optional
 `--audio source.mov` copies an existing audio track for combined playback tests.
@@ -825,9 +825,8 @@ harness also writes actual hardware units. A weighted, four-reference,
 multi-slice movie encoded with `-x264-params
 'bframes=0:ref=4:weightp=1:deblock=6,-6:slice-max-mbs=70:keyint=180:scenecut=0'`
 failed on its first frame before the fix; afterward all 180 frames match
-VideoToolbox exactly. Run the comparison with the patched FFmpeg prefix:
-`PKG_CONFIG_PATH=build-native14/prefix/lib/pkgconfig python3
-tests/ipod/test_h264_native.py movie.mov --software`.
+VideoToolbox exactly. The comparison ran with the patched FFmpeg prefix through
+`tests/ipod/test_h264_native.py --software` (retired; see git history at 5508b504b8).
 
 Guest run `15490` writes +12/-12 into the deblocking registers and produces
 all 180 offset-test frames exactly, followed by 180 exact constrained-intra
@@ -867,7 +866,7 @@ proportionally longer. Old version-1 snapshots lack this decoder history and
 cannot recover an in-flight decode. This does not remove the separate live-GL
 snapshot blocker.
 
-`test_amc_aac.py` compares uninterrupted/restored non-silent AAC samples and a
+`tests/slice/ipod-amc-aac.c` compares uninterrupted/restored non-silent AAC samples and a
 1,000-frame DMA with unread codec frames, including PCM backpressure, alternating
 slots, final completion, malformed input and replay-limit behavior under
 ASan/UBSan. `test_amc_snapshot.py` exercises real VMState into a fresh process
@@ -895,7 +894,7 @@ Older version 1/2 snapshots cannot reconstruct an active reference chain; their
 next successful I-picture establishes a new complete history. Saved/current
 MPVD decode mode compatibility remains enforced.
 
-`python3 tests/ipod/test_mpvd_replay.py` generates an MPEG-4 I/P clip using
+`tests/slice/run.sh tests/slice/ipod-mpvd-replay.c` generates an MPEG-4 I/P clip using
 ffmpeg and compares uninterrupted versus restored native VideoToolbox pixels.
 It also checks zero guest writes during replay, both retention limits, recovery,
 and malformed packet/configuration state under ASan/UBSan. The separate

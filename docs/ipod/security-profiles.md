@@ -58,7 +58,7 @@ to this project; catalog GID decryption keys are a separate issue.
 Reproducible local diagnostic metadata (no private keys or firmware payload exports):
 `~/Developer/ltm-fidelity/evidence/ltm-evm-startup-next/n72_fuse_cert_proof.py` and
 `n72-fuse-cert-proof.json`. Source model test
-`tests/ipod/test_n72_security_profile.py` exercises actual production transformation
+`tests/slice/ipod-n72-security-profile.c` exercises actual production transformation
 under ASan/UBSan across all SDOM values and both oscillator/secure-input values.
 The actual-board `ipod-chipid-test` adds CPFM03/01/00, readonly writes, warm reset
 and QOM immutability. Root rebuilt the actual board suite and all four cases

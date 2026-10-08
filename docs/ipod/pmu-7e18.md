@@ -175,10 +175,10 @@ Fractional levels survive individual ADC polls and v4 migration. Older saved
 states restore with drain disabled. The macOS battery-config bridge queues all
 three controls on the emulator thread and retains the older two-argument ABI.
 
-`test_pmu_adc.py` exercises fractional drain, pause, cable/charging changes,
-bounds, old/current restore and malformed migration. `test_battery_bridge.py`
-checks input bounds and queued delivery. `test_battery_guest.py` uses an isolated
-native guest and reads IOPMPowerSource through the read-only `itbattery` helper.
+`tests/slice/ipod-pmu-adc.c` exercises fractional drain, pause, cable/charging changes,
+bounds, old/current restore and malformed migration. `tests/slice/ipod-battery-bridge.c`
+checks input bounds and queued delivery. `test_battery_guest.py` (retired; see git history at 5508b504b8) used an isolated
+native guest and read IOPMPowerSource through the read-only `itbattery` helper.
 
 Native discharge acceptance passes at `/tmp/it-battery-drain-native-v5.log`.
 7E18 may defer ADC measurements indefinitely when externally powered but

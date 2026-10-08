@@ -18,6 +18,8 @@ The screenshots above are retained in the repository.
 
 ## Collecting evidence
 
+The ledger harness below is retired; see git history at 5508b504b8.
+
 ```
 python3 tests/ipod/regress.py --ledger /path/to/ipas --out /path/to/new-evidence
 ```

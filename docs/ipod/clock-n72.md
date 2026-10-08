@@ -137,7 +137,7 @@ frequency unchanged had no native SDIV-nonzero evidence and is removed.
 The bootloader software arithmetic supports the revised contract; analog
 measurement, settling latency and dynamic gate propagation remain unmodeled.
 
-`test_n72_clock_reference.py` executes the production derivation with ASan/UBSan:
+`tests/slice/ipod-n72-clock-reference.c` executes the production derivation with ASan/UBSan:
 both fuse references, bypass with dividers, all eight PLL0 SDIV values, auxiliary
 PLL divisors, independent 27 MHz input, missing fuse link and invalid/disabled
 selected PLLs pass. The actual-board qtest now covers default epoch0, explicit

@@ -1,4 +1,4 @@
-> Status: research, superseded by `../ipad1/iboot.md` and `tests/ipad1/restore-smoke.py` (stock restore over emulated USB works).
+> Status: research, superseded by `../ipad1/iboot.md` (stock restore over emulated USB works).
 
 I have gathered enough concrete evidence. Let me compile the report as my final answer without further low-level binary carving.
 

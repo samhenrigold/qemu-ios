@@ -21,7 +21,7 @@ button input through QMP. The masked event survives until INT2M is enabled;
 GPIO source 0x55 (group 2 bit 21) then asserts VIC source 0x1f. Parent ACK cannot
 consume the PMU's level; reading INT2 clears it; the falling edge relatches it.
 The qtest also checks all five power-on masks and all five clear event banks.
-`test_pmu_adc.py` covers the five independent banks and D1759 regression.
+`tests/slice/ipod-pmu-adc.c` covers the five independent banks and D1759 regression.
 
 Reset clears the configured shutdown register (N45 0x0c), rather than treating
 0x0a, its INT4M, as the D1759 shutdown register. VMState version 5 retains the

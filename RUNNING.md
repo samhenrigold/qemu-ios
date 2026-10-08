@@ -6,7 +6,7 @@ Linux compatibility is currently unstable. Efforts are underway to improve it.
 
 **This file documents the generic build/run path and predates this fork's
 current target.** This fork's day-to-day device is an iOS **3.1.3** image, run
-headless by LightTouchMac and `tests/ipod/regress.py` — see the top-level
+headless by LightTouchMac (`sessions single`) — see the top-level
 `README.md`. The build instructions, USB device mode, shutdown, and offline
 filesystem-editing sections below are still accurate; the specific example
 output (`ProductVersion: 2.1.1`, `BuildVersion: 5F138`) reflects the 2.1.1
@@ -171,7 +171,7 @@ Start the emulator with a QMP monitor and shut it down with:
 
 ```
 build/qemu-system-arm -M iPod-Touch,... -qmp unix:/tmp/it.sock,server,nowait
-contrib/it-poweroff.sh /tmp/it.sock
+printf '{"execute":"qmp_capabilities"}{"execute":"system_powerdown"}' | nc -U /tmp/it.sock
 ```
 
 **Do this before stopping the emulator if you care about anything the guest
@@ -212,17 +212,10 @@ continuously).
 The emulator serves NAND pages straight out of `cs<N>/<page>.page` with no ECC or
 spare-area validation, and the guest volume is a single unjournaled HFSX. So the
 filesystem can be edited from the host without going through the emulator's
-flash write path at all. `imgtools/editimg.py` does the whole round trip:
-
-```
-python3 imgtools/editimg.py --nand <page dir> --script <shell script>
-```
-
-It reassembles the volume into a flat image, attaches and mounts it read-write,
-runs your script with `$MNT` pointing at the mount, unmounts, checks the result
-with `fsck_hfs`, and writes only the changed blocks back. Nothing is written back
-unless fsck passes, and it refuses to touch the golden image — always work on a
-copy.
+flash write path at all. `imgtools/editimg.py` did the whole round trip (retired; see git history at
+5508b504b8). It reassembled the volume into a flat image, attached and mounted it read-write,
+ran a script with `$MNT` pointing at the mount, unmounted, checked the result
+with `fsck_hfs`, and wrote only the changed blocks back.
 
 This is what makes offline app injection work. A bundle dropped into
 `/Applications` is discovered and launches; the installation cache does not need
@@ -240,15 +233,9 @@ silently fail to launch.
 
 `nand=` is not a dump of real flash. It is a synthetic image: one HFSX volume
 laid across the four chip-selects by the closed-form formula in
-`imgtools/ftlmap.py`, plus the GPT and a handful of FTL/VFL bookkeeping pages
-that the formula does not cover. `imgtools/build_nand.py` is the generator.
-
-```
-python3 imgtools/build_nand.py \
-    --rootfs "<IPSW>/018-6481-015.dmg" --key <RootFS key> \
-    --kernelcache "<IPSW>/kernelcache.release.s5l8720x" \
-    --out $F/nand-7e18
-```
+`imgtools/ftlmap.py` (retired), plus the GPT and a handful of FTL/VFL bookkeeping pages
+that the formula does not cover. Devices are now made by LightTouchMac's `firmwarekit create`; the
+`imgtools/build_nand.py` generator described below is retired (see git history at 5508b504b8).
 
 Apple ships the root filesystem DMG as a *bare* HFSX volume — no partition map,
 4096-byte allocation blocks — which is exactly the shape `dumpvol.py` and
@@ -288,8 +275,8 @@ uid/gid 0 offline afterwards.
 
 ## Injecting code into SpringBoard, and getting output back
 
-`imgtools/patch_launchd_env.py` edits a launchd job's plist inside the image:
-`--set` adds `EnvironmentVariables` entries, `--set-key` sets top-level keys.
+`imgtools/patch_launchd_env.py` (retired, like `itdrive.py` below; see git history at 5508b504b8) edited a
+launchd job's plist inside the image: `--set` adds `EnvironmentVariables` entries, `--set-key` sets top-level keys.
 
 Setting `DYLD_INSERT_LIBRARIES` on SpringBoard works — dyld loads the library
 immediately after the main executable and runs its initializers, which is the
@@ -302,6 +289,7 @@ Because the device has no shell, the way to see a job's output is to redirect it
 to a file and read that file back off the host:
 
 ```
+# retired tools, as they were used; see git history at 5508b504b8
 python3 imgtools/patch_launchd_env.py --nand <copy> \
     --plist com.apple.SpringBoard.plist \
     --set DYLD_INSERT_LIBRARIES=/usr/lib/libstdc++.6.dylib \
