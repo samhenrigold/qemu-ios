@@ -62,31 +62,7 @@
 
 #define QC_GLES 0x140
 
-#define QC_GLES_INLINE_ARGS 4
-
-/* Mirrors qemu_call_t: call_number(4) + args(32) + retval(8) + error(8) = 52,
- * packed. Frozen -- see include/hw/arm/guest-services/general.h. */
-typedef struct __attribute__((packed)) {
-    unsigned int call_number;
-    union {
-        struct __attribute__((packed)) {
-            unsigned int slot;
-            unsigned int ctx;
-            unsigned int argc;
-            unsigned int spill;
-            unsigned int args[QC_GLES_INLINE_ARGS];
-        } gles;
-        struct __attribute__((packed)) {        /* qc_ag_args_t: the hello (QC_GLES_HELLO) */
-            unsigned int buffer_guest_ptr;
-            unsigned int offset;
-            unsigned int length;
-            unsigned long long token;
-            unsigned int pad[3];
-        } ag;
-    };
-    long long retval;
-    long long error;
-} qemu_call_t;
+#include "../armv6-toolchain/qemu-call.h"
 
 /* The 3.1.3 dispatch layout, whose slot numbers are the wire ids below 822: the hand-written
  * thunks below are registered by that number. The firmware's own layout (822, 826 or 841
@@ -194,7 +170,7 @@ static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args
         q.gles.spill = (unsigned)(unsigned long)spill;
     }
 
-    __asm__ __volatile__("mcr p15, 3, %0, c15, c15, 0" : : "r"(&q) : "memory");
+    qemu_call_trap(&q);
     return q.retval;
 }
 

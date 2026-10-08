@@ -24,15 +24,7 @@ extern void _exit(int);
 #define QC_GLES_PING       0x141
 #define QC_GLES_PING_MAGIC 0x6a17c0deLL
 
-/* Mirrors qemu_call_t exactly, same as contrib/it-kbd-agent does:
- * call_number(4) + args(32) + retval(8) + error(8) = 52 bytes packed.
- * The args union is frozen at 32 bytes -- see general.h for why. */
-typedef struct __attribute__((packed)) {
-    unsigned int  call_number;
-    unsigned char args[32];
-    long long     retval;
-    long long     error;
-} qemu_call_t;
+#include "qemu-call.h"
 
 static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; return n; }
 static void w(const char *s) { write(1, s, slen(s)); }
@@ -51,7 +43,7 @@ int main(void)
     volatile qemu_call_t qc;
     unsigned i;
 
-    for (i = 0; i < sizeof(qc.args); i++) qc.args[i] = 0;
+    for (i = 0; i < sizeof(qc.raw); i++) qc.raw[i] = 0;
     qc.call_number = QC_GLES_PING;
     qc.retval = 0x0badf00dLL;   /* sentinel: only the host can change this */
     qc.error  = 0;
@@ -60,8 +52,7 @@ int main(void)
 
     /* The register's writefn receives the value we write, and qemu_call() treats
      * it as the guest VA of the request struct. */
-    __asm__ __volatile__("mcr p15, 3, %0, c15, c15, 0"
-                         : : "r"(&qc) : "memory");
+    qemu_call_trap(&qc);
 
     w("PL0: mcr returned (so it did not fault)\n");
     w("PL0: retval="); wx((unsigned long long)qc.retval); w("\n");

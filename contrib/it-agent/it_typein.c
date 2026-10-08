@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include "../armv6-toolchain/qemu-call.h"
 extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 
@@ -45,16 +46,11 @@ static unsigned tree_nodes;
 
 static int64_t call(unsigned op, void *buffer, unsigned offset, unsigned length)
 {
-    struct __attribute__((packed)) {
-        uint32_t op, address, offset, length;
-        uint64_t token;
-        uint8_t pad[12];
-        int64_t result,error;
-    } q;
+    qemu_call_t q;
     memset(&q,0,sizeof(q));
-    q.op=op;q.address=(uint32_t)buffer;q.offset=offset;q.length=length;q.token=(op>=0x167 && op<=0x169) ? cookie : 0;
-    __asm__ volatile("mcr p15, 3, %0, c15, c15, 0" : : "r"(&q) : "memory");
-    return q.result;
+    q.call_number=op;q.ag.buffer=(uint32_t)buffer;q.ag.offset=offset;q.ag.length=length;q.ag.token=(op>=0x167 && op<=0x169) ? cookie : 0;
+    qemu_call_trap(&q);
+    return q.retval;
 }
 
 static int responds(ID object,const char *selector)

@@ -174,7 +174,7 @@ typedef struct __attribute__((packed)) {
 
 // The guest agents that use this protocol are compiled separately and shipped
 // *inside NAND images* (contrib/it-kbd-agent is already injected into images we
-// cannot rebuild). They hardcode this layout as
+// cannot rebuild). They hardcode this layout (contrib/armv6-toolchain/qemu-call.h) as
 // call_number(4) + args(32) + retval(8) + error(8) = 52.
 //
 // So the args union's size is frozen. Adding a request whose args struct is

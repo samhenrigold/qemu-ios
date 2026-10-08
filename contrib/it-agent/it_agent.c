@@ -47,18 +47,7 @@ typedef long long int64_t;
 #define QC_PB_WRITE  0x153
 #define QC_PB_COMMIT 0x154
 
-/* Matches qemu_call_t exactly: call_number(4) + args(32) + retval(8) +
- * error(8) = 52. Frozen -- see the note in general.h. */
-typedef struct __attribute__((packed)) {
-    uint32_t call_number;
-    uint32_t arg_buffer;
-    uint32_t arg_offset;
-    uint32_t arg_length;
-    unsigned long long token;
-    unsigned char pad[12];
-    int64_t  retval;
-    int64_t  error;
-} qemu_call_t;
+#include "../armv6-toolchain/qemu-call.h"
 
 static unsigned long long agent_token;
 
@@ -71,12 +60,11 @@ static int64_t qc(uint32_t call, void *buf, uint32_t off, uint32_t len)
         p[i] = 0;
     }
     q.call_number = call;
-    if (call >= 0x160) q.token = agent_token;
-    q.arg_buffer = (uint32_t)buf;
-    q.arg_offset = off;
-    q.arg_length = len;
-    void *a = &q;
-    __asm__ volatile("mcr p15, 3, %0, c15, c15, 0" : : "r"(a) : "memory");
+    if (call >= 0x160) q.ag.token = agent_token;
+    q.ag.buffer = (uint32_t)buf;
+    q.ag.offset = off;
+    q.ag.length = len;
+    qemu_call_trap(&q);
     return q.retval;
 }
 

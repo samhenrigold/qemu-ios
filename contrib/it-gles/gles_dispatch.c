@@ -365,13 +365,13 @@ static long long gles_hello(void)
 {
     volatile qemu_call_t q;
     q.call_number = QC_GLES_HELLO;
-    q.ag.buffer_guest_ptr = 0;
+    q.ag.buffer = 0;
     q.ag.offset = GLES_HELLO_PROTO;
     q.ag.length = 0;
     q.ag.token = GLES_NAMES_VERSION;
     q.retval = 0;
     q.error = 0;
-    __asm__ __volatile__("mcr p15, 3, %0, c15, c15, 0" : : "r"(&q) : "memory");
+    qemu_call_trap(&q);
     return q.retval;
 }
 

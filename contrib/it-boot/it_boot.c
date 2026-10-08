@@ -77,30 +77,19 @@ enum {
 #include <sys/sysctl.h>
 #include <sys/mount.h>
 
-/* qemu_call_t with the qc_ag_args_t arguments: 52 bytes, frozen (general.h). */
-typedef struct __attribute__((packed)) {
-    uint32_t call_number;
-    uint32_t buffer;
-    uint32_t offset;
-    uint32_t length;
-    uint64_t token;
-    unsigned char pad[12];
-    int64_t retval;
-    int64_t error;
-} qemu_call_t;
+#include "../armv6-toolchain/qemu-call.h"
 
 static int64_t qc(uint32_t op, void *buf, uint32_t off, uint32_t len, uint64_t token)
 {
     qemu_call_t q;
     memset(&q, 0, sizeof(q));
     q.call_number = op;
-    q.buffer = (uint32_t)(uintptr_t)buf;
-    q.offset = off;
-    q.length = len;
-    q.token = token;
+    q.ag.buffer = (uint32_t)(uintptr_t)buf;
+    q.ag.offset = off;
+    q.ag.length = len;
+    q.ag.token = token;
     q.retval = -1;          /* an emulator that ignores the call leaves this */
-    void *a = &q;
-    __asm__ volatile("mcr p15, 3, %0, c15, c15, 0" : : "r"(a) : "memory");
+    qemu_call_trap(&q);
     return q.retval;
 }
 
