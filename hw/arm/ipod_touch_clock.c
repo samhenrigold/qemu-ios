@@ -60,6 +60,17 @@ static void ipod_touch_clock_update(IPodTouchClockState *s)
     clock_update_hz(s->pclk, hz);
 }
 
+/*
+ * The 0x3e000000 block's CONFIG3[2:0] picks what address 0 shows. 7E18's LLB
+ * writes 3 (the boot ROM) as it starts and 1 before it jumps to 0 to resume
+ * the kernel through the vector the kernel left at the base of DRAM; iBoot
+ * writes 1 before it starts the kernel. Only that block's "remap" is wired.
+ */
+static void ipod_touch_clock_update_remap(IPodTouchClockState *s)
+{
+    qemu_set_irq(s->remap, (s->config3 & 7) == 1);
+}
+
 static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     if (clock_trace()) {
@@ -81,6 +92,7 @@ static void s5l8900_clock_write(void *opaque, hwaddr addr, uint64_t val, unsigne
             break;
         case CLOCK_CONFIG3:
             s->config3 = val;
+            ipod_touch_clock_update_remap(s);
             break;
         case CLOCK_CONFIG4:
             s->config4 = val;
@@ -227,6 +239,7 @@ static void s5l8900_clock_init(Object *obj)
     IPodTouchClockState *s = IPOD_TOUCH_CLOCK(dev);
 
     s->pclk = qdev_init_clock_out(dev, "pclk");
+    qdev_init_gpio_out_named(dev, &s->remap, "remap", 1);
     memory_region_init_io(&s->iomem, obj, &clock_ops, s, "clock", 0x80);
 }
 
@@ -263,11 +276,13 @@ static void ipod_touch_clock_reset(DeviceState *dev)
         s->pllmode = 0x000a003a;
     }
     ipod_touch_clock_update(s);
+    ipod_touch_clock_update_remap(s);
 }
 
 static int ipod_touch_clock_post_load(void *opaque, int version_id)
 {
     ipod_touch_clock_update(opaque);
+    ipod_touch_clock_update_remap(opaque);
     return 0;
 }
 

@@ -84,6 +84,9 @@ typedef struct Pcf50633State {
     bool exton1;           /* PCF50635 wake input level; both edges latch INT2 */
 	uint8_t backlight_enable_reg, backlight_enable_bit, backlight_level_reg, backlight_led_reg;   /* "backlight-*" */
     qemu_irq irq;
+    qemu_irq ap_power;     /* "ap-power" out: the AP's rails, 0 while it hibernates */
+    bool ap_off;           /* hibernating: the AP is unpowered, DRAM in self-refresh */
+    bool ap_waking;        /* a wake asked for the AP's power-on reset; the PMU keeps its state */
     QEMUTimer *adc_timer;
     uint16_t adc_values[16];
     uint16_t adc_sample;
@@ -123,6 +126,11 @@ typedef struct Pcf50633State {
 #define PMU_SHUTDOWN_GO  0x01
 #define PMU_STANDBY_CMD  0x6f
 #define PMU_STANDBY_GO   0x90
+/* Power command bit 1: hibernate ("pmu go hib"). 7E18 writes 0x0a = 0x0a after
+ * 0x6f = 0x80; 4.x on the D1755 sets 0x26 in 0x0d. The AP's rails go off, DRAM
+ * and the PMU stay up, and a wake powers the AP on into its boot ROM. */
+#define PMU_HIBERNATE_GO 0x02
+#define PMU_EVENT_B_HIB_WAKE 0x80   /* latched as a wake powers the AP on */
 
 #define PMU_EVENT_A_REG 0x01   // read-to-clear interrupt status (block 0x01..0x03)
 #define PMU_EVENT_C_REG 0x03   // EVENT_C: holds the wake-button interrupt bits

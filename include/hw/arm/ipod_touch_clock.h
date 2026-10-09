@@ -68,6 +68,7 @@ typedef struct IPodTouchClockState
     bool        s5l8720;  /* root controller at 0x3c500000, not the secondary block */
     IPodTouchChipIDState *chipid; /* physical reference selector fuse */
     Clock       *pclk;    /* derived peripheral clock */
+    qemu_irq    remap;    /* "remap" out: CONFIG3[2:0] == 1, DRAM at address 0 */
 
 } IPodTouchClockState;
 

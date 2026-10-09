@@ -9,7 +9,7 @@
  * SLICE include/hw/arm/ipod_touch_pcf50633_pmu.h define PMU_
  * SLICE hw/arm/ipod_touch_pcf50633_pmu.c range static const uint16_t battery_curve | unsigned pcf50633_adc_for_level(
  * SLICE include/hw/arm/ipod_touch_pcf50633_pmu.h typedef Pcf50633State
- * SLICE hw/arm/ipod_touch_pcf50633_pmu.c fn pmu_event_base pmu_event_count pmu_mask_base pmu_update_irq pmu_latch_event pcf50633_adc_for_level pmu_charge_active pmu_apply_battery_adc pcf50633_update_battery pmu_bcd pmu_bcd_rtc_read pcf50633_recv
+ * SLICE hw/arm/ipod_touch_pcf50633_pmu.c fn pmu_event_base pmu_event_count pmu_mask_base pmu_set_ap_power pmu_update_irq pmu_latch_event pcf50633_adc_for_level pmu_charge_active pmu_apply_battery_adc pcf50633_update_battery pmu_bcd pmu_bcd_rtc_read pcf50633_recv
  */
 #include <assert.h>
 #define trace_event_get_state_backends(id) 0

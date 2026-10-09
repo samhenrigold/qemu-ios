@@ -301,6 +301,8 @@ typedef struct {
     bool lcd_planes;
     bool forge_sigcheck, forge_sigcheck_explicit;
     char direct_iboot[PATH_MAX], direct_llb[PATH_MAX];
+    MemoryRegion dram_at_zero;   /* DRAM's base, shown at 0 by the remap */
+    bool resume_boot;   /* the next reset is the PMU powering the AP on from hibernate */
     uint32_t panel_w, panel_h;   /* "panel=WxH": opt-in larger panel (0: the shipped 320x480) */
     char gid_blobs[PATH_MAX];
     bool aes_uid_engine;             /* aes-uid=engine; see ipod_touch_aes.c AES_GO */

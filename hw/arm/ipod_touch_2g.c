@@ -19,6 +19,8 @@
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "target/arm/cpregs.h"
+#include "target/arm/arm-powerctl.h"
+#include "target/arm/multiprocessing.h"
 #include "qemu/error-report.h"
 #include "qemu/cutils.h"
 #include "net/util.h"
@@ -1389,16 +1391,26 @@ static void ipod_touch_cpu_reset(void *opaque)
     IPodTouchMachineState *nms = IPOD_TOUCH_MACHINE((MachineState *)opaque);
     ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
+    bool resume = nms->resume_boot;
 
+    nms->resume_boot = false;
     nms->compat_command_line = 0;
-    ipod_agent_reset(nms->agent);
-    guest_pkg_reset(&nms->pkg);
-    gles_host_set_debug(nms->gles_debug);
-    gles_host_reset();
+    if (!resume) {
+        /* Across a hibernate the guest's side of these lives on in DRAM. */
+        ipod_agent_reset(nms->agent);
+        guest_pkg_reset(&nms->pkg);
+        gles_host_set_debug(nms->gles_debug);
+        gles_host_reset();
+    }
     cpu_reset(cs);
+    /* The remap comes out of reset showing the ROM; drop the DRAM alias now,
+     * before the ROM is staged through the address space into its place. */
+    memory_region_set_enabled(&nms->dram_at_zero, false);
     ipod_touch_load_bootrom(nms);
 
-    if (nms->direct_iboot[0]) {
+    /* A wake runs the real chain even when the cold boot substituted iBoot:
+     * the ROM loads LLB from NOR, and LLB is what resumes the kernel. */
+    if (nms->direct_iboot[0] && !resume) {
         /* Boot-chain substitution: enter the decrypted iBoot directly, skipping
          * the bootrom + LLB signature/personalization checks. */
         ipod_touch_load_direct_boot(nms);
@@ -1411,6 +1423,32 @@ static void ipod_touch_cpu_reset(void *opaque)
     //env->regs[0] = 0x9000000;
     //cpu_set_pc(CPU(cpu), LLB_BASE + 0x100);
     //cpu_set_pc(CPU(cpu), VROM_MEM_BASE);
+}
+
+/*
+ * The PMU's AP rail. Off (hibernate): the CPU stops where the kernel parked it.
+ * On (a wake): the SoC takes a power-on reset into its boot ROM, DRAM intact.
+ */
+static void ipod_touch_ap_power(void *opaque, int n, int on)
+{
+    IPodTouchMachineState *nms = opaque;
+
+    if (on) {
+        nms->resume_boot = true;
+        if (nms->sdio_state) {
+            nms->sdio_state->ap_waking = true;
+        }
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    } else {
+        arm_set_cpu_off(arm_cpu_mp_affinity(nms->cpu));
+    }
+}
+
+static void ipod_touch_remap(void *opaque, int n, int dram)
+{
+    IPodTouchMachineState *nms = opaque;
+
+    memory_region_set_enabled(&nms->dram_at_zero, dram);
 }
 
 static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem, AddressSpace *nsas)
@@ -1439,6 +1477,12 @@ static void ipod_touch_memory_setup(MachineState *machine, MemoryRegion *sysmem,
      * runs on every reset -- see the note there. */
     allocate_ram(sysmem, "vrom", 0x0, 0x20000);
     ipod_touch_load_bootrom(nms);
+    /* ponytail: the remap shows DRAM over the ROM's 128 KiB window only; the
+     * resume trampoline needs 0xb0 bytes. Widen if a guest reads further. */
+    memory_region_init_alias(&nms->dram_at_zero, NULL, "dram-at-zero", insecure,
+                             0, 0x20000);
+    memory_region_set_enabled(&nms->dram_at_zero, false);
+    memory_region_add_subregion_overlap(sysmem, VROM_MEM_BASE, &nms->dram_at_zero, 1);
 }
 
 static char *ipod_touch_get_bootrom_path(Object *obj, Error **errp)
@@ -3137,6 +3181,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->clock1 = clock1_state;
     memory_region_add_subregion(sysmem, CLOCK1_MEM_BASE, &clock1_state->iomem);
     it_realize_into_qom_tree(dev);
+    qdev_connect_gpio_out_named(dev, "remap", 0,
+                                qemu_allocate_irq(ipod_touch_remap, nms, 0));
 
     // init the timer
     dev = qdev_new("ipodtouch.timer");
@@ -3418,6 +3464,8 @@ static void ipod_touch_machine_init(MachineState *machine)
     nms->pmu_state->charging_mode = nms->battery_charging;
     qdev_connect_gpio_out(DEVICE(pmu), 0,
                          qdev_get_gpio_in(DEVICE(sysic_state), PMU_WAKE_IRQ));
+    qdev_connect_gpio_out_named(DEVICE(pmu), "ap-power", 0,
+                                qemu_allocate_irq(ipod_touch_ap_power, nms, 0));
 
     // init the accelerometer. Keep the handle so the machine's QMP properties
     // (accel-orientation / accel-x/y/z / accel-shake, added in instance_init)

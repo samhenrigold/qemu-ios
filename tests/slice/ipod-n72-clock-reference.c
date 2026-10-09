@@ -12,6 +12,7 @@
 typedef struct { int unused; } SysBusDevice;
 typedef struct { int unused; } MemoryRegion;
 typedef struct { uint64_t hz; } Clock;
+typedef void *qemu_irq;
 static void clock_update_hz(Clock *c, uint64_t hz) { c->hz = hz; }
 #include "slice.h"
 static uint64_t frequency(IPodTouchClockState *s) {

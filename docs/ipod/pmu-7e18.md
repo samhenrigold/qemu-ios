@@ -123,7 +123,27 @@ The 100-percent fresh-voltage check reported BootCapacityEstimate 100 at 4199 mV
 while charging the guest deliberately caps CurrentCapacity at 95 until charge
 completion. Runtime voltage changes retain the native measurement/filter delay.
 
-## Suspend-to-RAM handoff (investigation)
+## Hibernate and wake (modeled)
+
+The wake now runs the hardware's own path. The power command's bit 1 (`0x0a = 0x0a`)
+turns the AP off (the CPU stops instead of spinning). A Home or Hold press, or an
+event the guest left unmasked, turns it back on: the PMU latches EVENT_B bit 7 and
+keeps all its registers, and the SoC takes a power-on reset with DRAM intact. That
+reset goes into the boot ROM even when the cold boot used `direct-iboot`. The ROM
+loads LLB from NOR, and LLB resumes the kernel. The BCM4325 keeps its state across
+that reset.
+
+The 7E18 LLB steps that decide this:
+- 0x22000f32 reads EVENT_B first. With bit 7 set, the boot reason is 2, and
+  power_is_suspended (0x22000f98) keeps `0x6f`'s marker instead of clearing it.
+- 0x22000734 checks 'XSOM'/'PSUS' at 0x08000080 and validates the iBootSleepValid
+  token at 0x08000090.
+- 0x22007468(4) writes `0x3e00000c[2:0] = 1`, which puts DRAM at address 0, and
+  then jumps to 0, which is the kernel's trampoline.
+
+The history below records how this was found.
+
+## Suspend-to-RAM handoff (investigation, superseded above)
 
 Removing the demo preferences for both auto-dim and auto-lock allows actual
 system sleep after USB detach. In `/tmp/it-blitz-spore-60361`, 7E18 disables the

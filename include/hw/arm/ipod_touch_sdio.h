@@ -387,6 +387,7 @@ typedef struct IPodTouchSDIOState
      * function 1 and the card interrupt are its. */
     struct Mrvl8686State *mrvl;
     bool card_irq_level;
+    bool ap_waking;        /* the next reset is the AP's power-on from hibernate */
 
     uint8_t sdiod_regs[SDIOD_CORE_SIZE];
     /*

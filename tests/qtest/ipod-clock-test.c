@@ -188,6 +188,47 @@ static void restored_clock(void)
     unlink(state);
 }
 
+/*
+ * The 0x3e000000 block's CONFIG3[2:0] = 1 shows DRAM's base at address 0 (LLB's
+ * jump into the kernel's resume vector); anything else, and reset, the ROM.
+ */
+#define REMAP 0x3e00000cULL
+#define DRAM 0x08000000ULL
+
+static void dram_at_zero(void)
+{
+    g_autofree char *state = NULL;
+    g_autofree char *uri = NULL;
+    int fd = g_file_open_tmp("n72-remap-state-XXXXXX", &state, NULL);
+    QTestState *q = start_board(), *to;
+
+    g_assert_cmpint(fd, >=, 0); close(fd);
+    uri = g_strdup_printf("file:%s", state);
+    qtest_writel(q, DRAM, 0xe28ff044);
+    g_assert_cmphex(qtest_readl(q, 0), ==, 0);
+    qtest_writel(q, REMAP, 1);
+    g_assert_cmphex(qtest_readl(q, 0), ==, 0xe28ff044);
+    qtest_writel(q, REMAP, 3);
+    g_assert_cmphex(qtest_readl(q, 0), ==, 0);
+    qtest_writel(q, REMAP, 1);
+    /* A reset puts the ROM back at 0 without staging it over DRAM. */
+    qtest_qmp_assert_success(q, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readl(q, 0), ==, 0);
+    g_assert_cmphex(qtest_readl(q, DRAM), ==, 0xe28ff044);
+    /* The mapping follows the register through a snapshot. */
+    qtest_writel(q, REMAP, 1);
+    qtest_qmp_assert_success(q, "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_migration(q);
+    qtest_quit(q);
+    to = qtest_initf("-machine iPod-Touch,bootrom=%s,nor=%s,nand=%s "
+                     "-incoming defer -display none -audio driver=none -nic none", rom, nor, nand);
+    qtest_qmp_assert_success(to, "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    wait_migration(to);
+    g_assert_cmphex(qtest_readl(to, 0), ==, 0xe28ff044);
+    qtest_quit(to);
+    unlink(state);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *zero = g_malloc0(1048576);
@@ -204,6 +245,7 @@ int main(int argc, char **argv)
     qtest_add_func("/ipod/clock/peripheral-frequency", peripheral_clock);
     qtest_add_func("/ipod/clock/epoch-one-bypass", epoch_one_bypass);
     qtest_add_func("/ipod/clock/restored-frequency", restored_clock);
+    qtest_add_func("/ipod/clock/dram-at-zero", dram_at_zero);
     result = g_test_run();
     unlink(rom); unlink(nor); rmdir(nand);
     g_free(rom); g_free(nor); g_free(nand);

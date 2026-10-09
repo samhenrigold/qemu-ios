@@ -1544,6 +1544,16 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
     IPodTouchSDIOState *s = IPOD_TOUCH_SDIO(dev);
     SDPCMFrame *f;
 
+    /*
+     * The card is its own chip on its own rail: hibernating the AP leaves it
+     * powered, and 3.1.3's AppleBCM4325 talks to it again on wake without a
+     * firmware download. ponytail: the host controller's registers are kept
+     * too; the kernel reprograms them as it resumes.
+     */
+    if (s->ap_waking) {
+        s->ap_waking = false;
+        return;
+    }
     s->cmd = s->arg = s->state = s->stac = s->csr = 0;
     s->resp0 = s->resp1 = s->resp2 = s->resp3 = 0;
     s->irq_reg = s->irq_pending = s->irq_mask = 0;

@@ -63,6 +63,31 @@ static unsigned pmu_mask_base(Pcf50633State *s)
     return s->rtc_bcd ? PMU_IRQ_MASK_A : PMU_EVENT_A_REG + 2 * s->event_count;
 }
 
+/*
+ * The AP's power, which the PMU switches. Hibernate turns it off; the next
+ * wake turns it on, and the SoC comes up through its boot ROM and LLB, which
+ * find the suspend marker the kernel left (0x6f, and its resume vector in
+ * DRAM) and resume the kernel instead of booting. The PMU itself stays
+ * powered across that power-on reset: its events tell the kernel why it woke.
+ */
+static void pmu_set_ap_power(Pcf50633State *s, bool on)
+{
+    /* Boards that don't wire the AP's rail (the 1G's PCF50633, the D1755
+     * boards for now) keep the CPU parked where the kernel left it. */
+    if (!s->ap_power || s->ap_off != on) {
+        return;
+    }
+    s->ap_off = !on;
+    s->ap_waking = on;
+    if (on) {
+        /* EVENT_B bit 7 says the AP came up out of hibernate. 7E18's LLB reads
+         * EVENT_B first; with the bit set it keeps 0x6f's suspend marker and
+         * resumes, without it it clears the marker and boots (LLB 0x22000f32). */
+        s->regs[PMU_EVENT_A_REG + 1] |= PMU_EVENT_B_HIB_WAKE;
+    }
+    qemu_set_irq(s->ap_power, on);
+}
+
 static void pmu_update_irq(Pcf50633State *s)
 {
     uint8_t pending = 0;
@@ -72,6 +97,10 @@ static void pmu_update_irq(Pcf50633State *s)
                    ~s->regs[pmu_mask_base(s) + i];
     }
     qemu_set_irq(s->irq, pending != 0);
+    /* An event the guest left unmasked wakes a hibernating AP. */
+    if (pending && s->ap_off) {
+        pmu_set_ap_power(s, true);
+    }
 }
 
 static void pmu_latch_event(Pcf50633State *s, unsigned event, uint8_t bits)
@@ -373,6 +402,11 @@ void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
     // iOS reads the event block (read-to-clear above), so it survives a quick
     // press/release until the guest's PMU interrupt handler consumes it.
     pmu_latch_event(s, PMU_EVENT_C_REG, bits);
+    /* The wake buttons power the AP on whatever the masks say: 7E18 goes to
+     * sleep with both masked in EVENT_C (0x09 = 0xab). */
+    if (s->ap_off) {
+        pmu_set_ap_power(s, true);
+    }
 }
 
 static bool guest_shutdown_confirmed;
@@ -431,6 +465,11 @@ static int pcf50633_send(I2CSlave *i2c, uint8_t data)
         if (data & PMU_SHUTDOWN_GO) {
             s->shutdown_armed = false;
             pcf50633_guest_shutdown();
+        } else if ((data & PMU_HIBERNATE_GO) && s->ap_power) {
+            /* The power transition consumes the command, as it does standby's
+             * (see pcf50633_reset): LLB rewrites this register as it wakes. */
+            s->regs[reg] &= ~PMU_HIBERNATE_GO;
+            pmu_set_ap_power(s, false);
         }
     } else if (reg >= pmu_mask_base(s) && reg < pmu_mask_base(s) + pmu_event_count(s)) {
         pmu_update_irq(s);
@@ -461,6 +500,7 @@ static void pcf50633_init(Object *obj)
 {
     Pcf50633State *s = PCF50633(obj);
     qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->ap_power, "ap-power", 1);
     s->adc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pmu_adc_complete, s);
     /* 7E18: channel 2 thermistor (about 10 kohm), channel 4 battery voltage
      * (2500 + counts * 2000 / 1024 mV), channel 6 USB charger identification.
@@ -484,6 +524,12 @@ static void pcf50633_reset(DeviceState *dev)
 {
     Pcf50633State *s = PCF50633(dev);
     pcf50633_update_battery(s);
+    if (s->ap_waking) {
+        /* The AP's power-on reset; the PMU was up all along. */
+        s->ap_waking = false;
+        return;
+    }
+    s->ap_off = false;
     timer_del(s->adc_timer);
     /* The power-on transition consumes the standby command. Leaving 0x90
      * latched makes iBoot re-enter its charging/standby path after Power On. */
@@ -537,7 +583,7 @@ static void pcf50633_finalize(Object *obj)
  * press outstanding restores with it still outstanding. */
 static const VMStateDescription vmstate_pcf50633 = {
     .name = "pcf50633",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = pcf50633_post_load,
     .fields = (const VMStateField[]) {
@@ -558,6 +604,7 @@ static const VMStateDescription vmstate_pcf50633 = {
         VMSTATE_UINT64_V(drain_level_bits, Pcf50633State, 4),
         VMSTATE_INT64_V(drain_updated_ns, Pcf50633State, 4),
         VMSTATE_BOOL_V(exton1, Pcf50633State, 5),
+        VMSTATE_BOOL_V(ap_off, Pcf50633State, 6),
         VMSTATE_END_OF_LIST()
     }
 };

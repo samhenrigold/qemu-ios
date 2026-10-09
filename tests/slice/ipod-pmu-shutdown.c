@@ -2,7 +2,7 @@
  *
  * SLICE:pmu include/hw/arm/ipod_touch_pcf50633_pmu.h define PMU_
  * SLICE:pmu include/hw/arm/ipod_touch_pcf50633_pmu.h typedef Pcf50633State
- * SLICE hw/arm/ipod_touch_pcf50633_pmu.c fn pmu_event_count pmu_mask_base pmu_update_backlight pcf50633_guest_shutdown_confirmed pcf50633_guest_shutdown pcf50633_send
+ * SLICE hw/arm/ipod_touch_pcf50633_pmu.c fn pmu_event_count pmu_mask_base pmu_set_ap_power pmu_update_backlight pcf50633_guest_shutdown_confirmed pcf50633_guest_shutdown pcf50633_send
  */
 #include <assert.h>
 #define trace_event_get_state_backends(id) 0
@@ -23,6 +23,7 @@ static int shutdowns;
 #include "pmu.h"
 static bool pmu_trace(void) { return false; }
 static void pmu_update_irq(Pcf50633State *s) {}
+static void qemu_set_irq(qemu_irq irq, int level) {}
 static void pmu_adc_command(Pcf50633State *s, uint8_t value) {}
 static void pmu_trace_access(const char *what, uint8_t reg, uint8_t val) {}
 static void lcd_changebrightness(uint8_t val) {}
