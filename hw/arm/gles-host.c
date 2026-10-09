@@ -4806,6 +4806,18 @@ static char *gles_es2_glsl(const char *src)
     return g_string_free(out, false);
 }
 
+/* In ES 2.0 a vertex shader's gl_PointSize sizes a point and gl_PointCoord is defined for it; a legacy desktop context
+ * does neither until VERTEX_PROGRAM_POINT_SIZE and POINT_SPRITE are on (it drew every point one pixel wide). An ES 2.0
+ * context has no way to switch either off, so they go on with the program. (An ES host has neither switch.) */
+static void gles_es2_use_program(GLuint program)
+{
+#ifdef GL_VERTEX_PROGRAM_POINT_SIZE
+    glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
+#endif
+    glUseProgram(program);
+}
+
 static bool gles_es2_write(CPUState *cpu, uint32_t ptr, const void *data, size_t n)
 {
     return ptr && gles_guest_rw(cpu, ptr, (uint8_t *)data, n, 1) == 0;
@@ -5231,7 +5243,7 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
         }
         break;
     }
-    case 600: glUseProgram(a[0]); break;       /* gh.program set above */
+    case 600: gles_es2_use_program(a[0]); break;   /* gh.program set above */
     case 601: glValidateProgram(a[0]); break;
 
     case 602: glUniform1f(a[0], gles_f(a[1])); break;
