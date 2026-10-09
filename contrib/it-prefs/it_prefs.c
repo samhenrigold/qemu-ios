@@ -67,6 +67,7 @@ struct passwd {   /* Darwin's, up to pw_dir */
 };
 extern struct passwd *getpwnam(const char *);
 
+#define CF_FRAMEWORK "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 #define SPRINGBOARD "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
 #define BACKBOARDD  "/usr/libexec/backboardd"   /* 6.x+: owns the backlight and the light sensor */
 #define LOCATIOND   "/usr/libexec/locationd"
@@ -176,7 +177,7 @@ static const void **yes, **no;
 
 static int cf_load(void)
 {
-    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", 2);
+    void *cf = dlopen(CF_FRAMEWORK, 2);
 
     if (!cf || !(str_ = dlsym(cf, "CFStringCreateWithCString")) || !(get = dlsym(cf, "CFPreferencesCopyAppValue"))
         || !(equal = dlsym(cf, "CFEqual")) || !(set = dlsym(cf, "CFPreferencesSetAppValue"))
@@ -280,7 +281,38 @@ static int mc_never(const void *feature)
  *   Auto-Brightness off: com.apple.springboard SBEnableALS (1.x-5.x) or com.apple.backboardd BKEnableALS
  *                  (6.x+) = false, whichever the owner names.
  *   Battery %      com.apple.springboard SBShowBatteryPercentage = false when SpringBoard names it.
+ * backboardd reads BKEnableALS once, at launch, and this job runs after that (on 7.x even the seal boot
+ * halts before it), so that boot's backboardd kept Auto-Brightness on and set the Home screen to 0.975 of
+ * the slider's 1.0 (n90 7.1.2: AppleARMBacklight userValue 63898). 6.x+ turn it off live as Settings'
+ * PSBrightnessSettingsDetail does, through BackBoardServices' BKSDisplayBrightnessSetAutoBrightnessEnabled,
+ * and set Brightness to 1.0 for the running backboardd too (BKSDisplayBrightnessSet): its slider still
+ * holds the 0.5 it started with, which it otherwise restores at the next display wake (n81 6.1.6).
+ * 1.x-5.x need nothing: SpringBoard there takes SBEnableALS in the same boot (k48 9B206, prepared before
+ * this set existed, reaches the full level on the boot that writes it).
  */
+#define BBS_FRAMEWORK "/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices"
+static void backboardd_now(float level)
+{
+    void *bbs = dlopen(BBS_FRAMEWORK, 2), *cf = dlopen(CF_FRAMEWORK, 2);
+    void (*autob)(unsigned char) = bbs ? dlsym(bbs, "BKSDisplayBrightnessSetAutoBrightnessEnabled") : 0;
+    const void *(*begin)(const void *) = bbs ? dlsym(bbs, "BKSDisplayBrightnessTransactionCreate") : 0;
+    void (*brightness)(float, int) = bbs ? dlsym(bbs, "BKSDisplayBrightnessSet") : 0;
+    void (*release)(const void *) = cf ? dlsym(cf, "CFRelease") : 0;
+    const void *transaction;
+
+    if (!autob || !begin || !brightness || !release) {
+        say("BackBoardServices has no brightness calls; Auto-Brightness and Brightness wait for backboardd's next launch", "", "");
+        return;
+    }
+    autob(0);   /* refused without com.apple.backboard.displaybrightness (it_prefs-entitlements.xml) */
+    /* Inside a brightness transaction; with 1 as the second argument the level outlasts the next display
+     * sleep and wake (n81 6.1.6: AppleARMBacklight enables at 0x7b3 afterwards, not the 0.5's 0x632). */
+    transaction = begin(0);
+    brightness(level, 1);
+    if (transaction)
+        release(transaction);
+    say("Auto-Brightness off and Brightness at maximum now in backboardd", "", "");
+}
 static void defaults2(const void *mine)
 {
     static const struct { const char *reader, *domain, *key; enum kind kind; } D2[] = {
@@ -303,6 +335,8 @@ static void defaults2(const void *mine)
             continue;
         set(str(D2[i].key), D2[i].kind == STRING ? num(0, 12, &full) : *no, domain);   /* kCFNumberFloatType */
         say(D2[i].key, sync(domain) ? " set in " : " not saved in ", D2[i].domain);
+        if (D2[i].reader == BACKBOARDD && D2[i].kind == FALSE)
+            backboardd_now(full);
     }
     set(marker, *yes, mine);
     sync(mine);

@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- profiled (4.x, 5.x) serves only entitled clients; Settings carries the same key. -->
+<!-- profiled (4.x, 5.x) serves only entitled clients; Settings carries the same key.
+     backboardd (6.x+) turns Auto-Brightness off only for this one (_BKHIDXXSetAutoDisplayBrightnessEnabled). -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.backboard.displaybrightness</key>
+	<true/>
 	<key>com.apple.managedconfiguration.profiled-access</key>
 	<true/>
 </dict>
