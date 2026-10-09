@@ -16,20 +16,27 @@ struct IPodSWIState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint32_t regs[0x1000 / 4];
-    bool backlight;     /* "backlight": channel 0x20 drives the backlight (the S5L8930's) */
+    bool backlight;     /* "backlight": this SWI drives the backlight (the S5L8930's) */
+    uint8_t iset;               /* "iset-command": the DT's command-iset */
+    uint32_t backlight_word;    /* the last current-set word sent, on either channel */
 };
 
 /*
- * The A4's backlight level, for the host: the last word sent on channel 0x20 (started through 0x1c) is 0b111
- * followed by the 11-bit level code. 4.x/5.x ramp it to 0x7ff, 6.x/7.x step it through the DT's
- * backlight-table (0x7b3 at the top on the n90); channel 0x18 is the core voltage.
- * ponytail: the level as last sent. The driver's state across the D1815's WLED enable (0x50 bit 6) is not
- * modeled: 7.1.2 can enable it at a new level (its kernel logs one) without a word on this channel.
+ * The A4's backlight level, for the host. AppleSamsungSWI (11D257 kext at 80a36000) sends a word either
+ * synchronously (0x18, started through 0x14: it waits for 0x14's busy bit first) or not (0x20, started
+ * through 0x1c), the same encoding on both (80a376d0): bits 0-6 are data 0-6, bit 7 is always 1, bits 8-11
+ * are data 7-10 and bits 12-14 the command: the DT's command-iset for the backlight current (the board's
+ * "iset-command": 1 on the K48, 3 on the N81 and N90) or command-vsel (6) for the core voltage.
+ * AppleARMBacklight sends its enable and disable levels on the synchronous channel and its ramps on the
+ * other, so the level is the last current-set word started on either. n90 iBoot's 0x3cc1 decodes to the
+ * 0x641 the kernel then logs; 4.x/5.x ramp to 0x7ff, 6.x/7.x step through the DT's backlight-table
+ * (0x7b3 at the top on the n90).
  */
 static int swi_backlight_level(void *opaque)
 {
-    uint32_t word = ((IPodSWIState *)opaque)->regs[0x20 / 4];
-    return (word >> 11) == 7 ? (int)(word & 0x7ff) : -1;
+    IPodSWIState *s = opaque;
+    uint32_t word = s->backlight_word;
+    return word && ((word >> 12) & 7) == s->iset ? (int)((word & 0x7f) | ((word >> 1) & 0x780)) : -1;
 }
 
 static uint64_t swi_read(void *opaque, hwaddr addr, unsigned size)
@@ -43,6 +50,10 @@ static void swi_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     IPodSWIState *s = opaque;
     s->regs[addr / 4] = value;
     if ((addr == 0x14 || addr == 0x1c) && (value == 1 || value == 3)) {
+        uint32_t word = s->regs[(addr + 4) / 4];
+        if (s->backlight && ((word >> 12) & 7) == s->iset) {
+            s->backlight_word = word;
+        }
         /* ponytail: synchronous voltage-command completion. Model bus timing
          * if software needs pulse timing; host CPU voltage is never changed. */
         s->regs[addr / 4] &= ~1u;
@@ -63,14 +74,16 @@ static void swi_reset(DeviceState *dev)
         ios_backlight_register(swi_backlight_level, s);
     }
     memset(s->regs, 0, sizeof(s->regs));
+    s->backlight_word = 0;
 }
 
 static const VMStateDescription vmstate_swi = {
     .name = TYPE_IPOD_SWI,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodSWIState, 0x1000 / 4),
+        VMSTATE_UINT32_V(backlight_word, IPodSWIState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -84,6 +97,7 @@ static void swi_init(Object *obj)
 
 static const Property swi_properties[] = {
     DEFINE_PROP_BOOL("backlight", IPodSWIState, backlight, false),
+    DEFINE_PROP_UINT8("iset-command", IPodSWIState, iset, 0),
 };
 
 static void swi_class_init(ObjectClass *klass, const void *data)

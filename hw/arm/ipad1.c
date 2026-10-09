@@ -129,6 +129,8 @@ typedef struct A4Board {
     bool vibrator;
     uint8_t vibrator_pwm;
     uint16_t vibrator_enable;
+    /* The SWI command that sets the backlight current: the DT's swi command-iset (K48 1, N81 and N90 3). */
+    uint8_t swi_iset;
 } A4Board;
 
 /* iPad 1 (K48AP): values measured on the real unit unless said otherwise. */
@@ -208,6 +210,7 @@ static const A4Board a4_k48 = {
     .accel_flipped = true,
     .bt_uart = 3,                        /* uart3/bluetooth,n88 */
     .gauge_uart = 5,
+    .swi_iset = 1,
     .gauge_mah = 6500,                   /* DesignCapacity from ioreg */
     /* K48 USI board: the CIS strings pick AppleBCMWLAN's "K48 USI X17B" personality. */
     .wifi_board = "P=K48 m=u80",
@@ -254,6 +257,7 @@ static const A4Board a4_n81 = {
     .accel_mount = "-2,-1,3",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
+    .swi_iset = 3,
     .wifi_board = "P=N81",
     /* n81.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:39:39 */
     .wifi_fw_version = "wl0: Oct 13 2010 15:39:39 version 4.221.38.1",
@@ -303,6 +307,7 @@ static const A4Board a4_n90 = {
     .compass_orientation = 4,
     .bt_uart = 3,
     .gauge_uart = 5,
+    .swi_iset = 3,
     .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
     .wifi_board = "P=N90 V=u",               /* AppleBCMWLAN's "N90 USI - 4329 B1" */
     /* n90.bin in the 8C148 rootfs: 4.221.38.1, Wed 2010-10-13 15:40:46 */
@@ -1604,6 +1609,7 @@ static void ipad1_init(MachineState *machine)
     {
         DeviceState *swi = qdev_new("ipodtouch.swi");
         qdev_prop_set_bit(swi, "backlight", true);
+        qdev_prop_set_uint8(swi, "iset-command", s->board->swi_iset);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(swi), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(swi), 0, S5L8930_SWI_BASE);
     }
