@@ -427,6 +427,7 @@ int main(void) {
     memset(aperture, 0, sizeof(aperture));
     IPodTouchAMCState a = {.buf_base = AMC_BUF_BASE, .rev21 = true, .codec_decode = true,
                            .result_offset = AMC_RESULT_OFFSET_21, .dma_done = AMC_DMA_DONE_21};
+    a.int_mask[0] = AMC_E0_DONE | AMC_DMA_DONE_21 | 0x1000;      /* the sources 3.2 and later enable */
     a.regs[0x940/4]=0x84006e00; a.regs[0x960/4]=0xc600b800;
     a.regs[0x964/4]=0x848cba5d; a.regs[0x968/4]=0xc013f7fb;
     stw_le_p(aperture+0x1ff00,7); stw_le_p(aperture+0x1ff06,4);
@@ -469,6 +470,62 @@ int main(void) {
     ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x34602, 4);
     assert(ldl_le_p(aperture+0x34900+17*4)==0x5a5a0000);       /* the 18th link ran */
     amc_decoder_close(&a);
+    /* The parameter block names the codec, not the DE's memory windows. */
+    uint8_t block[12] = {0x1f,0,0,0,0,0,0x44,0xac,0,0,0,0};    /* n90ap-10B329's ringtone */
+    assert(amc_aac_rate(block) == 4);
+    block[6] = 0x22; block[7] = 0x56; assert(amc_aac_rate(block) == 7);           /* 22050 */
+    block[10] = 1; assert(amc_aac_rate(block) == -1); block[10] = 0;
+    block[0] = 7; block[6] = 4; block[7] = 0; assert(amc_aac_rate(block) == 4);  /* 7E18's LC form */
+    block[6] = 13; assert(amc_aac_rate(block) == -1);
+    const uint8_t alac_block[12] = {0x1f,0,0,0,16,0,40,0,14,0,10,0};
+    assert(amc_aac_rate(alac_block) == -1);
+    block[0] = 1; assert(amc_aac_rate(block) == -1);                             /* MP3's */
+    /* iOS 6's AAC program (n90ap-10B329, n88ap-10B500): its own windows, the rate in Hz, 8 KiB slots
+     * of which a frame fills half. It decodes, and a frame goes to the slot its job names. */
+    memset(aperture, 0, sizeof(aperture));
+    IPodTouchAMCState b = {.buf_base = AMC_BUF_BASE, .rev21 = true, .codec_decode = true,
+                           .result_offset = AMC_RESULT_OFFSET_21, .dma_done = AMC_DMA_DONE_21};
+    b.int_mask[0] = 0x111000;                                   /* as 10B329 enables them */
+    static const uint32_t ios6[] = { 0x83007020,0,0,0,0,0,0,0, 0xc6000000,0x85fc4001,0x85fc4221,
+                                     0xc6807823,0x8554a844,0x8220d455,0,0xc013f7fb };
+    memcpy(b.regs+0x940/4, ios6, sizeof(ios6));
+    assert(amc_program(&b) == AMC_UNKNOWN && amc_output_capacity(amc_program(&b)) == 4096);
+    stw_le_p(aperture+0x1ff00,0x1f); stw_le_p(aperture+0x1ff06,44100);
+    unsigned tone3 = tone_sizes[0]+tone_sizes[1]+tone_sizes[2];
+    memcpy(aperture+0x20400,tone,tone3);
+    stl_le_p(aperture+0x20004,tone3<<16 | 0x11); stl_le_p(aperture+0x20008,0x20400);
+    b.regs[0x100/4]=0x20002;
+    amc_decode_tick(&b);
+    d=b.decoder; assert(d && !d->failed && d->rate == 44100 && d->pcm->len >= 2048);
+    assert(!b.port_len);                                        /* no frame without a job */
+    static const uint32_t list6[] = { 0x34420,0x00140101,0x3448c,0x303060, 0,0x00040001,0x344a0,0x303060 };
+    for (unsigned i=0;i<8;i++) stl_le_p(aperture+0x34404+(i/4)*0x1c+(i%4)*4,list6[i]);
+    static const uint32_t job6[] = { 0, 0x2000, 0x1a100, 0, AMC_PORT_LOCAL_21, 3 };
+    for (unsigned i=0;i<6;i++) stl_le_p(aperture+0x3448c+i*4,job6[i]);
+    ipod_touch_amc_write(&b, AMC_E0_HEAD, 0x34406, 4);
+    assert(b.xfers == 1);
+    unsigned frame = GPOINTER_TO_UINT(g_queue_peek_head(&d->output_sizes));
+    amc_decode_tick(&b);
+    assert(!b.xfers && b.port_len == 0x2000);                  /* the whole second slot */
+    assert(lduw_le_p(aperture+0x18000+0x10) == frame/2);       /* its count: one frame */
+    assert(!memcmp(b.port, aperture+0x1a100, frame) && d->cursor == frame);
+    amc_decoder_close(&b);
+    /* 3.1 on the 3GS (n88ap-7E18) runs AMC 2.1 without engine 0: it enables the DE's completion and
+     * takes each frame from its slot, as AMC 2.0 does. */
+    memset(aperture, 0, sizeof(aperture));
+    b.int_mask[0] = 0x101004; b.xfers = b.port_len = 0; b.pending = 0;
+    memcpy(b.regs+0x940/4, (uint32_t[]){0x84006e00}, 4); memset(b.regs+0x944/4, 0, 0x38);
+    b.regs[0x960/4]=0xc600b800; b.regs[0x964/4]=0x848cba5d; b.regs[0x968/4]=0xc013f7fb;
+    assert(amc_program(&b) == AMC_AAC);
+    stw_le_p(aperture+0x1ff00,7); stw_le_p(aperture+0x1ff06,4);
+    memcpy(aperture+0x20400,tone,tone3);
+    stl_le_p(aperture+0x20004,tone3<<16 | 0x11); stl_le_p(aperture+0x20008,0x20400);
+    b.regs[0x100/4]=0x20002;
+    amc_decode_tick(&b);
+    d=b.decoder; assert(d && d->pcm->len && (b.pending & 4) && !b.port_len);
+    assert(lduw_le_p(aperture+0x18000+0xa) == 1 && lduw_le_p(aperture+0x18000+0xc));
+    amc_decoder_close(&b);
+    puts("PASS: iOS 6's AAC program by its parameter block, slots of its jobs' size; 3.1's AMC 2.1 collection");
     puts("PASS: AMC 2.1 layout, engine-local input and engine 0 collection into the output port");
     puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");
     puts("PASS: AAC-LC/HE-AAC/MP3/ALAC, PCM layout/backpressure, DMA bounds and stream restart");

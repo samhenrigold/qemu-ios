@@ -145,8 +145,9 @@ static bool amc_trace(void)
     TRACE_PRINTF(trace_ipod_touch_amc_log, "[AMC] " fmt, ##__VA_ARGS__); } } while (0)
 
 #ifdef IT_HAVE_AVCODEC
-/* ponytail: HLE of the 7E18 AAC-LC/HE-AAC, MP3 and ALAC decoder programs. Other DE
- * programs need their buffer/parameter contract mapped before use. */
+/* ponytail: HLE of the 7E18 AAC-LC/HE-AAC, MP3 and ALAC decoder programs, and of any
+ * other program whose stream parameters are AAC's (amc_aac_rate). Other DE programs
+ * need their buffer/parameter contract mapped before use. */
 typedef enum AMCProgram {
     AMC_UNKNOWN = -1, AMC_MP3, AMC_AAC, AMC_HEAAC, AMC_ALAC,
 } AMCProgram;
@@ -232,10 +233,15 @@ static void amc_replay_received(AMCDecoder *d)
 
 static AMCProgram amc_program(IPodTouchAMCState *s)
 {
-    /* These are DE program entry/configuration words, not app identifiers.
-     * Initialization runs before the stream's parameter block is populated.
-     * Match the complete nonzero program descriptor, rather than guessing
-     * a codec from the first compressed input or the previous stream. */
+    /* 0x938 + 4 * n are the DE's 18 memory windows (AppleAMC-176 c07fc244
+     * packs each: bit 31 valid, bits 28:18 an aperture page, 17:9 and 8:0
+     * the program's pages). The driver loads them with a program, so they
+     * place a program, not name a codec, and they move between builds: iOS
+     * 6's AAC decoder has its own (0x940 = 0x83007020). These are 7E18's
+     * programs, whose output contracts differ (amc_output_capacity).
+     * Initialization runs before the stream's parameter block is populated,
+     * so any other layout is AMC_UNKNOWN: it takes AAC's contract, and its
+     * stream decodes only if its parameter block is AAC's (amc_aac_rate). */
     if (AMC_REG(0x940) == 0x84007e00 && AMC_REG(0x944) == 0xa000ac40 &&
         AMC_REG(0x960) == 0xc6008000 && AMC_REG(0x964) == 0x84fc8241 &&
         AMC_REG(0x968) == 0xc600c043 && AMC_REG(0x96c) == 0x8464e464 &&
@@ -260,9 +266,40 @@ static AMCProgram amc_program(IPodTouchAMCState *s)
     return AMC_UNKNOWN;
 }
 
+/*
+ * The sample rate in an AAC decoder's parameter block (block + AMC_PARAMS), as
+ * an index into amc_rates, or -1 if it is not an AAC block. Its first halfword
+ * says which fields follow. 7E18's AAC-LC program takes a rate index at +6
+ * (fields 7); its HE-AAC program and iOS 6's AAC program take the rate in Hz
+ * across +4/+6 with +8/+10 zero (fields 0x1f; n90ap-10B329's ringtone:
+ * 1f00 0000 0000 44ac 0000 0000). ALAC's block has the same fields, but its
+ * +4 is a sample depth, which no rate starts with.
+ */
+static const unsigned amc_rates[] = { 96000, 88200, 64000, 48000, 44100,
+    32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
+
+static int amc_aac_rate(const uint8_t *config)
+{
+    unsigned rate = ((uint32_t)lduw_le_p(config + 4) << 16) | lduw_le_p(config + 6);
+
+    if (lduw_le_p(config) == 7) {
+        return lduw_le_p(config + 6) < ARRAY_SIZE(amc_rates) ? lduw_le_p(config + 6) : -1;
+    }
+    if (lduw_le_p(config) != 0x1f || lduw_le_p(config + 8) || lduw_le_p(config + 10)) {
+        return -1;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(amc_rates); i++) {
+        if (amc_rates[i] == rate) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static unsigned amc_output_capacity(AMCProgram codec)
 {
     switch (codec) {
+    case AMC_UNKNOWN:
     case AMC_AAC: return 4096;
     case AMC_HEAAC: return 8192;
     case AMC_MP3: return 4608;
@@ -377,8 +414,7 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
     if (!d) {
         AMCProgram program = amc_program(s);
         enum AVCodecID codec_id = program == AMC_MP3 ? AV_CODEC_ID_MP3 :
-            program == AMC_ALAC ? AV_CODEC_ID_ALAC :
-            program == AMC_UNKNOWN ? AV_CODEC_ID_NONE : AV_CODEC_ID_AAC;
+            program == AMC_ALAC ? AV_CODEC_ID_ALAC : AV_CODEC_ID_AAC;
         const AVCodec *codec = avcodec_find_decoder(codec_id);
         d = g_new0(AMCDecoder, 1);
         s->decoder = d;
@@ -389,8 +425,6 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
             goto done;
         }
         uint8_t config[12];
-        static const unsigned rates[] = { 96000, 88200, 64000, 48000, 44100,
-            32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
         if (address_space_read(&address_space_memory, s->buf_base + s->result_offset + AMC_PARAMS,
             MEMTXATTRS_UNSPECIFIED, config, sizeof(config))) {
             goto done;
@@ -405,28 +439,17 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
              * Keep library diagnostics in the trace; returned decode errors
              * still go through our guest-visible failure path. */
             d->codec->log_level_offset = amc_trace() ? 0 : AV_LOG_DEBUG - AV_LOG_ERROR;
-            unsigned frequency = lduw_le_p(config + 6);
-            if (program == AMC_HEAAC) {
-                /* HE-AAC's program receives the core rate as two halfwords;
-                 * SBR doubles it. The raw FIL elements carry SBR side data. */
-                unsigned core_rate = ((uint32_t)lduw_le_p(config + 4) << 16) |
-                                     frequency;
-                for (frequency = 0; frequency < ARRAY_SIZE(rates); frequency++) {
-                    if (rates[frequency] == core_rate) {
-                        break;
-                    }
-                }
-                if (lduw_le_p(config) != 0x1f || lduw_le_p(config + 8) ||
-                    lduw_le_p(config + 10) || frequency == ARRAY_SIZE(rates)) {
-                    goto done;
-                }
-                d->rate = core_rate * 2;
-            } else {
-                if (lduw_le_p(config) != 7 || frequency >= ARRAY_SIZE(rates)) {
-                    goto done;
-                }
-                d->rate = rates[frequency];
+            int index = amc_aac_rate(config);
+            unsigned frequency = index;
+            /* Each of 7E18's AAC programs takes one form of the block. */
+            if (index < 0 || (program == AMC_AAC && lduw_le_p(config) != 7) ||
+                (program == AMC_HEAAC && lduw_le_p(config) != 0x1f)) {
+                goto done;
             }
+            /* The HE-AAC program's rate is the core's; SBR doubles it. The
+             * raw FIL elements carry SBR side data. Any other program has
+             * AAC-LC's output contract, so it gets the core alone. */
+            d->rate = amc_rates[frequency] * (program == AMC_HEAAC ? 2 : 1);
             unsigned config_size = program == AMC_HEAAC ? 7 : 5;
             d->codec->extradata = av_mallocz(config_size + AV_INPUT_BUFFER_PADDING_SIZE);
             if (!d->codec->extradata) {
@@ -439,13 +462,13 @@ static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head)
             d->codec->extradata[1] = (frequency << 7) | (1 << 3);
             if (program == AMC_HEAAC) {
                 unsigned output_frequency;
-                for (output_frequency = 0; output_frequency < ARRAY_SIZE(rates);
+                for (output_frequency = 0; output_frequency < ARRAY_SIZE(amc_rates);
                      output_frequency++) {
-                    if (rates[output_frequency] == d->rate) {
+                    if (amc_rates[output_frequency] == d->rate) {
                         break;
                     }
                 }
-                if (output_frequency == ARRAY_SIZE(rates)) {
+                if (output_frequency == ARRAY_SIZE(amc_rates)) {
                     goto done;
                 }
                 /* 7E18 negotiates the core channel count even for HE-AAC v2
@@ -623,16 +646,26 @@ static void amc_decode_publish(IPodTouchAMCState *s)
     }
     /* These are alternating buffers of interleaved S16 samples, not L/R
      * planes. The completion handler advances one buffer per interrupt.
-     * AMC 2.1's driver collects every frame with an engine 0 transfer job
-     * (amc_engine0), so a frame waits for one and goes to its slot. */
-    unsigned slot = d->slot;
-    if (s->rev21) {
-        uint32_t from = s->xfer[1] - (s->result_offset + 0x100);
-        if (!s->xfers ||
-            from % d->capacity || from / d->capacity >= d->buffers) {
+     * AMC 2.1's driver from 3.2 on collects every frame with an engine 0
+     * transfer job (amc_engine0), and enables engine 0's completion to do
+     * so, so there a frame waits for a job and goes to its slot. The job
+     * moves a whole slot, and its size is the driver's: 8 KiB for iOS 6's
+     * AAC program (n90ap-10B329), whose frames fill half of it; the slot's
+     * sample count gives the frame's length. 3.1's (n88ap-7E18: sources
+     * 0x101004) enables the DE's completion and not engine 0's, and takes
+     * each frame from its slot on that completion, as AMC 2.0's does; 6.1.3
+     * enables 0x111000. So a frame goes by job unless the driver enabled
+     * the DE's completion and not engine 0's. */
+    bool jobs = s->rev21 && ((s->int_mask[0] & AMC_E0_DONE) || !(s->int_mask[0] & 4));
+    unsigned slot = d->slot, offset = slot * d->capacity;
+    if (jobs) {
+        uint32_t size = s->xfer[0], from = s->xfer[1] - (s->result_offset + 0x100);
+        if (!s->xfers || size < bytes ||
+            from % size || from / size >= d->buffers) {
             return;
         }
-        slot = from / d->capacity;
+        slot = from / size;
+        offset = from;
     } else if ((s->pending & 4) || lduw_le_p(header + 0xa + slot * 4)) {
         return;
     }
@@ -650,7 +683,7 @@ static void amc_decode_publish(IPodTouchAMCState *s)
         d->cursor = 0;
     }
     if (address_space_write(&address_space_memory,
-        base + 0x100 + slot * d->capacity, MEMTXATTRS_UNSPECIFIED,
+        base + 0x100 + offset, MEMTXATTRS_UNSPECIFIED,
         d->pcm->data + d->cursor, bytes)) {
         return;
     }
@@ -669,7 +702,7 @@ static void amc_decode_publish(IPodTouchAMCState *s)
         g_queue_pop_head(&d->output_sizes);
     }
     d->slot = (slot + 1) % d->buffers;
-    if (s->rev21) {
+    if (jobs) {
         amc_xfer_run(s);
     } else {
         s->pending |= 4;
@@ -747,11 +780,8 @@ static void amc_write_result_block(IPodTouchAMCState *s)
 #ifdef IT_HAVE_AVCODEC
     if (s->codec_decode) {
         AMCProgram program = amc_program(s);
-        if (program == AMC_UNKNOWN) {
-            warn_report("AMC: unsupported decoder program");
-        }
         capacity = amc_output_capacity(program) / 2;
-        buffers = program == AMC_UNKNOWN ? 0 : program == AMC_ALAC ? 1 : 2;
+        buffers = program == AMC_ALAC ? 1 : 2;
     }
 #endif
 

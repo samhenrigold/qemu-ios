@@ -102,6 +102,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_WINDOW_SIZE      0xa44     /* window 0; + 0x14 * n */
 #define AMC_DMA_DONE         (1u << 18)
 #define AMC_DMA_DONE_21      (1u << 20)
+#define AMC_E0_DONE          (1u << 16)  /* AMC 2.1: engine 0's completion source */
 #define AMC_E0_HEAD          0x000       /* AMC 2.1: engine 0's command list */
 #define AMC_XFER_FIFO        0x303060    /* AMC 2.1 transfer unit, engine 0's view */
 #define AMC_XFER_QUEUE       8

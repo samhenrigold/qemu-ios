@@ -39,6 +39,7 @@
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
 #include "hw/arm/ipod_touch_cs42l58.h"
+#include "hw/arm/ipod_touch_amc.h"
 #include "hw/arm/ipod_touch_cd3272_mikey.h"
 #include "hw/i2c/i2c.h"
 #include "chardev/char.h"
@@ -94,6 +95,8 @@
 #define S5L8920_DART_BASE(n)    (0xbfe00000 + (n) * 0x100000)
 #define S5L8920_I2S0_FIFO       0x84500000      /* DT i2s0 reg; what the CDMA writes */
 #define S5L8920_I2S0_BASE       0x84500400      /* its registers, the A4's i2s layout */
+#define S5L8920_AMC_BASE        0x84100000      /* DT amc reg[0] */
+#define S5L8920_AMC_PORT_BASE   0x84800000      /* DT amc dma-channels: its FIFO at +0x2c */
 
 #define S5L8920_IRQ_TIMER0      0x06
 #define S5L8920_IRQ_TIMER1      0x05
@@ -108,6 +111,7 @@
 #define S5L8920_IRQ_SDIO        0x22
 #define S5L8920_IRQ_DART(n)     (0x5a - (n))
 #define S5L8920_IRQ_CDMA(ch)    (0x2a + (ch))   /* DT lists channels 1.. from 0x2b */
+#define S5L8920_IRQ_AMC         0x46            /* first of the AMC's 19 lines */
 
 typedef struct S5L8920I2CDevice {
     uint8_t bus;                         /* i2c0 or i2c2 */
@@ -585,8 +589,8 @@ static uint32_t s5l8920_uart_rx_avail(void *opaque, hwaddr addr, bool to_device)
     return to_device ? 0 : (f & 0x100) ? 256 : (f & 0xff);
 }
 
-/* Off the UART's receive path: the CDMA reads URXH, which re-enters the UART. */
-static void s5l8920_bt_kick(void *opaque)
+/* Off a source's own path (the UART's receive path: the CDMA reads URXH, which re-enters the UART). */
+static void s5l8920_cdma_kick(void *opaque)
 {
     s5l8930_cdma_kick(DEVICE(opaque));
 }
@@ -811,9 +815,39 @@ static void s5l8920_init(MachineState *machine)
         hwaddr urxh = S5L8920_UART_BASE(s->board->bt_uart) + 0x24;
 
         s5l8930_cdma_set_source(dev, urxh, 4, s5l8920_uart_rx_avail, NULL);
-        s->bt_kick = qemu_bh_new(s5l8920_bt_kick, dev);
+        s->bt_kick = qemu_bh_new(s5l8920_cdma_kick, dev);
         sysbus_connect_irq(SYS_BUS_DEVICE(bt_uart), 2,
                            qemu_allocate_irq(s5l8920_bt_rxdma, s, 0));
+    }
+
+    /*
+     * AMC (amc,s5l8920x), as on the A4 (ipad1.c): the decoder AppleAMC runs
+     * ringtones, SMS tones and Music's AAC/MP3 through, so without it those
+     * play silent (AppleAMC asserts). Its aperture is the SRAM at 0x84000000
+     * (DT reg[1], 0x38000 of it), its status handler is on the 8th of its
+     * lines, and 4.x and later drain its output port by CDMA (channel 0x18).
+     */
+    {
+        DeviceState *cdma = dev;
+
+        dev = qdev_new(TYPE_IPOD_TOUCH_AMC);
+        qdev_prop_set_uint64(dev, "buf-base", S5L8920_SRAM_BASE);
+        qdev_prop_set_uint32(dev, "dram-base", S5L8920_DRAM_BASE);
+        qdev_prop_set_uint32(dev, "dram-size", s->board->dram_size);
+        qdev_prop_set_bit(dev, "rev21", true);
+#ifdef IT_HAVE_AVCODEC
+        qdev_prop_set_uint8(dev, "mode", AMC_MODE_DECODE);
+#endif
+        sbd = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, S5L8920_AMC_BASE);
+        sysbus_connect_irq(sbd, 0, s5l8920_irq(s, S5L8920_IRQ_AMC + 7));
+        sysbus_mmio_map(sbd, 1, S5L8920_AMC_PORT_BASE);
+        IPOD_TOUCH_AMC(dev)->port_kick = s5l8920_cdma_kick;
+        IPOD_TOUCH_AMC(dev)->port_opaque = cdma;
+        s5l8930_cdma_set_source(cdma, S5L8920_AMC_PORT_BASE, AMC_PORT_SIZE,
+                                ipod_touch_amc_port_avail, dev);
+        dev = cdma;
     }
 
     /* H2FMI: the two NAND buses the IOP firmware drives, over the IOP's page store. */
