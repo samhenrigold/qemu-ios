@@ -352,6 +352,16 @@ int main(void)
         assert(got[0] == 0x33 && got[16] == 0x33);
         assert(!g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(third)));
         unmapped_lo = unmapped_hi = 0;
+        /* So is a written page the process stopped mapping while it still maps the last one
+         * (6.x under memory pressure: one wallpaper page in a hundred, issue 48). */
+        assert(!gles_bind_surface(NULL, c, 0) && gles_refresh_surfaces(NULL));
+        unmapped_lo = 0x10000000 + 8192; unmapped_hi = unmapped_lo + 4096;
+        memset(ram + 8192, 0x55, 4096);
+        assert(gles_refresh_surfaces(NULL));
+        glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_BGRA,GL_UNSIGNED_BYTE,got);
+        assert(got[0] == 0x44 && got[16] == 0x44);
+        assert(!g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(third)));
+        unmapped_lo = unmapped_hi = 0;
         glDisable(GL_TEXTURE_RECTANGLE_ARB);
     }
     munmap(fault_pages,16384);

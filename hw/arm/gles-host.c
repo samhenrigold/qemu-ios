@@ -4311,16 +4311,28 @@ static void gles_surface_fetch(GLESSurface *s, uint8_t *pixels)
  * leaves the texture of an icon or label bound, and the binding process no longer maps
  * it), the next owner's writes mark them changed, and reading them put that memory in
  * the texture: noise in place of the icons, labels and wallpaper, spreading the longer
- * the device ran (issue 47). Its last page is checked, as at the bind (4.x keeps only
- * the page touched last mapped).
+ * the device ran (issue 47). So is a written page the process stopped mapping while it
+ * still maps the rest: under memory pressure 6.x drops single pages of a bound surface (the
+ * wallpaper lost one 4 KiB page in every hundred, and their next owners' writes made noise
+ * lines across Home, issue 48). The last page and every page written since the upload are
+ * checked; the others are left alone, as at the bind (4.x keeps only the page touched last
+ * mapped).
  */
 static bool gles_surface_mapped(CPUState *cpu, const GLESSurface *s)
 {
     unsigned last = s->npages - 1;
     ram_addr_t now;
 
-    return gles_page_ram(cpu, (s->base & TARGET_PAGE_MASK) + (vaddr)last * TARGET_PAGE_SIZE, &now) &&
-        now == s->pages[last];
+    for (unsigned i = 0; i < s->npages; i++) {
+        size_t page = s->pages[i] >> TARGET_PAGE_BITS;
+
+        if (i != last && !(page < gles_page_gen_len && gles_page_gen[page] > s->gen)) continue;
+        if (!gles_page_ram(cpu, (s->base & TARGET_PAGE_MASK) + (vaddr)i * TARGET_PAGE_SIZE, &now) ||
+            now != s->pages[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* A tracked surface's changed memory into its (bound) texture. */
