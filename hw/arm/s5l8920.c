@@ -93,6 +93,8 @@
 #define S5L8920_DSIM_BASE       0x89000000
 #define S5L8920_SWI_BASE        0x89100000
 #define S5L8920_DART_BASE(n)    (0xbfe00000 + (n) * 0x100000)
+#define S5L8920_AUDIO_COMPLEX   0x84300000      /* DT audio-complex reg[0]: its NCOs */
+#define S5L8920_AUDIO_COMPLEX_SIZE 0x5000
 #define S5L8920_I2S0_FIFO       0x84500000      /* DT i2s0 reg; what the CDMA writes */
 #define S5L8920_I2S0_BASE       0x84500400      /* its registers, the A4's i2s layout */
 #define S5L8920_AMC_BASE        0x84100000      /* DT amc reg[0] */
@@ -270,7 +272,7 @@ struct S5L8920MachineState {
     MachineState parent;
     const S5L8920Board *board;
     ARMCPU *cpu;
-    MemoryRegion dram, dram_hi, dram_lo, sram, chipid, cpu_debug;
+    MemoryRegion dram, dram_hi, dram_lo, sram, chipid, cpu_debug, audio_complex;
     DeviceState *vic[S5L8920_VIC_COUNT];
     DeviceState *gpio;
     DeviceState *iopcore;
@@ -996,6 +998,21 @@ static void s5l8920_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s5l8920_irq(s, 0x23));
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 1, s5l8920_irq(s, 0x27));
+
+    /*
+     * The audio complex's NCOs, which clock the I2S ports: AppleS5L8920XAudioComplex
+     * sets one by writing +0x18 = 2 f and +0x1c = 2 f - ncoref (then +0x14 = 0xd00), and
+     * reports a port's MCLK as ncoref * [+0x18] / ([+0x18] - [+0x1c]) / 2, read back
+     * (7E18 0xc067832c, 0xc06784f4; ncoref is the DT's ncoref-frequency, PLL1's 162 MHz,
+     * which iBoot fills and FirmwareKit's KBoot does in its place). Unmapped, the reads
+     * gave 0, and with ncoref 0 as well MCLK was 0: on 3.1.3
+     * the Voice device (i2s1) then had sample rate 0 and an empty IO buffer, mediaserverd
+     * failed to map it while taking hog mode, never built its virtual audio device, and
+     * every sound failed to start ('!dev'). A register file is all the readback needs.
+     */
+    memory_region_init_ram(&s->audio_complex, NULL, "s5l8920.audio-complex",
+                           S5L8920_AUDIO_COMPLEX_SIZE, &error_fatal);
+    memory_region_add_subregion(sysmem, S5L8920_AUDIO_COMPLEX, &s->audio_complex);
 
     /*
      * I2S0, the CS42L58 codec's port: the A4's controller (registers at
