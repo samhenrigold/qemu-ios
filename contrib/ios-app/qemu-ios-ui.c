@@ -918,11 +918,31 @@ QemuIosSnapshotStatus qemu_ios_snapshot_status(char *errbuf, unsigned long errle
     return s;
 }
 
+/*
+ * Restart the vCPU after a save. A completed save (a migration to a file)
+ * inactivates every block node so a destination could take them over; the
+ * A4/S5L8920 NAND and the NOR are block backends, so the guest's next write
+ * after a bare vm_start() hit bdrv_co_write_req_prepare's BDRV_O_INACTIVE
+ * assertion and took the process down. Take them back first, as qmp_cont does.
+ */
+static void ios_restart_after_save(void)
+{
+    Error *err = NULL;
+
+    if (qemu_ios_ui_storage_failed() || runstate_is_running()) {
+        return;
+    }
+    if (!migration_block_activate(&err)) {
+        fprintf(stderr, "[snapshot] resume: %s\n", error_get_pretty(err));
+        error_free(err);
+        return;
+    }
+    vm_start();
+}
+
 static void ios_snapshot_resume_bh(void *opaque)
 {
-    if (!qemu_ios_ui_storage_failed() && !runstate_is_running()) {
-        vm_start();
-    }
+    ios_restart_after_save();
 }
 
 void qemu_ios_snapshot_resume(void)
@@ -956,9 +976,7 @@ static void ios_resume_bh(void *opaque)
      * migration"). So coming back to the foreground has to restart it, or the
      * guest is frozen from the first time the app was backgrounded onwards.
      */
-    if (!qemu_ios_ui_storage_failed() && !runstate_is_running()) {
-        vm_start();
-    }
+    ios_restart_after_save();
 }
 
 void qemu_ios_set_foreground(bool foreground)
