@@ -2,7 +2,9 @@
  *
  * SLICE include/hw/arm/ipod_touch_lis302dl.h define ACCEL_WHOAMI_VALUE|ACCEL_CTRL_REG1_FS
  * SLICE include/hw/arm/ipod_touch_lis302dl.h typedef LIS302DLState
- * SLICE hw/arm/ipod_touch_lis302dl.c fn lis302dl_counts lis302dl_sample lis302dl_post_load
+ * SLICE include/hw/arm/ipod-attitude.h file
+ * SLICE hw/arm/ipod_touch_lis302dl.c fn lis302dl_counts lis302dl_mounted lis302dl_moving lis302dl_gravity
+ * SLICE hw/arm/ipod_touch_lis302dl.c fn lis302dl_sample lis302dl_post_load
  */
 #include <stdint.h>
 #include <math.h>

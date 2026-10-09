@@ -108,6 +108,7 @@ typedef struct A4Board {
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
     const char *accel_mount;             /* else the LIS model's "mount" axes (its DT orientation, inverted) */
     uint8_t compass_orientation;         /* the AK8973 model's orientation (the DT compass node's encoding) */
+    const char *gyro_mount;              /* the L3G4200D model's "mount" (its DT orientation, inverted) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
     int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
     int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
@@ -255,6 +256,8 @@ static const A4Board a4_n81 = {
     },
     /* DT accelerometer orientation rows (0,-1,0) (-1,0,0) (0,0,1): x reads -y, y reads -x. */
     .accel_mount = "-2,-1,3",
+    /* DT gyro orientation rows (0,-1,0) (-1,0,0) (0,0,-1): x reads -y, y reads -x, z reads -z. */
+    .gyro_mount = "-2,-1,-3",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
     .swi_iset = 3,
@@ -301,6 +304,7 @@ static const A4Board a4_n90 = {
     },
     /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
     .accel_mount = "-2,1,-3",
+    .gyro_mount = "1,2,3",                   /* DT gyro orientation: identity */
     /* Its DT compass node (the akm8973s at 0x1e the unit doesn't carry; it has AK8975Bs) says 5, x and z
      * negated. With 5 CoreLocation reads the heading mirrored face up and right upright; with 4 (z only),
      * as here, right face up and mirrored upright. No mount reads right both ways on 4.2.1: debt. */
@@ -1058,6 +1062,13 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
         if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
             qdev_prop_set_uint8(dev, "orientation", s->board->compass_orientation);
         }
+        if (!strcmp(d->type, TYPE_S5L8930_L3G4200D)) {
+            qdev_prop_set_string(dev, "mount", s->board->gyro_mount);
+            if (s->accel) {
+                /* the gyro sees each attitude change as a turn (created after the accelerometer) */
+                s->accel->motion = true;
+            }
+        }
         if (!strcmp(d->type, TYPE_S5L8930_D1815)) {
             /* the PMU's clock and the agent's time sync agree on a pinned date */
             qdev_prop_set_uint64(dev, "rtc-epoch", s->rtc_epoch);
@@ -1078,6 +1089,8 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
         } else if (!strcmp(d->type, TYPE_S5L8930_LTC4099)) {
             s->ltc = dev;
             s5l8930_ltc4099_set_usb(dev, s->usb_cable);
+        } else if (!strcmp(d->type, TYPE_S5L8930_L3G4200D) && s->accel) {
+            s5l8930_l3g_set_accel(dev, s->accel);
         } else if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
             /* qom-set /machine compass-heading N (degrees) */
             s->compass = dev;

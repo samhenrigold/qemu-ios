@@ -1166,9 +1166,11 @@ static const TypeInfo s5l8930_ak8973_info = {
  * same address reads reg 0 (reserved here, 0) and gives up.
  *
  * gpio-out 0 is INT1, 1 is INT2, at the pin's level (CTRL_REG3 H_Lactive).
- * INT1's threshold events are not modeled: the device sits still.
- * ponytail: zero rate on every axis; QOM rate properties when the host has a
- * gyro control (the attitude path only moves the accelerometer today).
+ * INT1's threshold events are not modeled.
+ * The rate is the accelerometer's turn while the host changes the device's
+ * attitude (lis302dl_motion_rate), zero at rest, in counts at CTRL_REG4's full
+ * scale, through the board's mount ("mount", as the accelerometer's: each sensor
+ * axis reads a signed device axis, the DT gyro orientation inverted).
  */
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930L3GState, S5L8930_L3G4200D)
@@ -1196,7 +1198,35 @@ struct S5L8930L3GState {
     QEMUTimer *timer;
     qemu_irq pin[2];
     uint8_t whoami;
+    char *mount;
+    LIS302DLState *accel;                /* the turn's source; wired by the machine */
 };
+
+void s5l8930_l3g_set_accel(DeviceState *dev, LIS302DLState *accel)
+{
+    S5L8930_L3G4200D(dev)->accel = accel;
+}
+
+/* The device's rotation rate at `now` as the part reads it, in counts. */
+static void l3g_measure(S5L8930L3GState *s, int64_t now)
+{
+    static const double mdps[4] = { 8.75, 17.5, 70, 70 };   /* per digit, by CTRL_REG4 FS */
+    double w[3];
+    int m[3] = { 1, 2, 3 };
+
+    if (!s->accel || !lis302dl_motion_rate(s->accel, now, w)) {
+        memset(s->rate, 0, sizeof(s->rate));
+        return;
+    }
+    if (s->mount) {
+        sscanf(s->mount, "%d,%d,%d", &m[0], &m[1], &m[2]);
+    }
+    for (int i = 0; i < 3; i++) {
+        int a = abs(m[i]) - 1;
+        double dps = (m[i] < 0 ? -w[a] : w[a]) * 180 / M_PI;
+        s->rate[i] = CLAMP(lround(dps * 1000 / mdps[(s->regs[0x23] >> 4) & 3]), INT16_MIN, INT16_MAX);
+    }
+}
 
 static unsigned l3g_mode(S5L8930L3GState *s)
 {
@@ -1260,6 +1290,7 @@ static void l3g_sample(void *opaque)
     S5L8930L3GState *s = opaque;
     unsigned mode = l3g_mode(s);
 
+    l3g_measure(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (mode) {
         if (s->level == L3G_FIFO_SLOTS) {
             s->ovrn = true;
@@ -1387,6 +1418,7 @@ static const VMStateDescription vmstate_s5l8930_l3g = {
 
 static const Property l3g_properties[] = {
     DEFINE_PROP_UINT8("whoami", S5L8930L3GState, whoami, 0xd3),
+    DEFINE_PROP_STRING("mount", S5L8930L3GState, mount),
 };
 
 static void l3g_class_init(ObjectClass *klass, const void *data)

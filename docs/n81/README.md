@@ -217,7 +217,7 @@ documented quirk/patch, S stub.
 | PMU D1815, LIS331DLH, TSL2581 | shared | as-is (TSL2581 at 0x49) | H |
 | Codec CS42L59 | the CS42L58 register file | shared | H |
 | BCM4329 | the iPod's dongle model, `P=N81`, n81.bin version | variant (board data) | H |
-| Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; the device sits still (zero rate). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
+| Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; zero rate at rest, the turn's rate while the host changes the attitude (`gyro_mount`, the DT orientation inverted). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
 | Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
 
 ## Guest debugging
@@ -247,9 +247,12 @@ documented quirk/patch, S stub.
    no H3CamIn lines, and Camera.app opens to its closed shutter without crashing (N90 8C148, 2026-10-05).
    A real ISP model (the ISP CPU running its firmware, the sensors on i2c/MIPI) is what `camera=on` waits for.
 5. ~~**Gyro**~~ (2026-10-05): AppleAP3GDL attaches and streams. `contrib/it-gyro` (spawned through the agent)
-   reads CoreMotion at about 100 Hz, `gyroAvailable 1`, every rate 0. Left: a host input for rotation rates (the
-   attitude path moves only the accelerometer), INT1's threshold events, the temperature byte, and the unit's
-   real sensitivity matrix.
+   reads CoreMotion at about 100 Hz, `gyroAvailable 1`, every rate 0 at rest. Since 2026-10-09 an attitude change
+   (accel-orientation, the attitude properties) is a turn the gyro sees: the accelerometer swings to the new pose
+   about one axis at 90 degrees per 350 ms and the L3G4200D reads the turn's rate through the board's `gyro_mount`.
+   Before, the gyro read 0 through the jump and CoreMotion's fused gravity took 4-7 s to follow a landscape flip,
+   coming round through the screen's axis (issue 23). Left: INT1's threshold events, the temperature byte, and the
+   unit's real sensitivity matrix.
 6. ~~Accelerometer mounting~~ (2026-10-04): the board's `accel_mount` "-2,-1,3" is the DT's orientation
    matrix inverted. Safari turns with `accel-orientation` 1/3 as on hardware (3 = Home right).
 7. ~~**Multitouch calibration**~~ (2026-10-05): `mt_profile_n81`'s frame is now fitted the way the K48's was

@@ -31,20 +31,9 @@ static bool lis302dl_debug(void)
     return trace_event_get_state_backends(TRACE_LIS302DL_LOG);
 }
 
-bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool flat)
+/* The mounted sensor's reading of a device vector g (in g), in 1/64 g. */
+static void lis302dl_mounted(LIS302DLState *s, const double g[3], int out[3])
 {
-    int8_t vector[3];
-    if (!ipod_attitude_vector(pitch, roll, flat, vector)) {
-        return false;
-    }
-    s->pitch_mdeg = lround(pitch * 1000);
-    s->roll_mdeg = lround(roll * 1000);
-    s->flat_pose = flat;
-    s->base_x = vector[0];
-    /* The attitude is the device's; the sensor may sit turned 180 degrees
-     * about X on the board (the iPad 1), which reads Y and Z negated. */
-    s->base_y = s->mount_flipped ? -vector[1] : vector[1];
-    s->base_z = s->mount_flipped ? -vector[2] : vector[2];
     if (s->mount && !s->axis[0]) {
         int x, y, z;
         if (sscanf(s->mount, "%d,%d,%d", &x, &y, &z) == 3 &&
@@ -52,13 +41,122 @@ bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool f
             s->axis[0] = x; s->axis[1] = y; s->axis[2] = z;
         }
     }
-    if (s->axis[0]) {
-        /* Any other mounting: each sensor axis reads a signed device axis. */
-        int8_t *out[3] = { &s->base_x, &s->base_y, &s->base_z };
-        for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {
+        double v = g[i];
+        if (s->axis[0]) {
+            /* Any other mounting: each sensor axis reads a signed device axis. */
             int a = (s->axis[i] < 0 ? -s->axis[i] : s->axis[i]) - 1;
-            *out[i] = s->axis[i] < 0 ? -vector[a] : vector[a];
+            v = s->axis[i] < 0 ? -g[a] : g[a];
+        } else if (i && s->mount_flipped) {
+            /* Turned 180 degrees about X on the board (the iPad 1): Y and Z negated. */
+            v = -v;
         }
+        out[i] = lround(64 * v);
+    }
+}
+
+/*
+ * With motion set (a board whose gyro sees the turn), a new attitude is not a
+ * jump: the device turns to it about one axis at 90 degrees per 350 ms, the
+ * accelerometer reads the gravity of each moment, and lis302dl_motion_rate
+ * gives the gyro the turn's rate. CoreMotion's sensor fusion trusts the gyro
+ * over the accelerometer: fed a jump with no rotation, it took about 7 s to
+ * follow a landscape flip and came round through the screen's axis.
+ */
+#define LIS_MOTION_NS_PER_RAD (350000000.0 / (M_PI / 2))
+
+static bool lis302dl_moving(LIS302DLState *s, int64_t now)
+{
+    return s->motion_start_ns >= 0 && now >= s->motion_start_ns &&
+           now < s->motion_start_ns + s->motion_ns;
+}
+
+/* The device's gravity vector (in g) at `now`: along the turn while moving. */
+static void lis302dl_gravity(LIS302DLState *s, int64_t now, double g[3])
+{
+    if (!lis302dl_moving(s, now)) {
+        ipod_attitude_gravity(s->pitch_mdeg / 1000.0, s->roll_mdeg / 1000.0, s->flat_pose, g);
+        return;
+    }
+    const double *v = s->motion_from, *k = s->motion_axis;
+    double t = s->motion_angle * (now - s->motion_start_ns) / s->motion_ns;
+    double c = cos(t), sn = sin(t), kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+    double kxv[3] = { k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0] };
+
+    for (int i = 0; i < 3; i++) {
+        g[i] = v[i] * c + kxv[i] * sn + k[i] * kv * (1 - c);
+    }
+}
+
+bool lis302dl_motion_rate(LIS302DLState *s, int64_t now, double w[3])
+{
+    bool moving = lis302dl_moving(s, now);
+    /* Gravity turns by +angle about k in the device's frame: the device turns by -angle. */
+    double r = moving ? -s->motion_angle * 1e9 / s->motion_ns : 0;
+
+    for (int i = 0; i < 3; i++) {
+        w[i] = r * s->motion_axis[i];
+    }
+    return moving;
+}
+
+/* Turn from gravity `from` to the current attitude's, about the axis between them. */
+static void lis302dl_start_motion(LIS302DLState *s, const double from[3], int64_t now)
+{
+    double to[3], k[3], n, dot;
+
+    ipod_attitude_gravity(s->pitch_mdeg / 1000.0, s->roll_mdeg / 1000.0, s->flat_pose, to);
+    k[0] = from[1] * to[2] - from[2] * to[1];
+    k[1] = from[2] * to[0] - from[0] * to[2];
+    k[2] = from[0] * to[1] - from[1] * to[0];
+    n = sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2]);
+    dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2];
+    s->motion_angle = atan2(n, dot);
+    s->motion_start_ns = -1;
+    if (s->motion_angle < M_PI / 180) {
+        return;
+    }
+    if (n < 1e-6) {
+        /* Half a turn: about the screen's axis when upright, else the device's x. */
+        double kv;
+        k[0] = fabs(from[2]) < 0.7 ? 0 : 1;
+        k[1] = 0;
+        k[2] = fabs(from[2]) < 0.7 ? 1 : 0;
+        kv = k[0] * from[0] + k[2] * from[2];
+        for (int i = 0; i < 3; i++) {
+            k[i] -= kv * from[i];
+        }
+        n = sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2]);
+    }
+    for (int i = 0; i < 3; i++) {
+        s->motion_axis[i] = k[i] / n;
+        s->motion_from[i] = from[i];
+    }
+    s->motion_ns = s->motion_angle * LIS_MOTION_NS_PER_RAD;
+    s->motion_start_ns = now;
+}
+
+bool lis302dl_apply_attitude(LIS302DLState *s, double pitch, double roll, bool flat)
+{
+    double g[3], from[3];
+    int v[3];
+    int64_t now = s->motion ? qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) : 0;
+
+    if (!ipod_attitude_gravity(pitch, roll, flat, g)) {
+        return false;
+    }
+    if (s->motion) {
+        lis302dl_gravity(s, now, from);
+    }
+    s->pitch_mdeg = lround(pitch * 1000);
+    s->roll_mdeg = lround(roll * 1000);
+    s->flat_pose = flat;
+    lis302dl_mounted(s, g, v);
+    s->base_x = v[0];
+    s->base_y = v[1];
+    s->base_z = v[2];
+    if (s->motion) {
+        lis302dl_start_motion(s, from, now);
     }
     return true;
 }
@@ -92,6 +190,14 @@ static void lis302dl_sample(LIS302DLState *s, int64_t now)
     s->last_sample_ns = now;
     int values[3] = { lis302dl_counts(s, s->base_x), lis302dl_counts(s, s->base_y),
                       lis302dl_counts(s, s->base_z) };
+    if (lis302dl_moving(s, now)) {
+        double g[3];
+        lis302dl_gravity(s, now, g);
+        lis302dl_mounted(s, g, values);
+        for (int i = 0; i < 3; i++) {
+            values[i] = lis302dl_counts(s, values[i]);
+        }
+    }
     int64_t elapsed = now - s->shake_start_ns;
     if (s->shake_start_ns >= 0 && elapsed >= 0 && elapsed < 200000000) {
         int impulse = lis302dl_counts(s, (elapsed / 20000000) & 1 ? -127 : 127);
@@ -343,6 +449,7 @@ static void lis302dl_init(Object *obj)
     /* Power-on default: upright in portrait. */
     lis302dl_apply_orientation(s, 1);
     s->last_sample_ns = s->shake_start_ns = s->trace_last_poll_ns = -1;
+    s->motion_start_ns = -1;
     s->noise_state = 0x302d1;
     s->out_x = s->base_x; s->out_y = s->base_y; s->out_z = s->base_z;
 
@@ -368,6 +475,7 @@ static int lis302dl_post_load(void *opaque, int version)
     if (version < 3) { s->rate_hz = 0; s->noise_state = 0x302d1; }
     if (s->rate_hz > 400) return -EINVAL;
     s->last_sample_ns = s->shake_start_ns = s->trace_last_poll_ns = -1;
+    s->motion_start_ns = -1;              /* a turn in progress lands where it was going */
     s->trace_last_report_ns = s->trace_poll_sum_ns = s->trace_polls = 0;
     s->out_x = s->base_x;
     s->out_y = s->base_y;

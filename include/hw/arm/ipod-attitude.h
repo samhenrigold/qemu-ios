@@ -7,8 +7,8 @@
 /* Host angles are degrees: right edge down is positive roll; top edge away
  * is positive pitch. The LIS302DL mounting reverses device X exactly once.
  * The vector is in 1/64 g; the sensor model converts it to its own counts. */
-static inline bool ipod_attitude_vector(double pitch, double roll, bool flat,
-                                        int8_t out[3])
+/* The same vector in g, unrounded (a device in motion passes between poses). */
+static inline bool ipod_attitude_gravity(double pitch, double roll, bool flat, double out[3])
 {
     if (!isfinite(pitch) || !isfinite(roll) ||
         pitch < -180 || pitch > 180 || roll < -180 || roll > 180) {
@@ -16,9 +16,22 @@ static inline bool ipod_attitude_vector(double pitch, double roll, bool flat,
     }
     double p = pitch * (3.14159265358979323846 / 180.0);
     double r = roll * (3.14159265358979323846 / 180.0);
-    out[0] = (int8_t)lround(-64 * sin(r) * cos(p));
-    out[1] = (int8_t)lround(64 * (flat ? sin(p) : -cos(r) * cos(p)));
-    out[2] = (int8_t)lround(64 * (flat ? -cos(r) * cos(p) : -sin(p)));
+    out[0] = -sin(r) * cos(p);
+    out[1] = flat ? sin(p) : -cos(r) * cos(p);
+    out[2] = flat ? -cos(r) * cos(p) : -sin(p);
+    return true;
+}
+
+static inline bool ipod_attitude_vector(double pitch, double roll, bool flat,
+                                        int8_t out[3])
+{
+    double g[3];
+    if (!ipod_attitude_gravity(pitch, roll, flat, g)) {
+        return false;
+    }
+    for (int i = 0; i < 3; i++) {
+        out[i] = (int8_t)lround(64 * g[i]);
+    }
     return true;
 }
 #endif

@@ -208,6 +208,7 @@ void s5l8930_ltc4099_set_charging(DeviceState *dev, bool charging);
 /* The accelerometer whose gravity vector gives the compass its pose. */
 struct LIS302DLState;
 void s5l8930_ak8973_set_accel(DeviceState *dev, struct LIS302DLState *accel);
+void s5l8930_l3g_set_accel(DeviceState *dev, struct LIS302DLState *accel);
 
 /*
  * bq27545 gas gauge (hw/arm/s5l8930_hdq.c): a chardev speaking HDQ-over-UART
