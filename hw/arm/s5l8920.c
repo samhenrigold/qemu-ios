@@ -163,6 +163,7 @@ typedef struct S5L8920Board {
     uint8_t vibrator_pwm;
     S5L8920I2CDevice i2c[8];             /* in creation order (the snapshot's) */
     const char *accel_mount;             /* the LIS302DL model's "mount" axes; NULL: as the N18's/N72's */
+    uint8_t compass_orientation;         /* the AK8973 model's orientation (the DT compass node's encoding) */
     S5L8920PowerKnob pwroff_knob;
     BCMSDIOChip wifi;                    /* the Wi-Fi card, as AppleBCMWLAN matches it; prodid 0 = none */
 } S5L8920Board;
@@ -248,6 +249,7 @@ static const S5L8920Board s5l8920_n88 = {
      * and y in AppleLIS302DL, as the M68's 0 to the N45's 3. The model reads as the N18's part; without this
      * the 3GS took Home-left (4) for Home-right (3) and drew landscape upside down (issues 23, 43). */
     .accel_mount = "-1,-2,3",
+    .compass_orientation = 9,            /* DT compass (0x1e): x and y swapped, then x negated */
     .pwroff_knob = { 57, 67, 240 },
 };
 
@@ -448,6 +450,9 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
         if (!strcmp(d->type, TYPE_LIS302DL) && s->board->accel_mount) {
             qdev_prop_set_string(DEVICE(slave), "mount", s->board->accel_mount);
         }
+        if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
+            qdev_prop_set_uint8(DEVICE(slave), "orientation", s->board->compass_orientation);
+        }
         if (!strcmp(d->type, TYPE_PCF50633)) {
             /*
              * D1755: the D1759's Dialog layout one event byte wider. Events
@@ -491,6 +496,11 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             object_property_add_alias(OBJECT(s), "accel-y", OBJECT(slave), "y");
             object_property_add_alias(OBJECT(s), "accel-z", OBJECT(slave), "z");
             object_property_add_alias(OBJECT(s), "accel-shake", OBJECT(slave), "shake");
+        } else if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
+            /* the iPad machine's name, which the app's Compass Heading sets; the pose is the accelerometer's
+             * (listed first) */
+            object_property_add_alias(OBJECT(s), "compass-heading", OBJECT(slave), "heading");
+            s5l8930_ak8973_set_accel(DEVICE(slave), s->accel);
         }
     }
 }

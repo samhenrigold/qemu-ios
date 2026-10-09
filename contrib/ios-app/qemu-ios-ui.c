@@ -403,7 +403,7 @@ static const QemuIosDeviceInfo ios_devices[] = {
     { "iPod-Touch-1G", "n45ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
     { "iPhone-2G",     "m68ap",  320,  480, 1, 0, true,  false, false, false, CLCD_PANEL },
     { "n18",           "n18ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
-    { "n88",           "n88ap",  320,  480, 1, 0, true,  false, false, false, CLCD_PANEL },
+    { "n88",           "n88ap",  320,  480, 1, 0, true,  false, true,  false, CLCD_PANEL },
     /* s5l8930_display scans out 1024x768: the K48 panel is mounted landscape */
     { "ipad1",         "k48ap", 1024,  768, 1, 1, false, true,  true,  true,  A4_PANEL },
     { "iPod-Touch-4G", "n81ap",  640,  960, 2, 0, false, true,  false, false, A4_PANEL },

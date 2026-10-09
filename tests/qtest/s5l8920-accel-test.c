@@ -44,6 +44,17 @@ static void check(const char *machine, int sign)
     qtest_quit(q);
 }
 
+/* The 3GS's AK8973 takes the app's Compass Heading under the iPad's property name. */
+static void n88_compass(void)
+{
+    QTestState *q = qtest_initf("-machine n88,kboot=%s,wifi=off -display none -audio driver=none -nic none", kboot);
+
+    qobject_unref(qtest_qmp(q, "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine', "
+                               "'property': 'compass-heading', 'value': 450 } }"));
+    g_assert_cmpint(axis(q, "compass-heading"), ==, 90);
+    qtest_quit(q);
+}
+
 static void n18(void) { check("n18", 1); }
 static void n88(void) { check("n88", -1); }
 
@@ -64,6 +75,7 @@ int main(int argc, char **argv)
     close(fd);
     qtest_add_func("/s5l8920/accel/n18-mount", n18);
     qtest_add_func("/s5l8920/accel/n88-mount", n88);
+    qtest_add_func("/s5l8920/compass/n88-heading", n88_compass);
     ret = g_test_run();
     unlink(kboot);
     g_free(kboot);

@@ -52,8 +52,13 @@ static void on_error(id self, SEL _cmd, id manager, id error)
     say("it_heading: error %ld\n", code(error, sel("code")));
 }
 
+/* build.sh's probe (spawned through the guest agent, LightTouchMac's sessions phone) sets both shorter. */
+#ifndef DELAY_SECONDS
 #define DELAY_SECONDS   40
+#endif
+#ifndef RUN_SECONDS
 #define RUN_SECONDS     150
+#endif
 
 /*
  * machotool mkold points LC_UNIXTHREAD straight at _main: no crt1, so no argc/argv
@@ -91,8 +96,11 @@ int main(void)
 
     id mgr = msg(msg(cls("CLLocationManager"), sel("alloc")), sel("init"));
     char (*avail)(id, SEL) = (char (*)(id, SEL))msg;
-    /* an instance property on 3.2; the class method only came in 4.0 */
-    say("it_heading: headingAvailable %d\n", avail(mgr, sel("headingAvailable")));
+    char (*responds)(id, SEL, SEL) = (char (*)(id, SEL, SEL))msg;
+    /* an instance property on 3.x; the class method came in 4.0 */
+    id who = responds(cls("CLLocationManager"), sel("respondsToSelector:"), sel("headingAvailable"))
+                 ? cls("CLLocationManager") : mgr;
+    say("it_heading: headingAvailable %d\n", avail(who, sel("headingAvailable")));
     msg(mgr, sel("setDelegate:"), msg(msg(delegate, sel("alloc")), sel("init")));
     ((void (*)(id, SEL, double))msg)(mgr, sel("setHeadingFilter:"), -1.0);  /* kCLHeadingFilterNone */
     msg(mgr, sel("startUpdatingHeading"));

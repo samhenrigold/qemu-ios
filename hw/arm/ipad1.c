@@ -107,6 +107,7 @@ typedef struct A4Board {
     A4I2CDevice i2c[10];
     bool accel_flipped;                  /* LIS331 mounted turned 180 degrees about X */
     const char *accel_mount;             /* else the LIS model's "mount" axes (its DT orientation, inverted) */
+    uint8_t compass_orientation;         /* the AK8973 model's orientation (the DT compass node's encoding) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
     int8_t bt_uart;                      /* BCM4329 HCI, nothing attached */
     int8_t gauge_uart;                   /* bq27545 HDQ gas gauge; -1 = none */
@@ -296,6 +297,10 @@ static const A4Board a4_n90 = {
     },
     /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
     .accel_mount = "-2,1,-3",
+    /* Its DT compass node (the akm8973s at 0x1e the unit doesn't carry; it has AK8975Bs) says 5, x and z
+     * negated. With 5 CoreLocation reads the heading mirrored face up and right upright; with 4 (z only),
+     * as here, right face up and mirrored upright. No mount reads right both ways on 4.2.1: debt. */
+    .compass_orientation = 4,
     .bt_uart = 3,
     .gauge_uart = 5,
     .gauge_mah = 1420,                       /* bq27540, iPhone 4 battery */
@@ -1044,6 +1049,9 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
             if (s->board->accel_mount) {
                 qdev_prop_set_string(dev, "mount", s->board->accel_mount);
             }
+        }
+        if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
+            qdev_prop_set_uint8(dev, "orientation", s->board->compass_orientation);
         }
         if (!strcmp(d->type, TYPE_S5L8930_D1815)) {
             /* the PMU's clock and the agent's time sync agree on a pinned date */

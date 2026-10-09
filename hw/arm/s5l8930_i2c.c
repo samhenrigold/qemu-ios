@@ -21,6 +21,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "hw/arm/ipod_touch_lis302dl.h"
+#include "hw/arm/ipod-attitude.h"
 #include "migration/vmstate.h"
 #include "system/runstate.h"
 #include "trace.h"
@@ -955,11 +956,22 @@ static const TypeInfo s5l8930_tsl2561_info = {
  * do not shift the output: the modeled field sits mid-range already.
  *
  * The field is the Earth's for a host-set heading: degrees clockwise from
- * magnetic north of the way the device faces, i.e. its top edge, or its back
- * when the top edge points up. The pose comes from the accelerometer model's
- * gravity vector (its base attitude, in device axes, pointing down), because
- * locationd tilt-compensates with it: a field computed for a flat unit reads
- * as nonsense while the accelerometer says upright.
+ * magnetic north of the way the device faces, i.e. its top edge, or its
+ * screen when the top edge points straight up (where CoreLocation's tilt
+ * compensation has no top edge to go by; 3.1.3 reports the screen's way). The
+ * pose is the accelerometer model's attitude in device axes (not its mounted
+ * sensor's), because locationd tilt-compensates with it: a field computed for
+ * a flat unit reads as nonsense while the accelerometer says upright.
+ *
+ * Its driver hands up the field turned 180 degrees about the device's y
+ * (minus x, y, minus z), after undoing the board's mount: the DT compass
+ * node's "orientation", which AppleEmbeddedI2CCompass applies to every
+ * reading as a swap of x and y (bit 3), then negations of x, y and z (bits
+ * 0-2; 6.1.6 N88 80811a80, 3.1.3 N88 c0685a42). The model writes the reading
+ * that comes out right. Found with CoreLocation's heading face up and upright
+ * at two headings each (LightTouchMac sessions phone compass): right on the 3GS
+ * (3.1.3, 6.1.6) and the iPad (3.2). The iPhone 4 (4.2.1) reads right only one
+ * of the two ways with any mount (a4_n90), and the iPad on 4.2.1 not at all.
  */
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930AK8973State, S5L8930_AK8973)
@@ -979,6 +991,7 @@ struct S5L8930AK8973State {
     uint8_t reg;
     bool addressing;
     int32_t heading;        /* degrees, 0-359; QOM property, not guest state */
+    uint8_t orientation;    /* the DT node's mount bits */
     LIS302DLState *accel;   /* pose source; wired by the machine */
 };
 
@@ -986,22 +999,21 @@ static void ak8973_measure(S5L8930AK8973State *s)
 {
     double d[3] = { 0, 0, -1 };             /* down, device axes: flat by default */
     double f[3], r[3], len, dot, h = s->heading * M_PI / 180.0;
+    int8_t g[3];
     int i;
 
-    if (s->accel) {
-        double g[3] = { s->accel->base_x, s->accel->base_y, s->accel->base_z };
+    if (s->accel && ipod_attitude_vector(s->accel->pitch_mdeg / 1000.0, s->accel->roll_mdeg / 1000.0,
+                                         s->accel->flat_pose, g)) {
         len = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-        if (len > 0) {
-            for (i = 0; i < 3; i++) {
-                d[i] = g[i] / len;
-            }
+        for (i = 0; i < 3 && len > 0; i++) {
+            d[i] = g[i] / len;
         }
     }
-    /* Facing: the top edge (+y) made horizontal, or the back (-z) when the
+    /* Facing: the top edge (+y) made horizontal, or the screen (+z) when the
      * top edge is (nearly) vertical. */
     f[0] = 0; f[1] = 1; f[2] = 0;
     if (fabs(d[1]) > 0.9) {
-        f[1] = 0; f[2] = -1;
+        f[1] = 0; f[2] = 1;
     }
     dot = f[0] * d[0] + f[1] * d[1] + f[2] * d[2];
     for (i = 0; i < 3; i++) {
@@ -1016,16 +1028,15 @@ static void ak8973_measure(S5L8930AK8973State *s)
     r[1] = d[2] * f[0] - d[0] * f[2];
     r[2] = d[0] * f[1] - d[1] * f[0];
 
-    /*
-     * Sensor axes are the device's x and y and minus its z: found by
-     * holding the unit upright, where only z carries the heading (a flat
-     * unit reads the same either way) and north/south came out swapped.
-     */
     s->regs[AK_TMPS] = 0x80;                /* ~30 C by the kext's scale */
     for (i = 0; i < 3; i++) {
         double north = cos(h) * f[i] - sin(h) * r[i];
         double b = AK_H_COUNTS * north + AK_V_COUNTS * d[i];
-        s->regs[AK_H1X + i] = 128 + lround(i == 2 ? -b : b);
+        long v = lround(i == 1 ? b : -b);
+
+        /* the mount: what the driver negates, then swaps */
+        v = s->orientation & (1 << i) ? -v : v;
+        s->regs[AK_H1X + (s->orientation & 8 && i < 2 ? 1 - i : i)] = 128 + v;
     }
     s->regs[AK_ST] |= AK_ST_INT;
 }
@@ -1117,12 +1128,17 @@ static void ak8973_set_heading(Object *obj, Visitor *v, const char *name,
     }
 }
 
+static const Property ak8973_properties[] = {
+    DEFINE_PROP_UINT8("orientation", S5L8930AK8973State, orientation, 0),
+};
+
 static void ak8973_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     dc->vmsd = &vmstate_s5l8930_ak8973;
+    device_class_set_props(dc, ak8973_properties);
     device_class_set_legacy_reset(dc, ak8973_reset);
     object_class_property_add(klass, "heading", "int32", ak8973_get_heading,
                               ak8973_set_heading, NULL, NULL);

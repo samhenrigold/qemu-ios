@@ -255,7 +255,10 @@ What differs from 7.1.2:
      locationd, drives down to correlator data; out of reach for now (docs/baseband/gps.md). The 3GS's
      receiver, inside its modem, is modeled.
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
-3. **Compass**: the AK8973 stands in for the AK8975B pair.
+3. **Compass**: the AK8973 stands in for the AK8975B pair. On 4.2.1 no mount reads right both face up and
+   upright: the DT's orientation 5 reads the heading mirrored face up and right upright, 4 (`compass_orientation`)
+   right face up and mirrored upright (2026-10-09, LightTouchMac `sessions phone --only compass`; the 3GS and the
+   iPad 3.2 read right both ways with their DT orientation).
 4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
    Safari turns with `accel-orientation` 1/3/4 as on hardware.
 5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
