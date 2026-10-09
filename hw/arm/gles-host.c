@@ -3804,6 +3804,9 @@ static int64_t gles_generate_mipmap(uint32_t target)
         return gles_reject(GL_INVALID_ENUM);
     }
     gles_texture_begin();
+    /* The level-0 upload capped MAX_LEVEL at 0 (below); desktop GL generates and samples no level past the cap,
+     * so lift it to GL's default: the chain this makes is complete. */
+    glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, 1000);
     glGenerateMipmapEXT(target);
     GLenum error = glGetError();
     if (error) {
