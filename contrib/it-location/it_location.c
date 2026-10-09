@@ -74,8 +74,10 @@ int main(int argc, char **argv)
     reg_pair(delegate);
 
     /* Settings' Location Services switch (a 6.x/7.x Setup the test harness walked turns it off), as
-     * Preferences flips it: the entitlement in it_location.entitlements lets the probe do the same. */
-    if (!(char)(long)msg(cls("CLLocationManager"), sel("locationServicesEnabled"))) {
+     * Preferences flips it: the entitlement in it_location.entitlements lets the probe do the same.
+     * 3.x has no class-level switch (+locationServicesEnabled is 4.0's; calling it there throws). */
+    if ((char)(long)msg(cls("CLLocationManager"), sel("respondsToSelector:"), sel("locationServicesEnabled")) &&
+        !(char)(long)msg(cls("CLLocationManager"), sel("locationServicesEnabled"))) {
         ((void (*)(id, SEL, char))msg)(cls("CLLocationManager"), sel("setLocationServicesEnabled:"), 1);
         printf("it_location: Location Services were off, turned on: %d\n",
                (char)(long)msg(cls("CLLocationManager"), sel("locationServicesEnabled")));
