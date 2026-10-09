@@ -670,10 +670,12 @@ static void ipad1_cpu_reset(void *opaque)
         a4_dt_unmatch((uint8_t *)data, image_len, load_pa, bootargs_pa, "isp");
     }
     /*
-     * iBoot fills the gyro's sensitivity matrix (9 words, 16.16) from the
-     * unit's syscfg; the IPSW DT reserves it zeroed and AppleAP3GDL refuses a
-     * singular one. kboot has no syscfg, so the gyro gets a nominal part's
-     * identity. Boards without a gyro node walk past.
+     * iBoot fills the gyro's and the accelerometer's sensitivity matrices (9
+     * words, 16.16) from the unit's syscfg; the IPSW DT reserves them zeroed,
+     * AppleAP3GDL refuses a singular one and 6.x's AppleLIS331DLH fails its
+     * start without one ("Expected calibration data but didn't find any"),
+     * leaving the device with no accelerometer. kboot has no syscfg, so both
+     * get a nominal part's identity. Boards without the node walk past.
      */
     {
         static const uint32_t unit_cal[9] = { 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000 };
@@ -684,6 +686,8 @@ static void ipad1_cpu_reset(void *opaque)
         }
         a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
                    &(A4DTEdit){ "gyro", "gyro-sensitivity-calibration", cal, sizeof(cal) });
+        a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
+                   &(A4DTEdit){ "accelerometer", "accel-sensitivity-calibration", cal, sizeof(cal) });
     }
     if (address_space_write(&address_space_memory, load_pa,
                             MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
