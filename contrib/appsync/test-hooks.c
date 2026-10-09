@@ -128,6 +128,20 @@ int main(void) {
     CFDictionaryRef e = (CFDictionaryRef)CFDictionaryGetValue(six, entitlements_key);
     assert(e && CFDictionaryGetValue(e, __builtin___CFStringMakeConstantString("get-task-allow")) == kCFBooleanTrue);
     CFRelease(six);
+    // Load commands past the first 4 KiB (Chrome 21's are 4556 bytes, its signature's last).
+    static unsigned char big[8192];
+    unsigned *bw = (unsigned *)big;
+    bw[0] = 0xfeedface; bw[4] = 2; bw[5] = 4600 + 16;
+    bw[7] = 0x2c; bw[8] = 4600;
+    bw[(28 + 4600) / 4] = 0x1d; bw[(28 + 4600) / 4 + 1] = 16;
+    bw[(28 + 4600) / 4 + 2] = 6144; bw[(28 + 4600) / 4 + 3] = 400;
+    memcpy(big + 6144, sb, 400);
+    fd = open(file, 1); assert(write(fd, big, sizeof big) == sizeof big); close(fd);
+    assert(as_MISValidateSignatureAndCopyInfo(expected_path, (void *)2, &six) == 0 && six);
+    ident = (CFStringRef)CFDictionaryGetValue(six, signing_id_key);
+    assert(ident && CFStringGetCString(ident, got, sizeof got, 0x08000100) && !strcmp(got, "com.example.harness"));
+    CFRelease(six);
+    fd = open(file, 0x401); assert(write(fd, m, sizeof m) == sizeof m); close(fd);   // O_WRONLY|O_TRUNC
     // Unsigned: entitlements fall back to an empty dictionary.
     w[7] = 0; fd = open(file, 1); assert(write(fd, m, sizeof m) == sizeof m); close(fd);
     assert(as_MISValidateSignatureAndCopyInfo(expected_path, (void *)2, &six) == 0 && six);

@@ -100,16 +100,21 @@ static unsigned be32(const unsigned char *p) {
 
 // Read the first Mach-O slice's identifier and entitlements from its embedded
 // signature. A missing or malformed signature leaves both outputs untouched.
+// The load commands are read whole: Chrome 21's take 4556 bytes, and with the
+// first 4 KiB only its LC_CODE_SIGNATURE (the last) was never found, so 6.x
+// installd refused it (code_info_identifier=n, InstallMapUpdateFailed).
+#define HEADER_BYTES 65536
 static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents) {
     char file[1024];
-    unsigned char h[4096];
     if (!path || !CFStringGetCString(path, file, sizeof file, 0x08000100)) return;
     int fd = open(file, 0);
     if (fd < 0) return;
-    long base = 0, n = pread(fd, h, sizeof h, 0);
+    unsigned char *h = malloc(HEADER_BYTES);
+    if (!h) { close(fd); return; }
+    long base = 0, n = pread(fd, h, HEADER_BYTES, 0);
     if (n >= 28 && be32(h) == 0xcafebabe && be32(h + 4)) {
         base = be32(h + 16);
-        n = pread(fd, h, sizeof h, base);
+        n = pread(fd, h, HEADER_BYTES, base);
     }
     unsigned sigoff = 0, siglen = 0;
     if (n >= 28 && be32(h) == 0xcefaedfe) {   // little-endian 32-bit Mach-O
@@ -143,6 +148,7 @@ static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents
         }
     }
     free(b);
+    free(h);
     close(fd);
 }
 
