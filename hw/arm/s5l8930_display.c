@@ -72,6 +72,13 @@ typedef struct {
     uint32_t native;         /* pipe0: w << 16 | h of the board's panel, the geometry iBoot programs */
 } DisplayPipe;
 
+/* A UI layer's scanout: its buffer and where it lands on the panel. */
+typedef struct UILayer {
+    uint32_t fmt, base, stride;
+    unsigned sw, sh;                 /* source size */
+    unsigned x0, y0, x1, y1;         /* destination rectangle, clipped to the panel */
+} UILayer;
+
 struct S5L8930DisplayState {
     SysBusDevice parent_obj;
 
@@ -107,6 +114,15 @@ struct S5L8930DisplayState {
      * Anything else (live layers before the first swap, a new surface, the panel going dark) draws.
      */
     uint8_t *front_next;     /* the relatch's scratch: kept only if it differs */
+    /*
+     * The layers' source rows the front was composed from (packed: the rows the panel shows), the
+     * layers they were read as, and src_next, the next latch's read. A quiet panel relatches every
+     * VBL, and composing the whole panel from guest memory 60 times a second was most of an idle A4's
+     * host CPU (13% of a core at a still Home screen); unchanged sources skip the compose.
+     */
+    uint8_t *src, *src_next;
+    size_t src_size, src_len;
+    UILayer src_layers[2];
     uint64_t front_gen;
     uint64_t shown_gen;
     DisplaySurface *shown_surface;
@@ -452,13 +468,6 @@ static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h)
     }
 }
 
-/* A UI layer's scanout: its buffer and where it lands on the panel. */
-typedef struct {
-    uint32_t fmt, base, stride;
-    unsigned sw, sh;                 /* source size */
-    unsigned x0, y0, x1, y1;         /* destination rectangle, clipped to the panel */
-} UILayer;
-
 /* UI layer `layer`'s scanout parameters, or false if it is off or unset. */
 static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigned h,
                           UILayer *u)
@@ -477,6 +486,11 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
      * layers, e.g. an EAGL surface as an overlay under its UI. */
     u->sw = sz ? sz >> 16 : w;
     u->sh = sz ? sz & 0xffff : h;
+    /* ponytail: a source over 4096 pixels wide is not scanned out. It bounds the host's row buffers
+     * (src) and no guest programs one; find the pipe's real limit if a guest ever does. */
+    if (u->sw > 4096) {
+        return false;
+    }
     u->x0 = org >> 16;
     u->y0 = org & 0xffff;
     u->x1 = MIN(end ? end >> 16 : u->x0 + u->sw, w);
@@ -498,18 +512,61 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
     return u->base != 0;
 }
 
-/* One row of a layer as XRGB/ARGB8888 (0 ARGB/BGRA, 2 ARGB4444, 4 RGB565). */
-static void layer_row(S5L8930DisplayState *s, uint32_t fmt, uint32_t base,
-                      uint32_t stride, unsigned y, unsigned w, uint32_t *d)
+static size_t layer_row_bytes(const UILayer *u)
+{
+    return (size_t)u->sw * (u->fmt ? 2 : 4);
+}
+
+/*
+ * Read the source row of layer `u` that each of its destination rows shows, packed into `dst`; the
+ * bytes read. A layer neither scaled vertically nor padded is one read.
+ */
+static size_t layer_fetch(S5L8930DisplayState *s, const UILayer *u, uint8_t *dst)
+{
+    size_t row = layer_row_bytes(u);
+    unsigned rows = u->y1 - u->y0;
+
+    if (u->sh == rows && u->stride == row) {
+        fb_read(s, u->base, dst, row * rows);
+        return row * rows;
+    }
+    for (unsigned y = u->y0; y < u->y1; y++) {
+        unsigned sy = (unsigned)((uint64_t)(y - u->y0) * u->sh / rows);
+        fb_read(s, u->base + sy * u->stride, dst + (y - u->y0) * row, row);
+    }
+    return row * rows;
+}
+
+/* Fetch every shown layer into s->src_next, layer 0 first; the bytes. */
+static size_t layers_fetch(S5L8930DisplayState *s, const UILayer u[2], const bool on[2])
+{
+    size_t need = 0, len = 0;
+
+    for (int l = 0; l < 2; l++) {
+        need += on[l] ? layer_row_bytes(&u[l]) * (u[l].y1 - u[l].y0) : 0;
+    }
+    if (need > s->src_size) {
+        s->src = g_realloc(s->src, need);
+        s->src_next = g_realloc(s->src_next, need);
+        s->src_size = need;
+    }
+    for (int l = 0; l < 2; l++) {
+        if (on[l]) {
+            len += layer_fetch(s, &u[l], s->src_next + len);
+        }
+    }
+    return len;
+}
+
+/* One fetched row of a layer as XRGB/ARGB8888 (0 ARGB/BGRA, 2 ARGB4444, 4 RGB565). */
+static void layer_row(uint32_t fmt, const uint8_t *src, unsigned w, uint32_t *d)
 {
     if (fmt == 0) {
-        fb_read(s, base + y * stride, (uint8_t *)d, w * 4);
+        memcpy(d, src, w * 4);
         return;
     }
-    g_autofree uint16_t *p = g_new(uint16_t, w);
-    fb_read(s, base + y * stride, (uint8_t *)p, w * 2);
     for (unsigned x = 0; x < w; x++) {
-        uint16_t v = le16_to_cpu(p[x]);
+        uint16_t v = lduw_le_p(src + x * 2);
         d[x] = fmt == 2
             ? ((uint32_t)(v & 0xf000) << 16 | (uint32_t)(v & 0xf000) << 12 |
                (v & 0xf00) << 12 | (v & 0xf00) << 8 |
@@ -532,13 +589,10 @@ static void layer_row(S5L8930DisplayState *s, uint32_t fmt, uint32_t base,
  * and is transparent outside it. 4.x CA puts an EAGL layer's surface in UI0
  * that way, under a full-panel UI1 that is clear where the layer shows.
  */
-static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *out,
-                    uint32_t key[4])
+static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2], bool on[2],
+                   uint32_t key[4])
 {
-    UILayer u[2];
-    bool on[2];
-    g_autofree uint32_t *row = NULL;
-
+    memset(u, 0, 2 * sizeof(*u));
     for (int l = 0; l < 2; l++) {
         on[l] = scanout_layer(s, l, w, h, &u[l]);
     }
@@ -548,26 +602,35 @@ static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *ou
         key[2] = on[0] ? u[0].base : 0;
         key[3] = on[1] ? u[1].base : 0;
     }
-    if (!on[0] && !on[1]) {
-        return false;
-    }
-    if (!out) {
-        return true;
-    }
-    row = g_new(uint32_t, MAX(MAX(on[0] ? u[0].sw : 0, on[1] ? u[1].sw : 0), w));
+    return on[0] || on[1];
+}
+
+/* The panel image from the layers' fetched rows (layers_fetch). */
+static void blend(const UILayer u[2], const bool on[2], const uint8_t *src, unsigned w,
+                  unsigned h, uint32_t *out)
+{
+    const uint8_t *lsrc[2];
+    g_autofree uint32_t *row = g_new(uint32_t, MAX(MAX(on[0] ? u[0].sw : 0, on[1] ? u[1].sw : 0), w));
+
+    lsrc[0] = src;
+    lsrc[1] = src + (on[0] ? layer_row_bytes(&u[0]) * (u[0].y1 - u[0].y0) : 0);
     for (unsigned y = 0; y < h; y++) {
         uint32_t *d = out + (size_t)y * w;
 
         memset(d, 0, w * 4);
         for (int l = 0; l < 2; l++) {
-            UILayer *L = &u[l];
-            unsigned dw = L->x1 - L->x0, sy;
+            const UILayer *L = &u[l];
+            unsigned dw = L->x1 - L->x0;
 
             if (!on[l] || y < L->y0 || y >= L->y1) {
                 continue;
             }
-            sy = (unsigned)((uint64_t)(y - L->y0) * L->sh / (L->y1 - L->y0));
-            layer_row(s, L->fmt, L->base, L->stride, sy, L->sw, row);
+            /* Unscaled BGRA that replaces what is under it: the row as it is. */
+            if ((l == 0 || !on[0]) && L->fmt == 0 && L->sw == dw) {
+                memcpy(d + L->x0, lsrc[l] + (y - L->y0) * layer_row_bytes(L), dw * 4);
+                continue;
+            }
+            layer_row(L->fmt, lsrc[l] + (y - L->y0) * layer_row_bytes(L), L->sw, row);
             for (unsigned x = L->x0; x < L->x1; x++) {
                 unsigned sx = L->sw == dw ? x - L->x0
                             : (unsigned)((uint64_t)(x - L->x0) * L->sw / dw);
@@ -585,6 +648,21 @@ static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *ou
                 }
             }
         }
+    }
+}
+
+static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *out,
+                    uint32_t key[4])
+{
+    UILayer u[2];
+    bool on[2];
+
+    if (!layers(s, w, h, u, on, key)) {
+        return false;
+    }
+    if (out) {
+        layers_fetch(s, u, on);
+        blend(u, on, s->src_next, w, h, out);
     }
     return true;
 }
@@ -612,7 +690,25 @@ static void front_latch(S5L8930DisplayState *s)
         s->front_size = need;
     }
     uint32_t key[4];
-    bool valid = compose(s, w, h, (uint32_t *)s->front_next, key);
+    UILayer u[2];
+    bool on[2];
+    bool valid = layers(s, w, h, u, on, key);
+    size_t len = valid ? layers_fetch(s, u, on) : 0;
+
+    /* The front was composed from these very layers and bytes. */
+    if (valid && valid == s->front_valid && !memcmp(key, s->front_key, sizeof(key)) &&
+        len == s->src_len && !memcmp(u, s->src_layers, sizeof(u)) &&
+        !memcmp(s->src_next, s->src, len)) {
+        return;
+    }
+    if (valid) {
+        uint8_t *t = s->src;
+        s->src = s->src_next;
+        s->src_next = t;
+        s->src_len = len;
+        memcpy(s->src_layers, u, sizeof(u));
+        blend(u, on, s->src, w, h, (uint32_t *)s->front_next);
+    }
     /* Swap in the new picture only when it differs: an unchanged relatch leaves front_gen alone. */
     if (valid != s->front_valid || memcmp(key, s->front_key, sizeof(key)) ||
         (valid && memcmp(s->front_next, s->front, need))) {
