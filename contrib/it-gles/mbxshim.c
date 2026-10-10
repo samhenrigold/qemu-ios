@@ -1090,6 +1090,7 @@ static unsigned (*p_IOSurfaceGetBytesPerRow)(void *);
 static unsigned (*p_IOSurfaceGetWidth)(void *);
 static unsigned (*p_IOSurfaceGetHeight)(void *);
 static unsigned (*p_IOSurfaceGetPixelFormat)(void *);
+static unsigned (*p_IOSurfaceGetBytesPerElement)(void *);
 static unsigned (*p_IOSurfaceGetPlaneCount)(void *);
 static void *(*p_IOSurfaceGetBaseAddressOfPlane)(void *, unsigned);
 static unsigned (*p_IOSurfaceGetBytesPerRowOfPlane)(void *, unsigned);
@@ -1159,6 +1160,7 @@ static void iosurface_init(void)
     p_IOSurfaceGetWidth       = surface_sym(pre, "GetWidth");
     p_IOSurfaceGetHeight      = surface_sym(pre, "GetHeight");
     p_IOSurfaceGetPixelFormat = surface_sym(pre, pre[0] == 'I' ? "GetPixelFormat" : "GetPixelFormatType");
+    p_IOSurfaceGetBytesPerElement = surface_sym(pre, "GetBytesPerElement");
     p_IOSurfaceGetPlaneCount = surface_sym(pre, "GetPlaneCount");
     p_IOSurfaceGetBaseAddressOfPlane = surface_sym(pre, "GetBaseAddressOfPlane");
     p_IOSurfaceGetBytesPerRowOfPlane = surface_sym(pre, "GetBytesPerRowOfPlane");
@@ -1535,14 +1537,21 @@ static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsig
      * magenta), so it is not screened here: A008 was refused on both sides for days
      * and nobody saw. What is screened is the geometry, since the host reads the
      * rows: a packed surface's pages are touched a stride per row, which every
-     * IOSurface allocation covers, and NV12's two planes their own way. */
+     * IOSurface allocation covers, and NV12's two planes their own way. Only each row's
+     * pixels, not its whole stride: the allocation can end with the last row's pixels
+     * (6.1.6's backboardd composited a 40-row surface at page offset 0x20, stride 512, whose
+     * last 32 bytes of padding were the next, unmapped page: SIGSEGV in this touch, and the
+     * whole UI restarted). Without the element size, a byte a pixel; the host faults in the rest. */
     int readable = width && height;   /* the size limit is the host's too (Exit Strategy: a 2240x416 layer) */
     if (format == 0x34323076 || format == 0x34323066) {
         readable = readable && uv && !(width & 1) && !(height & 1) &&
             surface_fault_read(base, stride, height, width) &&
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
-        readable = readable && !uv && surface_fault_read(base, stride, height, stride);
+        unsigned element = p_IOSurfaceGetBytesPerElement ? p_IOSurfaceGetBytesPerElement(surface) : 0;
+        unsigned long long row = (unsigned long long)width * (element ? element : 1);
+        readable = readable && !uv &&
+            surface_fault_read(base, stride, height, row < stride ? (unsigned)row : stride);
     }
     if (!readable) {
         static unsigned rejected;

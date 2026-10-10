@@ -74,8 +74,10 @@ static void wx(unsigned v) {}
 static unsigned abi_format = 0x34323076;
 static unsigned surface_lock_flags = 1;       /* IOSurface's read-only lock (CoreSurface: 2) */
 static int abi_surface_fault_read(unsigned long base,unsigned stride,unsigned rows,unsigned bytes)
-{ unsigned expected=abi_format==GLES_SURFACE_RGB555?4:2;
-  assert((base==0x10000000 || base==0x10000100) && stride==expected && bytes==expected && rows<=2);return 1; }
+{ /* a packed surface's rows are touched for their pixels only (2 x 2 bytes in a 16-byte stride),
+   * not their padding, which past the last row's pixels can be another, unmapped page */
+  bool packed=abi_format==GLES_SURFACE_RGB555;
+  assert((base==0x10000000 || base==0x10000100) && stride==(packed?16:2) && bytes==(packed?4:2) && rows<=2);return 1; }
 #define A(...) (const unsigned[]){__VA_ARGS__}
 static unsigned abi_args[9], abi_locks, abi_finished, abi_signals;
 static int abi_signal_error;
@@ -86,7 +88,8 @@ static int p_IOSurfaceLock(void *s, unsigned mode, unsigned *seed)
 static int p_IOSurfaceUnlock(void *s, unsigned mode, unsigned *seed)
 { surface_arg(s); assert(mode==1); abi_locks--; return 0; }
 static void *p_IOSurfaceGetBaseAddress(void *s) { surface_arg(s); return (void *)0x10000000; }
-static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?4:2; }
+static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?16:2; }
+static unsigned p_IOSurfaceGetBytesPerElement(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetWidth(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetHeight(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetPixelFormat(void *s) { surface_arg(s); return abi_format; }
@@ -129,7 +132,7 @@ int main(void)
     assert(!abi_locks);
     abi_format=GLES_SURFACE_RGB555;
     assert(GLESBindCoreSurface(NULL,0x84f5,(void *)0x1234));
-    assert(abi_args[2]==4 && abi_args[5]==GLES_SURFACE_RGB555 && !abi_args[6] && !abi_locks);
+    assert(abi_args[2]==16 && abi_args[5]==GLES_SURFACE_RGB555 && !abi_args[6] && !abi_locks);
     assert(GLESBindCoreSurface(NULL, 0x84f5, NULL));
     assert(!abi_args[1] && !abi_locks);
     assert(GLESFinishTexture(NULL, 0x0de1));
