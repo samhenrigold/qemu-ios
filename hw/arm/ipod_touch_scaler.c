@@ -6,6 +6,7 @@
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
+#include "qemu/timer.h"
 
 /* 7E18 AppleM2ScalerCSCDriver: 0xc0732388 programs formats, 0xc07323f0
  * source geometry, 0xc073246c destination geometry, 0xc0730288 acknowledges
@@ -20,6 +21,7 @@ typedef struct {
     void *xlate_opaque;
     unsigned sid;
     uint32_t version;   /* +0x260, the block's version: 0 on the S5L8720 (no tiled buffers) */
+    QEMUTimer *done;    /* the running transfer's end */
 } IPodScalerState;
 
 void ipod_scaler_set_iommu(DeviceState *dev,
@@ -243,19 +245,43 @@ static uint64_t scaler_read(void *opaque, hwaddr off, unsigned size)
     return s->regs[off / 4];
 }
 
+/*
+ * A transfer ends some time after its start, as the block's does: 5 ns a destination pixel (200 Mpixel/s, 3 ms for
+ * 640x960), at least 20 us. The pixels are written at the start; the busy bit (+0x4 bit 0) stays set and the done
+ * interrupt waits for the end. Done at the start write, the interrupt reached the driver's workloop while the
+ * submitting thread held the command gate, and the workloop took the CPU the moment the gate opened: the completion
+ * of an asynchronous transfer freed the request before AppleM2ScalerCSCDriver's submit path read the request's
+ * callback, so the submit path took the freed memory for a synchronous request, released a null DMA command and
+ * the kernel panicked (fault_addr 0x280, in SpringBoard, an iPhone 4 on 4.2.1 putting its third app away).
+ */
+static void scaler_complete(void *opaque)
+{
+    IPodScalerState *s = opaque;
+
+    s->regs[1] &= ~1u;
+    s->regs[3] |= 1;
+    scaler_irq(s);
+}
+
 static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     IPodScalerState *s = opaque;
     if (off == 0xc) s->regs[3] &= ~value;
     else s->regs[off / 4] = value;
     if (off == 4 && (value & 2)) {
+        timer_del(s->done);
         memset(s->regs, 0, sizeof(s->regs));
         s->regs[0x260 / 4] = s->version;
     } else if (off == 4 && (value & 1)) {
+        uint64_t pixels = (uint64_t)((s->regs[0x40 / 4] >> 16) & 0x1fff) * (s->regs[0x40 / 4] & 0x1fff);
+
+        if (timer_pending(s->done)) {   /* started again before the last one ended: that one ends now */
+            timer_del(s->done);
+            s->regs[3] |= 1;
+        }
         if (!scaler_convert(s) && !scaler_rgb(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
-        s->regs[1] &= ~1u;
-        s->regs[3] |= 1;
+        timer_mod(s->done, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MAX(20000, pixels * 5));
     }
     scaler_irq(s);
 }
@@ -271,6 +297,7 @@ static const MemoryRegionOps scaler_ops = {
 static void scaler_reset(DeviceState *dev)
 {
     IPodScalerState *s = (IPodScalerState *)dev;
+    timer_del(s->done);
     memset(s->regs, 0, sizeof(s->regs));
     s->regs[0x260 / 4] = s->version;
     scaler_irq(s);
@@ -282,6 +309,7 @@ static void scaler_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &scaler_ops, s, "scaler-csc", 0x1000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    s->done = timer_new_ns(QEMU_CLOCK_VIRTUAL, scaler_complete, s);
 }
 
 static int scaler_post_load(void *opaque, int version_id)
@@ -291,10 +319,11 @@ static int scaler_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription scaler_vmstate = {
-    .name = "ipod-scaler", .version_id = 1, .minimum_version_id = 1,
+    .name = "ipod-scaler", .version_id = 2, .minimum_version_id = 2,
     .post_load = scaler_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IPodScalerState, 0x1000 / 4),
+        VMSTATE_TIMER_PTR(done, IPodScalerState),
         VMSTATE_END_OF_LIST()
     },
 };

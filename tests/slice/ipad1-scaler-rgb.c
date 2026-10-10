@@ -24,6 +24,12 @@ static void cpu_physical_memory_write(uint64_t a,const void *p,size_t n)
 static void stw_le_p(void *p,unsigned v) { uint8_t *b=p;b[0]=v;b[1]=v>>8; }
 static void qemu_set_irq(qemu_irq irq,int level) { *irq=level; }
 #define error_report(...) ((void)0)
+typedef int QEMUTimer;   /* scaler_write's end of a transfer; scaler_rgb is called directly here */
+enum { QEMU_CLOCK_VIRTUAL };
+static int64_t qemu_clock_get_ns(int c) { (void)c; return 0; }
+static void timer_mod(QEMUTimer *t, int64_t at) { (void)t; (void)at; }
+static void timer_del(QEMUTimer *t) { (void)t; }
+static bool timer_pending(QEMUTimer *t) { (void)t; return false; }
 #include "slice.h"
 
 /* The source at IOVA 0x100000 maps straight to RAM 0; the destination at IOVA 0x200000 maps, in each 64 KiB window,
