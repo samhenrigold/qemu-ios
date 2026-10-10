@@ -828,6 +828,9 @@ static int fe_bind_layer(GuestGC *gc, void *drawable)
     void **vt = drawable;
     ca_view_t *v = ca_view_for_gc(gc, drawable != 0);
     unsigned flags = 0, wd_, ht;
+    /* The layer this view held, and its buffers' size: a rebind of the same layer may have to start from them. */
+    void *was = v ? v->drawable : 0;
+    unsigned was_w = v ? v->width : 0, was_h = v ? v->height : 0;
     if (v) ca_detach_view(v);
     if (!drawable) return 1;
     if (!v) {
@@ -852,10 +855,20 @@ static int fe_bind_layer(GuestGC *gc, void *drawable)
     v->drawable = drawable;
     if (*(int *)drawable > 1 && vt[6]) flags = ((unsigned (*)(void *))vt[6])(drawable) & ~8u;
     v->need_buffer = 1;
+    /* A layer bound again keeps the buffers it has, and while the render server still holds both of them (the one
+     * on screen, and the one the detach just presented) nextBuffer has none to give. They come free when this
+     * transaction commits, which waits for the bind to return: waiting here only blocks in CA (about 1 s a try)
+     * until the launch watchdog fires. So a rebind of the same layer takes the size its buffers have and asks for
+     * one at the next frame (fe_present). Contre Jour 1.01 binds its layer again on its second turn (4.2.1), and the
+     * failed bind left every frame after it nowhere: black for good. */
     if (!ca_next_buffer(v)) {
-        ca_detach_view(v);
-        refused("ca:", "first-buffer", ~0u);
-        return 0;
+        if (drawable != was || !was_w || !was_h) {
+            ca_detach_view(v);
+            refused("ca:", "first-buffer", ~0u);
+            return 0;
+        }
+        v->width = was_w;
+        v->height = was_h;
     }
     wd_ = v->width; ht = v->height;
     if (flags & 4) { unsigned t = wd_; wd_ = ht; ht = t; }
@@ -872,6 +885,8 @@ static int fe_bind_layer(GuestGC *gc, void *drawable)
 static int fe_present(GuestGC *gc)
 {
     ca_view_t *v = ca_view_for_gc(gc, 0);
+    /* A rebound layer whose buffers are still out (fe_bind_layer) drops this frame rather than blit it to the panel. */
+    if (v && v->drawable && !v->ref && !ca_next_buffer(v)) return 1;
     if (v && ca_next_buffer(v) && v->base) {
         volatile unsigned char *p = (volatile unsigned char *)(unsigned long)v->base;
         unsigned i, n = v->stride * v->height;
