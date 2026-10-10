@@ -30,7 +30,7 @@ with persistence all work.
 - Sound: the ring/silent switch rests at ring. GPIO inputs idle high, and on this board high is silent, so until
   2026-10-06 every system sound was muted (no PCM ever reached i2s0, on 4.2.1 and 6.0b1 alike).
   `regress.py --machine iPhone-4 --checks audio` hears the boot beep, unlock, lock and unlock (8C148 and 10A5316k).
-- I2C: PMU (0x74, IRQ 0x0d), CS42L61 (CS42L58 register file, 0x4a), AK8973 (0x1e, the DT's `compass`
+- I2C: PMU (0x74, IRQ 0x0d), CS42L61 (CS42L58 register file, 0x4a), AK8975B (0x0c, the DT's `compass1`
   node), Mikey (0x39) on i2c0; LIS331DLH (0x19) on i2c2.
 
 Verified 2026-10-04: `tests/ipad1/regress.py --machine iPhone-4 --device DEV --checks
@@ -174,7 +174,7 @@ As N81, plus:
 | CS42L61 + Mikey | the iPad's | shared | H |
 | Ring/silent switch (buttons/ringerab, GPIO 0x004) | an active-high pad (its DT function flags 0x100; K48's are active low) held at ring; `ring-switch=on` is silent, settable at run time | board data | R |
 | Baseband (spi2, GPIOs) | DT node unmatched by `baseband=off`; the controller with nothing on it | P (until the cell stream's modem) | S |
-| Compass | AK8973 at the DT's 0x1e node (the unit has AK8975B at 0x0c/0x0d) | variant | H |
+| Compass | AK8975B at 0x0c (`compass1`, identity orientation); the DT's akm8973s (0x1e) and second AK8975B (0x0d) find nothing | shared | H |
 | PWM (0x83500000) | `s5l8920.pwm` (`hw/arm/s5l8920_pwm.c`, the 3GS's block): channel 1 (4.x/5.x DT pwm/vibrator) runs the vibration motor (`qemu_ios_ui_vibrator`); channel 2, the camera strobe, unwired | shared | H |
 | Vibration motor, 6.x/7.x | their DT moves it to the D1815 (pmu/vib-pwm): AppleD1815PMUPWM sets the PMU's PWM (0x6e enable, 0x6f duty, stored only) and raises the motor driver's enable, GPIO 0x0e07, for each buzz; that pin is the motor's second drive | board data | H |
 
@@ -255,12 +255,14 @@ What differs from 7.1.2:
      locationd, drives down to correlator data; out of reach for now (docs/baseband/gps.md). The 3GS's
      receiver, inside its modem, is modeled.
    - The cameras and ISP. `camera=off` (default) unmatches the DT's `isp` node, as on N81 (its debt 4).
-3. **Compass**: the AK8973 stands in for the AK8975B pair. On 4.2.1 no mount reads right both face up and
-   upright: the DT's orientation 5 reads the heading mirrored face up and right upright, 4 (`compass_orientation`)
-   right face up and mirrored upright (2026-10-09, LightTouchMac `sessions phone --only compass`; the 3GS and the
-   iPad 3.2 read right both ways with their DT orientation).
-4. ~~Accelerometer mounting~~ (2026-10-04): `accel_mount` "-2,1,-3" (the DT orientation's transpose).
-   Safari turns with `accel-orientation` 1/3/4 as on hardware.
+3. ~~Compass~~ (2026-10-10): the unit's AK8975B (0x0c) is modeled in place of the AK8973 that stood in for it,
+   and the accelerometer's z no longer reads -z (debt 4). CoreLocation reads 90 and 200 within 2 degrees face up
+   and upright on 4.2.1 (the compass scenario of LightTouchMac `sessions phone`). The stand-in had also put 4.2.1
+   locationd on its AK8973-only offset-DAC path. 7.x is unchecked: its read-only root takes no probe.
+4. ~~Accelerometer mounting~~ (2026-10-04, z 2026-10-10): `accel_mount` "-2,1,3": the DT orientation's transpose
+   for x and y. The DT's z row (-1) makes the matrix a mirror image, which no mounted part can be; the iPad's DT is
+   the same mirror and its LIS331 reads -z. With -z the guest took face up for face down, which showed only as
+   CoreLocation's heading mirrored face up. Safari turns with `accel-orientation` 1/3/4 as on hardware.
 5. All of N81's debts apply: no iBoot or NAND boot, K48's 16 GB NAND geometry, K48's panel ID. Touch is
    calibrated (N81's debt 7, the shared `mt_profile_n81`).
 6. **7.x boots saturate the emulated A4 CPU for about 2 minutes** (measured 2026-10-06 on 7.1.2 with

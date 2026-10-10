@@ -1007,8 +1007,21 @@ static const TypeInfo s5l8930_tsl2561_info = {
  * EHXGA..EHZGA (0x66-0x68), MS1 = 3 (power down), then the gains are copied
  * into HXGA..HZGA (0xE4-0xE6). A reading (c050e368): MS1 = 0, wait for ST
  * bit0 (data ready), then TMPS (0xC1) and H1X..H1Z (0xC2-0xC4), each an
- * unsigned byte centered on 128. The DAC offsets (0xE1-0xE3) are stored but
- * do not shift the output: the modeled field sits mid-range already.
+ * unsigned byte centered on 128, 1 uT/LSB at the EEPROM's gains.
+ *
+ * The offset DACs HXDA..HZDA (0xE1-0xE3) are stored but do not move the
+ * output, unlike the chip's (sign and magnitude, D7 set for plus, datasheet
+ * table 3; ~16 LSB per step). 3.x (the AKM library, 3.2 1660b8) and
+ * 4.2.1-5.1.1 locationd (CLSensorInterfaceIoHid::onMagnetometer8973IohidEvent,
+ * 4.2.1 e3644) center each axis with an 8-step successive approximation of the
+ * DACs when the compass starts, which converges only if a plus DAC raises the
+ * output. With that modeled the DACs settle at a step or two and 3.1.3, 3.2.2
+ * and 4.2.1 all read off: the centered reading is left for the calibration a
+ * unit learns by being turned, which a still emulator never is. Without it the
+ * DACs run to the rails; 3.x and 6.x (which leaves them at 0) read the field,
+ * but 4.2.1-5.1.1 hands up reading + 16 x DAC (e4894), +-2032 uT per axis:
+ * headings near the diagonals. No DAC behavior reads right on both, so the 3GS
+ * and the iPad on 4.x-5.x read off.
  *
  * The field is the Earth's for a host-set heading: degrees clockwise from
  * magnetic north of the way the device faces, i.e. its top edge, or its
@@ -1025,8 +1038,7 @@ static const TypeInfo s5l8930_tsl2561_info = {
  * 0-2; 6.1.6 N88 80811a80, 3.1.3 N88 c0685a42). The model writes the reading
  * that comes out right. Found with CoreLocation's heading face up and upright
  * at two headings each (LightTouchMac sessions phone compass): right on the 3GS
- * (3.1.3, 6.1.6) and the iPad (3.2). The iPhone 4 (4.2.1) reads right only one
- * of the two ways with any mount (a4_n90), and the iPad on 4.2.1 not at all.
+ * (3.1.3, 6.1.6) and the iPad (3.2).
  */
 
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8930AK8973State, S5L8930_AK8973)
@@ -1037,8 +1049,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930AK8973State, S5L8930_AK8973)
 #define AK_MS1      0xe0
 #define AK_ST_INT   (1u << 0)
 #define AK_MS1_MEASURE  0
-#define AK_H_COUNTS     24.0    /* ~24 uT horizontal at ~1 uT/LSB */
-#define AK_V_COUNTS     40.0    /* ~40 uT vertical (inclination ~60 deg) */
+#define AK_H_UT         24.0    /* ~24 uT horizontal */
+#define AK_V_UT         40.0    /* ~40 uT vertical (inclination ~60 deg) */
 
 struct S5L8930AK8973State {
     I2CSlave i2c;
@@ -1050,7 +1062,9 @@ struct S5L8930AK8973State {
     LIS302DLState *accel;   /* pose source; wired by the machine */
 };
 
-static void ak8973_measure(S5L8930AK8973State *s)
+/* The field in uT as the driver hands it up (before the mount), for the heading
+ * and the accelerometer's pose. */
+static void ak_field(S5L8930AK8973State *s, double out[3])
 {
     double d[3] = { 0, 0, -1 };             /* down, device axes: flat by default */
     double f[3], r[3], len, dot, h = s->heading * M_PI / 180.0;
@@ -1083,11 +1097,23 @@ static void ak8973_measure(S5L8930AK8973State *s)
     r[1] = d[2] * f[0] - d[0] * f[2];
     r[2] = d[0] * f[1] - d[1] * f[0];
 
-    s->regs[AK_TMPS] = 0x80;                /* ~30 C by the kext's scale */
     for (i = 0; i < 3; i++) {
         double north = cos(h) * f[i] - sin(h) * r[i];
-        double b = AK_H_COUNTS * north + AK_V_COUNTS * d[i];
-        long v = lround(i == 1 ? b : -b);
+        double b = AK_H_UT * north + AK_V_UT * d[i];
+
+        out[i] = i == 1 ? b : -b;
+    }
+}
+
+static void ak8973_measure(S5L8930AK8973State *s)
+{
+    double b[3];
+    int i;
+
+    ak_field(s, b);
+    s->regs[AK_TMPS] = 0x80;                /* ~30 C by the kext's scale */
+    for (i = 0; i < 3; i++) {
+        long v = lround(b[i]);
 
         /* the mount: what the driver negates, then swaps */
         v = s->orientation & (1 << i) ? -v : v;
@@ -1207,6 +1233,103 @@ static const TypeInfo s5l8930_ak8973_info = {
     .parent        = TYPE_I2C_SLAVE,
     .instance_size = sizeof(S5L8930AK8973State),
     .class_init    = ak8973_class_init,
+};
+
+/* ---- AKM AK8975B 3-axis magnetometer (I2C0 0x0C, "compass,akm8975b") ----
+ *
+ * The iPhone 4's. 8C148 AppleAKM8975B: probe reads WIA (0x00); start reads the
+ * fuse ROM sensitivities ASAX..ASAZ (0x10-0x12) in CNTL (0x0A) mode 0xF and
+ * scales each axis by (ASA - 128) / 256 + 1; a reading writes CNTL = 1
+ * (single measurement), waits for ST1 (0x02) DRDY, then reads HXL..HZH
+ * (0x03-0x08), signed 16-bit little endian at 0.3 uT/LSB, and applies the DT
+ * node's "orientation" matrix. No offset DAC: the field reaches locationd as
+ * measured, which 4.x-5.x locationd assumes only of the AK8973 (it adds its
+ * 16 LSB per DAC step to that chip's readings alone). The model sits at 0x0C,
+ * whose DT matrix is the identity; the field is the AK8973 model's.
+ */
+
+#define AK75_WIA    0x00
+#define AK75_ST1    0x02
+#define AK75_HXL    0x03
+#define AK75_ST2    0x09
+#define AK75_CNTL   0x0a
+#define AK75_ASAX   0x10
+#define AK75_UT_LSB 0.3
+
+static void ak8975_measure(S5L8930AK8973State *s)
+{
+    double b[3];
+    int i;
+
+    ak_field(s, b);
+    for (i = 0; i < 3; i++) {
+        int16_t v = lround(b[i] / AK75_UT_LSB);
+
+        s->regs[AK75_HXL + 2 * i] = v;
+        s->regs[AK75_HXL + 2 * i + 1] = (uint16_t)v >> 8;
+    }
+    s->regs[AK75_ST1] = 1;                  /* DRDY */
+    s->regs[AK75_CNTL] = 0;                 /* back to power-down */
+}
+
+static uint8_t ak8975_recv(I2CSlave *i2c)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(i2c);
+    uint8_t v = s->regs[s->reg];
+
+    if (s->reg >= AK75_HXL && s->reg <= AK75_ST2) {
+        s->regs[AK75_ST1] = 0;              /* data read out */
+    }
+    s->reg++;
+    return v;
+}
+
+static int ak8975_send(I2CSlave *i2c, uint8_t data)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(i2c);
+    uint8_t reg;
+
+    if (s->addressing) {
+        s->addressing = false;
+        s->reg = data;
+        return 0;
+    }
+    reg = s->reg++;
+    if (reg == AK75_CNTL) {
+        s->regs[reg] = data & 0xf;
+        if (s->regs[reg] == 1) {
+            ak8975_measure(s);
+        }
+    }
+    return 0;
+}
+
+static void ak8975_reset(DeviceState *dev)
+{
+    S5L8930AK8973State *s = S5L8930_AK8973(dev);
+
+    memset(s->regs, 0, sizeof(s->regs));
+    s->regs[AK75_WIA] = 0x48;
+    /* nominal parts: no sensitivity adjustment */
+    memset(&s->regs[AK75_ASAX], 128, 3);
+    s->reg = 0;
+    s->addressing = true;
+}
+
+static void ak8975_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+
+    device_class_set_legacy_reset(dc, ak8975_reset);
+    k->recv = ak8975_recv;
+    k->send = ak8975_send;
+}
+
+static const TypeInfo s5l8930_ak8975_info = {
+    .name          = TYPE_S5L8930_AK8975,
+    .parent        = TYPE_S5L8930_AK8973,
+    .class_init    = ak8975_class_init,
 };
 
 /* ---- ST L3G4200D 3-axis gyroscope (I2C2 0x68, "gyro,ap3gdl") ----
@@ -1505,6 +1628,7 @@ static void s5l8930_i2c_register_types(void)
     type_register_static(&s5l8930_tsl2581_info);
     type_register_static(&s5l8930_tsl2561_info);
     type_register_static(&s5l8930_ak8973_info);
+    type_register_static(&s5l8930_ak8975_info);
     type_register_static(&s5l8930_l3g_info);
 }
 

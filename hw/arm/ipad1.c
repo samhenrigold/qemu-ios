@@ -297,20 +297,19 @@ static const A4Board a4_n90 = {
     .i2c = {
         { 0, 0x74, TYPE_S5L8930_D1815, 0x0d },
         { 0, 0x4a, TYPE_CS42L58 },               /* audio0, cs42l61 as on K48 */
-        /* compass (akm8973s, 0x1e) is in the DT next to the AK8975s the unit
-         * carries; the AK8973 model answers its driver. */
-        { 0, 0x1e, TYPE_S5L8930_AK8973 },
+        /* compass1 (akm8975b, 0x0c, identity orientation): the unit's AK8975B.
+         * The DT's akm8973s (0x1e) and compass2 (0x0d) nodes find nothing. */
+        { 0, 0x0c, TYPE_S5L8930_AK8975 },
         { 0, 0x39, TYPE_CD3272MIKEY },           /* the codec waits for 'mikey' */
         { 2, 0x19, TYPE_LIS302DL },
         { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
-    /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): its transpose, x reads -y, y reads x. */
-    .accel_mount = "-2,1,-3",
+    /* DT accelerometer orientation rows (0,1,0) (-1,0,0) (0,0,-1): x reads -y, y reads x (its transpose), and
+     * z reads z. The DT's z row would make the mount a mirror image, which no part on a board can be; the
+     * iPad's DT (x, -y, z) is the same mirror, and its LIS331 reads -z (accel_flipped). With -z here the
+     * guest took face up for face down: CoreLocation's heading came out mirrored face up only. */
+    .accel_mount = "-2,1,3",
     .gyro_mount = "1,2,3",                   /* DT gyro orientation: identity */
-    /* Its DT compass node (the akm8973s at 0x1e the unit doesn't carry; it has AK8975Bs) says 5, x and z
-     * negated. With 5 CoreLocation reads the heading mirrored face up and right upright; with 4 (z only),
-     * as here, right face up and mirrored upright. No mount reads right both ways on 4.2.1: debt. */
-    .compass_orientation = 4,
     .bt_uart = 3,
     .gauge_uart = 5,
     .swi_iset = 3,
@@ -1183,8 +1182,8 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
             s5l8930_ltc4099_set_usb(dev, s->usb_cable);
         } else if (!strcmp(d->type, TYPE_S5L8930_L3G4200D) && s->accel) {
             s5l8930_l3g_set_accel(dev, s->accel);
-        } else if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
-            /* qom-set /machine compass-heading N (degrees) */
+        } else if (object_dynamic_cast(OBJECT(dev), TYPE_S5L8930_AK8973)) {
+            /* qom-set /machine compass-heading N (degrees); the AK8975 is one too */
             s->compass = dev;
             object_property_add_alias(machine, "compass-heading", OBJECT(dev), "heading");
         } else if (!strcmp(d->type, TYPE_LIS302DL)) {
