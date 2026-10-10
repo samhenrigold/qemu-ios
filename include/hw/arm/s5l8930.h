@@ -192,6 +192,8 @@ void s5l8930_d1815_set_vbat(DeviceState *dev, unsigned mv);
 void s5l8930_d1815_set_usb_host(DeviceState *dev, bool host);
 /* The guest has powered off: the standby write, or the halt-with-cable restart into the power-off simulation. */
 bool s5l8930_d1815_guest_shutdown_confirmed(void);
+/* A wake from hibernate: the suspend marker in scratch 0x8F, taken as LLB takes it. */
+bool s5l8930_d1815_take_suspend(DeviceState *dev);
 #define TYPE_S5L8930_TCA6408 "s5l8930.tca6408"   /* GPIO expander at 0x20 on i2c0 */
 /* LTC4099 charger at 0x09 on i2c0 (hw/arm/s5l8930_ltc4099.c); its STAT byte
  * is where the USB arbitrator learns a cable is present (usb-present prop). */

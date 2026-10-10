@@ -303,6 +303,9 @@ struct S5L8930D1815State {
     bool usb_host;          /* a host's cable: VBUS, and its pull-downs on D+/D-
                              * (ADC mux 6 reads 0) */
     bool restarting;        /* the next reset is this PMU's own 0x7B restart */
+    qemu_irq ap_power;      /* "ap-power" out: the AP's rails, 0 while it hibernates */
+    bool ap_off;            /* hibernating: the AP is unpowered, DRAM in self-refresh */
+    bool ap_waking;         /* the next reset is the AP's power-on; the PMU keeps everything */
 };
 
 /*
@@ -330,6 +333,23 @@ static bool d1815_halt_reason(S5L8930D1815State *s)
     return r == 0x90 || r == 0x10;
 }
 
+/*
+ * The AP's power, which the PMU switches. "pmu go hib" (0x12 bit 1) turns it
+ * off; a wake button, or an event the guest left unmasked, turns it on, and
+ * the SoC comes up through LLB, which finds 0x8F's suspend marker and the
+ * kernel's in DRAM and resumes it (the kboot machine does that in its place).
+ * Boards that don't wire the rail keep the CPU parked where the kernel left it.
+ */
+static void d1815_set_ap_power(S5L8930D1815State *s, bool on)
+{
+    if (!s->ap_power || s->ap_off != on) {
+        return;
+    }
+    s->ap_off = !on;
+    s->ap_waking = on;
+    qemu_set_irq(s->ap_power, on);
+}
+
 static void d1815_update_irq(S5L8930D1815State *s)
 {
     int i, pending = 0;
@@ -338,6 +358,9 @@ static void d1815_update_irq(S5L8930D1815State *s)
         pending |= s->regs[PMU_EVENT + i] & ~s->regs[PMU_IRQ_MASK + i];
     }
     qemu_set_irq(s->irq, pending != 0);
+    if (pending && s->ap_off) {
+        d1815_set_ap_power(s, true);
+    }
 }
 
 /* Completion arrives as an event, not inline: the driver arms its own timeout
@@ -410,6 +433,10 @@ void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down)
     if (down) {
         s->regs[PMU_EVENT] |= hold ? PMU_EVENT_A_HOLD : PMU_EVENT_A_MENU;
         d1815_update_irq(s);
+        /* The wake buttons power the AP on whatever the masks say. */
+        if (s->ap_off) {
+            d1815_set_ap_power(s, true);
+        }
     }
 }
 
@@ -421,6 +448,23 @@ void s5l8930_d1815_button(DeviceState *dev, bool hold, bool down)
  * re-runs cable detection through usb_det; the level itself lives in the
  * LTC4099 model. Event A bit 3 is the PMU's own "usb" event.
  */
+/*
+ * LLB's side of a wake (n90/n81 LLB-931.71.16 0x8400575c, 0x840055d8): its
+ * scratch 0 is 0x8F, the kernel left (0x8F & 0xd0) == 0x80 there before "pmu
+ * go hib", and LLB marks it resumed, (0x8F & 0x2f) | 0x40, before it jumps to
+ * the kernel. False (and nothing written) if the marker isn't there.
+ */
+bool s5l8930_d1815_take_suspend(DeviceState *dev)
+{
+    uint8_t *r = &S5L8930_D1815(dev)->regs[PMU_BOOT_REASON];
+
+    if ((*r & 0xd0) != 0x80) {
+        return false;
+    }
+    *r = (*r & 0x2f) | 0x40;
+    return true;
+}
+
 void s5l8930_d1815_set_usb_host(DeviceState *dev, bool host)
 {
     S5L8930_D1815(dev)->usb_host = host;
@@ -506,6 +550,10 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
         if (data & 1) {
             qatomic_set(&d1815_shutdown_confirmed, 1);
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        } else if ((data & 2) && s->ap_power) {
+            /* The power transition consumes the command, as on the D1759. */
+            s->regs[reg] &= ~2;
+            d1815_set_ap_power(s, false);
         }
         return 0;
     case PMU_SYS_CTRL:
@@ -550,6 +598,11 @@ static void d1815_reset(DeviceState *dev)
     uint8_t scratch[PMU_SCRATCH_LEN] = { 0 };
     int64_t rtc_base = 0;
 
+    if (s->ap_waking) {         /* the AP's power-on reset; the PMU was up all along */
+        s->ap_waking = false;
+        return;
+    }
+    s->ap_off = false;
     if (s->restarting) {        /* the always-on domain stays */
         memcpy(scratch, &s->regs[PMU_SCRATCH], sizeof(scratch));
         rtc_base = s->rtc_base;
@@ -587,6 +640,7 @@ static void d1815_init(Object *obj)
 
     I2C_SLAVE(obj)->address = D1815_ADDR;
     qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->ap_power, "ap-power", 1);
     s->adc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, d1815_adc_done, s);
 }
 
@@ -603,7 +657,7 @@ static int d1815_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_s5l8930_d1815 = {
     .name = TYPE_S5L8930_D1815,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = d1815_post_load,
     .fields = (const VMStateField[]) {
@@ -614,6 +668,7 @@ static const VMStateDescription vmstate_s5l8930_d1815 = {
         VMSTATE_BOOL(addressing, S5L8930D1815State),
         VMSTATE_INT64(rtc_base, S5L8930D1815State),
         VMSTATE_UINT32(rtc_latch, S5L8930D1815State),
+        VMSTATE_BOOL_V(ap_off, S5L8930D1815State, 2),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -10,6 +10,10 @@
  *     order without re-shifting the buffer.
  *   - A page program completes only once the FIFOs hold the page's data AND its
  *     metadata (the 3.2.2 IOP-panic fix).
+ *   - Any command but READ ID ends ID mode: a program right after the ID reads
+ *     (the IOP firmware's first op on a bus after a hibernate wake) has its
+ *     status poll (go 0x50) read the status, ready and not write-protected, not
+ *     an ID byte (the n88 "WMR_ASSERT failed:(bWPDisabled)" fix).
  *
  * Mutation (named, must fail this test): in h2fmi_write's FMI_CONTROL case,
  * weaken the transfer-start guard
@@ -141,6 +145,32 @@ int main(void) {
     assert(g_prog.called == 1 && g_prog.len == g_page_bytes);
     assert(g_prog.data[0] == 0xa3 && g_prog.data[1] == 0xa2);
 
-    free(sp); free(bp); free(wsp); free(wp);
-    puts("PASS: H2FMI transfer-start rule, O(1) FIFO reads in order, write waits for data + metadata");
+    /* --- READ ID, then a program: the status poll reads the status --- */
+    S5L8930H2FMIState *isp = calloc(1, sizeof *isp);
+    H2FMIBus *ip = calloc(1, sizeof *ip);
+    isp->iop = &iop; isp->fmc_off = 0x400; isp->ecc_off = 0x800; ip->s = isp; ip->n = 1;   /* the S5L8920 layout */
+    h2fmi_write(ip, isp->fmc_off + FMC_CE, 0x1, 4);
+    h2fmi_write(ip, isp->fmc_off + FMC_CMD, 0x90, 4);         /* READ ID */
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x9, 4);
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x50, 4);          /* first ID byte */
+    assert(ip->fmc[FMC_NAND_STATUS / 4] == (g_id & 0xff));
+    h2fmi_write(ip, isp->fmc_off + FMC_CMD, 0x80, 4);         /* program, as above */
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x9, 4);
+    h2fmi_write(ip, FMI_CONTROL, 5, 4);
+    for (unsigned i = 0; i < g_page_bytes; i += 4) {
+        h2fmi_write(ip, FMI_DATA, 0xa0a1a2a3, 4);
+    }
+    for (unsigned i = 0; i < 10; i += 2) {
+        h2fmi_write(ip, FMI_META, 0xbbbb, 4);
+    }
+    h2fmi_write(ip, isp->fmc_off + FMC_CMD, 0x1000, 4);       /* confirm as the second command */
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x2, 4);
+    h2fmi_write(ip, isp->fmc_off + FMC_CMD, 0x70, 4);         /* status */
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x1, 4);
+    h2fmi_write(ip, isp->fmc_off + FMC_GO, 0x50, 4);          /* the status byte */
+    assert(ip->fmc[FMC_NAND_STATUS / 4] & 0x80);              /* not write-protected */
+
+    free(sp); free(bp); free(wsp); free(wp); free(isp); free(ip);
+    puts("PASS: H2FMI transfer-start rule, O(1) FIFO reads in order, write waits for data + metadata, "
+         "status after READ ID");
 }

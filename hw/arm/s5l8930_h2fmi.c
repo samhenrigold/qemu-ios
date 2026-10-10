@@ -218,6 +218,18 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
 {
     S5L8930H2FMIState *s = b->s;
 
+    /*
+     * Any other command ends READ ID: the byte reads that follow are the
+     * status or data again. Left in ID mode, a status poll (go 0x50) read an
+     * ID byte. A cold boot never showed it (a page read follows the ID reads
+     * on every bus); after a hibernate wake the IOP firmware's first op on
+     * FMI1 is a program, and its status check found bit 7 (not write-
+     * protected) clear: "WMR_ASSERT failed:(bWPDisabled)" in
+     * h2fmi_get_current_writable_CE_state (n88 8C148a IOP 0x4dec).
+     */
+    if (cmd != 0x90 && b->mode == MODE_ID) {
+        b->mode = MODE_NONE;
+    }
     switch (cmd) {
     case 0x90:
         b->mode = MODE_ID;

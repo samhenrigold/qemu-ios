@@ -1,6 +1,6 @@
 /* The D1759 hibernate: the power command's bit 1 turns the AP off, a wake button or an unmasked event turns it
  * on with EVENT_B bit 7 latched (7E18's LLB resumes only with it), and the PMU keeps its registers across the AP's
- * power-on reset. A board that does not wire "ap-power" keeps the old behavior: the command is only stored.
+ * power-on reset; the D1755 the same with its own registers. A board that does not wire "ap-power" keeps the old behavior: the command is only stored.
  *
  * SLICE include/hw/arm/ipod_touch_pcf50633_pmu.h define PMU_
  * SLICE include/hw/arm/ipod_touch_pcf50633_pmu.h typedef Pcf50633State
@@ -56,6 +56,7 @@ static void hibernate(Pcf50633State *s) {
 int main(void) {
     int irq = 0, ap = 1;
     Pcf50633State s = { .irq = &irq, .ap_power = &ap, .shutdown_reg = PMU_SHUTDOWN_REG, .event_count = 3,
+                        .wake_event_reg = PMU_EVENT_C_REG,
                         .backlight_enable_reg = PMU_LDO_ENABLE, .adc_reg = PMU_ADC_CONTROL };
     pcf50633_reset(&s);
 
@@ -83,7 +84,21 @@ int main(void) {
     assert(ap && s.ap_waking);
     pcf50633_reset(&s);
 
-    /* Unwired (the 1G, the D1755 boards): the command is stored and nothing switches. */
+    /* The D1755 (S5L8920 boards): 4.x's "pmu go hib" sets 0x26 in 0x0d after 0x6f = 0x80; Hold latches
+     * event byte 0x01 bit 1 (DT wake_button_hold 'STAT' 0x181), not the D1759's EVENT_C. */
+    Pcf50633State d = { .irq = &irq, .ap_power = &ap, .shutdown_reg = 0x0d, .event_count = 4,
+                        .wake_event_reg = 0x01, .backlight_enable_reg = 0xfe, .adc_reg = 0x30 };
+    pcf50633_reset(&d);
+    wr(&d, 0x09, 0xff); wr(&d, 0x0a, 0xff); wr(&d, 0x0b, 0xff); wr(&d, 0x0c, 0xff);
+    wr(&d, PMU_STANDBY_CMD, 0x80);
+    wr(&d, 0x0d, 0x26);
+    assert(!ap && d.ap_off && !shutdowns && d.regs[0x0d] == 0x24);
+    pcf50633_latch_wake_event(&d, 0x02);
+    assert(ap && d.ap_waking && d.regs[0x01] == 0x02 && !(d.regs[PMU_EVENT_C_REG] & 0x02));
+    pcf50633_reset(&d);
+    assert(d.regs[PMU_STANDBY_CMD] == 0x80 && d.regs[0x01] == 0x02);
+
+    /* Unwired (the 1G): the command is stored and nothing switches. */
     Pcf50633State u = { .irq = &irq, .shutdown_reg = PMU_SHUTDOWN_REG, .event_count = 3,
                         .backlight_enable_reg = PMU_LDO_ENABLE, .adc_reg = PMU_ADC_CONTROL };
     pcf50633_reset(&u);

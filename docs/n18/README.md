@@ -258,19 +258,16 @@ offsets at 0x80000000).
 3. **ChipID fuses**: the K48's words.
 4. **D1755 backlight**: undecoded; the panel is held lit (`backlight-enable-reg` points at a scratch byte).
 5. **AMC**: not wired.
-6. **Buttons**: GPIO only. On USB power (always, as on the iPad), Hold locks the panel and Hold or Home wakes it
-   (2026-10-05, FirmwareKit device). The AP never deep-sleeps there. Unplugged (`usb-attached=off`), the locked
-   device deep-sleeps about 2 minutes after boot: "System Sleep", then the D1755 driver's "pmu go hib" (0x805cc8f6 on
-   8C148), which writes 0x6f = 0x80 and sets 0x26 in 0x0d. Bit 0 stays clear, so it is not power-off. Nothing models
-   the PMU cutting AP power or a press powering it back, so it stays asleep. On hardware, LLB resumes the
-   kernel. Findings so far:
-   - The wake buttons are the PMU's STAT function (DT buttons: function-wake_button_menu/_hold, args 0x180/0x181).
-   - The hib path first configures wake sources (0x805cb4c0, reads 0x50..0x57).
-   - No resume address appears in PMGR, pram (top 16 KiB of DRAM) or SRAM after sleep.
-   - Re-entering the kboot entry with DRAM kept and devices reset (an experiment) ends in the abort handler.
-     So the kernel expects a separate resume entry, which LLB knows about. Next: find where xnu-1504's ARM sleep
-     path leaves it (PMU scratch over I2C is the remaining candidate), then make kboot's reset loader branch there
-     on a PMU wake.
+6. **Buttons and deep sleep**: Home and Hold are GPIO pins and also the D1755's wake buttons (DT
+   function-wake_button_menu/_hold, 'STAT' 0x180/0x181 = event byte 0x01 bits 0/1); a press latches that event.
+   On USB power (`usb-attached`, the default) the AP never deep-sleeps. Unplugged (`usb-attached=off`), the locked
+   device hibernates about 2 minutes after boot: "System Sleep", then "pmu go hib", which writes 0x6f = 0x80 and
+   sets 0x26 in 0x0d (bit 1 = hibernate), then writes 'XSOM' 'PSUS' at DRAM + 0x80 and spins. The PMU drops the
+   AP's rail 20 ms later and a wake button brings it back (2026-10-10): the SoC resets with DRAM and the PMU kept
+   and, as kboot stands in for LLB, the machine does what LLB's resume does (n88 8C148a LLB 0x84000720: 0x6f
+   marked resumed, the DRAM marker cleared, the I2C controllers left at CTRL 0x30, a jump to 0 with r0 = 0).
+   "pmu wake events: menu", the lock screen lights and the guest agent answers. Open: after a resume the kernel
+   has not hibernated a second time (420-1100 s windows, n88 and n90).
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
 8. **GL scene on the panel** (fixed 2026-10-05, d6ab1dab16). For a full-screen GL view, 4.x scans the app's
    surface out directly. CLCD window 1 is the 240x360 GL surface (stride 240, origin 40,60, double-buffered);

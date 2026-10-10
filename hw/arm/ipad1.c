@@ -57,6 +57,8 @@
 #include "system/system.h"
 #include "target/arm/cpu.h"
 #include "target/arm/cpregs.h"
+#include "target/arm/arm-powerctl.h"
+#include "target/arm/multiprocessing.h"
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-pasteboard.h"
@@ -374,6 +376,9 @@ struct IPad1MachineState {
     bool wifi_mac_explicit;
     bool iop_core;                       /* run the IOP firmware on a second core (default; off: the HLE) */
     DeviceState *iopcore;
+    bool resume_boot;                    /* the next reset is the AP's power-on out of hibernate */
+    bool resumed;                        /* this reset resumed the kernel */
+    QEMUTimer *ap_off_timer;             /* the PMU's hibernate cut, a moment after the command */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool kbd_cmd, kbd_shift;
     bool btn_hold, btn_home;             /* button-hold/-home properties */
@@ -599,6 +604,83 @@ static void ipad1_apply_ring_switch(IPad1MachineState *s)
     }
 }
 
+/*
+ * A wake from hibernate on kboot, as LLB resumes the kernel (n90/n81
+ * LLB-931.71.16 0x84000720 -> 0x8400cc48, the same path as the S5L8920's,
+ * s5l8920_resume): the PMU's suspend marker (s5l8930_d1815_take_suspend) and
+ * 'XSOM' 'PSUS' at DRAM + 0x80, cleared; then 0 (DRAM's first page, dram_lo,
+ * where the kernel left its trampoline) with r0 = 0, SVC, MMU off. The IOP
+ * core takes the SoC's reset and the kernel restarts it, as on hardware.
+ */
+static bool ipad1_resume(IPad1MachineState *s)
+{
+    const hwaddr mark = S5L8930_DRAM_BASE + 0x80;
+    uint32_t m[2];
+
+    address_space_read(&address_space_memory, mark, MEMTXATTRS_UNSPECIFIED, m, sizeof(m));
+    if (le32_to_cpu(m[0]) != 0x4d4f5358 /* 'XSOM' */ || le32_to_cpu(m[1]) != 0x53555350 /* 'PSUS' */ ||
+        !s5l8930_d1815_take_suspend(s->pmu)) {
+        return false;
+    }
+    address_space_set(&address_space_memory, mark, 0, sizeof(m), MEMTXATTRS_UNSPECIFIED);
+    s->resumed = true;     /* ipad1_machine_reset finishes LLB's part */
+    s->cpu->env.regs[0] = 0;
+    cpu_set_pc(CPU(s->cpu), 0);
+    return true;
+}
+
+/*
+ * The PMU's AP rail on kboot (iBoot/ROM boots don't wire it). Off: the CPU
+ * stops where the kernel parked it. On: the SoC's power-on reset with DRAM
+ * and the PMU intact, and ipad1_cpu_reset resumes the kernel. The Wi-Fi card
+ * model resets with the SoC, as on the S5L8920 (s5l8920_ap_power).
+ */
+static void ipad1_ap_cut(void *opaque)
+{
+    IPad1MachineState *s = opaque;
+
+    arm_set_cpu_off(arm_cpu_mp_affinity(s->cpu));
+}
+
+static void ipad1_ap_power(void *opaque, int n, int on)
+{
+    IPad1MachineState *s = opaque;
+
+    if (on) {
+        timer_del(s->ap_off_timer);
+        s->resume_boot = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    } else {
+        /*
+         * The rails drop a moment after the command, not inside the I2C write:
+         * 4.x writes 'XSOM' 'PSUS' and its resume vector after "pmu go hib"
+         * and then spins until the power goes. ponytail: 20 ms of guest time;
+         * the D1755/D1815 delay is unmeasured.
+         */
+        timer_mod(s->ap_off_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 20);
+    }
+}
+
+/*
+ * After every device reset: on a resume, LLB's I2C setup, which the kernel's
+ * driver resumes on (CTRL 0x30, STATUS cleared; n90 LLB 0x8400555c).
+ */
+static void ipad1_machine_reset(MachineState *machine, ResetType type)
+{
+    IPad1MachineState *s = IPAD1_MACHINE(machine);
+
+    qemu_devices_reset(type);
+    if (s->resumed) {
+        s->resumed = false;
+        for (int n = 0; n < 3; n++) {
+            address_space_stl_le(&address_space_memory, S5L8930_I2C_BASE(n) + 0x08, 0x30,
+                                 MEMTXATTRS_UNSPECIFIED, NULL);
+            address_space_stl_le(&address_space_memory, S5L8930_I2C_BASE(n) + 0x0c, 0x37,
+                                 MEMTXATTRS_UNSPECIFIED, NULL);
+        }
+    }
+}
+
 static void ipad1_cpu_reset(void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(opaque);
@@ -608,12 +690,18 @@ static void ipad1_cpu_reset(void *opaque)
     gsize size;
     const uint8_t *trailer;
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
+    bool resume = s->resume_boot;
 
+    s->resume_boot = false;
+    cpu_reset(cs);
+    /* Across a hibernate DRAM is kept, and with it the guest's side of these. */
+    if (resume && s->pmu && ipad1_resume(s)) {
+        return;
+    }
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
     ipod_agent_reset(s->agent);
-    cpu_reset(cs);
 
     if (s->bootrom_path) {
         cpu_set_pc(cs, 0);
@@ -1086,6 +1174,10 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
         if (!strcmp(d->type, TYPE_S5L8930_D1815)) {
             s->pmu = dev;
             s5l8930_d1815_set_usb_host(dev, s->usb_cable);   /* the cable's far end is a host */
+            if (s->kboot_path && !s->bootrom_path && !s->iboot_path) {
+                qdev_connect_gpio_out_named(dev, "ap-power", 0,
+                                            qemu_allocate_irq(ipad1_ap_power, s, 0));
+            }
         } else if (!strcmp(d->type, TYPE_S5L8930_LTC4099)) {
             s->ltc = dev;
             s5l8930_ltc4099_set_usb(dev, s->usb_cable);
@@ -1356,6 +1448,7 @@ static void ipad1_init(MachineState *machine)
         };
         BCMSDIOChip chip = bcm4329;
         IPodTouchSDIOState *card = IPOD_TOUCH_SDIO(qdev_new(TYPE_IPOD_TOUCH_SDIO));
+
 
         memcpy(chip.mac, s->wifi_mac_explicit ? s->wifi_mac : s->board->wifi_mac,
                sizeof(chip.mac));
@@ -1705,6 +1798,7 @@ static void ipad1_init(MachineState *machine)
     ipad1_battery_update(s);
 
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ipad1_pwroff_tick, s);
+    s->ap_off_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, ipad1_ap_cut, s);
     qemu_register_powerdown_notifier(&ipad1_powerdown_notifier);
     qemu_register_reset(ipad1_cpu_reset, s);
 }
@@ -2285,6 +2379,7 @@ static void ipad1_class_init(ObjectClass *klass, const void *data)
     IPAD1_MACHINE_CLASS(klass)->board = &a4_k48;
     mc->desc = a4_k48.desc;
     mc->init = ipad1_init;
+    mc->reset = ipad1_machine_reset;
     /* The AP plus the IOP core: TCG sizes its contexts from smp, and the board creates
      * both CPUs itself, so 2 costs nothing with iop-core=off. */
     mc->max_cpus = 2;

@@ -79,6 +79,7 @@ typedef struct Pcf50633State {
 	uint8_t usb_status_reg, usb_status_bits;   /* "usb-status-reg"/"-bits": the cable level */
 	bool rtc_bcd;           /* "rtc-bcd": the PCF50633 calendar at 0x59 (1.x) */
 	uint8_t event_count;    /* "event-count": Dialog event bytes at 0x01 (D1759 3, D1755 4) */
+	uint8_t wake_event_reg; /* "wake-event-reg": the wake buttons' event byte (D1759 0x03, D1755 0x01) */
 	uint8_t adc_reg;        /* "adc-reg": ADC control, result in the next two bytes */
 	uint8_t brick_mux;      /* "brick-mux": the dock data lines' ADC channel (0xff none) */
 	uint8_t rtc_reg;        /* "rtc-reg": the 32-bit LE seconds counter */

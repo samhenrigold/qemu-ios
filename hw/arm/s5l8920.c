@@ -55,6 +55,8 @@
 #include "system/system.h"
 #include "target/arm/cpu.h"
 #include "target/arm/cpregs.h"
+#include "target/arm/arm-powerctl.h"
+#include "target/arm/multiprocessing.h"
 #include "hw/arm/guest-services/general.h"
 #include "hw/arm/guest-services/gles.h"
 #include "hw/arm/guest-package.h"
@@ -304,6 +306,9 @@ struct S5L8920MachineState {
     IPodAgent *agent;                    /* hw/arm/ipod-agent.c: it_agent, as on the iPod and iPad */
     uint64_t rtc_epoch;                  /* "rtc-epoch": pcf50633_set_rtc_epoch */
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
+    bool resume_boot;                    /* the next reset is the AP's power-on out of hibernate */
+    bool resumed;                        /* this reset resumed the kernel */
+    QEMUTimer *ap_off_timer;             /* the PMU's hibernate cut, a moment after the command */
     int pwroff_phase, pwroff_step, pwroff_tries;
 };
 
@@ -332,6 +337,37 @@ static qemu_irq s5l8920_irq(S5L8920MachineState *s, int irq)
  * Stage the K48KBOOT bundle on every reset, as ipad1_cpu_reset does.
  * ponytail: a copy of the ipad1 loader; share it once both machines settle.
  */
+/*
+ * A wake from hibernate, as LLB resumes the kernel when kboot stands in for
+ * the ROM and LLB (8C148a's n88 LLB 0x840015f0, 0x84000720 and 0x84007444;
+ * n18's is the same). The kernel's "pmu go hib" left the suspend marker in
+ * PMU scratch 0x6f ((0x6f & 0xd0) == 0x80), 'XSOM' 'PSUS' at DRAM + 0x80 and
+ * its resume trampoline at the base of DRAM, which PA 0 shows (dram_lo). LLB
+ * marks 0x6f resumed ((0x6f & 0x2f) | 0x40), clears the DRAM marker, leaves
+ * the I2C controllers it used set up, and
+ * jumps to 0 with r0 = 0 in SVC mode, MMU and caches off. It also checks the
+ * iBootSleepValid token iBoot leaves at + 0x90, which kboot does not plant.
+ * Without the markers LLB boots, and so does this.
+ */
+static bool s5l8920_resume(S5L8920MachineState *s)
+{
+    const hwaddr mark = S5L8920_DRAM_BASE + 0x80;
+    uint8_t *scratch = &s->pmu->regs[0x6f];
+    uint32_t m[2];
+
+    address_space_read(&address_space_memory, mark, MEMTXATTRS_UNSPECIFIED, m, sizeof(m));
+    if ((*scratch & 0xd0) != 0x80 || le32_to_cpu(m[0]) != 0x4d4f5358 /* 'XSOM' */ ||
+        le32_to_cpu(m[1]) != 0x53555350 /* 'PSUS' */) {
+        return false;
+    }
+    *scratch = (*scratch & 0x2f) | 0x40;
+    address_space_set(&address_space_memory, mark, 0, sizeof(m), MEMTXATTRS_UNSPECIFIED);
+    s->resumed = true;     /* s5l8920_machine_reset finishes LLB's part */
+    s->cpu->env.regs[0] = 0;
+    cpu_set_pc(CPU(s->cpu), 0);
+    return true;
+}
+
 static void s5l8920_cpu_reset(void *opaque)
 {
     S5L8920MachineState *s = S5L8920_MACHINE(opaque);
@@ -341,12 +377,18 @@ static void s5l8920_cpu_reset(void *opaque)
     gsize size;
     const uint8_t *trailer;
     uint32_t load_pa, entry_pa, bootargs_pa, image_len;
+    bool resume = s->resume_boot;
 
+    s->resume_boot = false;
+    cpu_reset(cs);
+    /* Across a hibernate DRAM is kept, and with it the guest's side of these. */
+    if (resume && s->pmu && s5l8920_resume(s)) {
+        return;
+    }
     gles_host_set_debug(s->gles_debug);
     gles_host_reset();
     guest_pkg_reset(&s->pkg);
     ipod_agent_reset(s->agent);
-    cpu_reset(cs);
     if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
         error_report("s5l8920: cannot read kboot bundle '%s': %s",
                      s->kboot_path, gerr->message);
@@ -435,6 +477,42 @@ static void s5l8920_cpu_reset(void *opaque)
     cpu_set_pc(cs, entry_pa);
 }
 
+/*
+ * The PMU's AP rail. Off (hibernate): the CPU stops where the kernel parked
+ * it. On (a wake): the SoC takes a power-on reset with DRAM and the PMU
+ * intact, and s5l8920_cpu_reset resumes the kernel.
+ * ponytail: the Wi-Fi card model resets with the SoC, though the chip keeps
+ * its rail. Kept (as the iPod 2G keeps it), 4.2.1's AppleBCMWLAN never talked
+ * to it again after "Powering On" and Wi-Fi stayed down; reset, its first
+ * command times out and the driver's watchdog reloads the dongle and rejoins
+ * (about 10 s). Keep it once the IOP's SDIO host side resumes it.
+ */
+static void s5l8920_ap_cut(void *opaque)
+{
+    S5L8920MachineState *s = opaque;
+
+    arm_set_cpu_off(arm_cpu_mp_affinity(s->cpu));
+}
+
+static void s5l8920_ap_power(void *opaque, int n, int on)
+{
+    S5L8920MachineState *s = opaque;
+
+    if (on) {
+        timer_del(s->ap_off_timer);
+        s->resume_boot = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    } else {
+        /*
+         * The rails drop a moment after the command, not inside the I2C write:
+         * 4.x writes 'XSOM' 'PSUS' and its resume vector after "pmu go hib"
+         * and then spins until the power goes. ponytail: 20 ms of guest time;
+         * the D1755/D1815 delay is unmeasured.
+         */
+        timer_mod(s->ap_off_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 20);
+    }
+}
+
 /* An I2C controller (the A4's block) and the board's slaves on it. */
 static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
 {
@@ -468,6 +546,7 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
              * "pmu go stdby" sets 0x0d bit 0 (805cb7c4).
              */
             qdev_prop_set_uint8(DEVICE(slave), "event-count", 4);
+            qdev_prop_set_uint8(DEVICE(slave), "wake-event-reg", 0x01);
             qdev_prop_set_uint8(DEVICE(slave), "shutdown-reg", 0x0d);
             qdev_prop_set_uint8(DEVICE(slave), "usb-status-reg", 0x05);
             /* ADC as the D1815's (control 0x30, 10-bit result 0x31-0x32,
@@ -491,6 +570,8 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
         }
         if (!strcmp(d->type, TYPE_PCF50633)) {
             s->pmu = PCF50633(slave);
+            qdev_connect_gpio_out_named(DEVICE(slave), "ap-power", 0,
+                                        qemu_allocate_irq(s5l8920_ap_power, s, 0));
             s->pmu->usb_cable = s->usb_attached;
             /* the PMU's clock and the agent's time sync agree on a pinned date */
             pcf50633_set_rtc_epoch(s->pmu, s->rtc_epoch);
@@ -1043,6 +1124,7 @@ static void s5l8920_init(MachineState *machine)
     }
 
     s->pwroff_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s5l8920_pwroff_tick, s);
+    s->ap_off_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, s5l8920_ap_cut, s);
     qemu_register_powerdown_notifier(&s5l8920_powerdown_notifier);
     qemu_register_reset(s5l8920_cpu_reset, s);
 }
@@ -1115,16 +1197,21 @@ static void s5l8920_set_nor_rw(Object *obj, const char *value, Error **errp)
 /*
  * Buttons: GPIO interrupt pins, active low, idle high in the GPIO model
  * (DT function-button_hold 0x1607 = interrupt 0xb7, menu 0x1606 = 0xb6).
- * ponytail: the GPIO side only; the PMU's wake latch (DT wake_button_* on
- * the D1755's STAT) is not driven, so a press cannot wake a sleeping AP.
+ * Hold and Home are also the D1755's wake buttons (DT wake_button_* on its
+ * STAT, event byte 0x01 bits 0/1): a press while the AP hibernates latches
+ * that event and powers the AP back on. Awake, the kernel takes the GPIO's.
  *   qom-set path=/machine property=button-home value=true   (then false)
  */
 static void s5l8920_set_button(S5L8920MachineState *s, int pin, bool down)
 {
     const S5L8920Buttons *b = &s->board->buttons;
-    bool high = b->hold_menu_high && (pin == b->hold || pin == b->menu);
+    bool wake = pin == b->hold || pin == b->menu;
+    bool high = b->hold_menu_high && wake;
 
     qemu_set_irq(qdev_get_gpio_in(s->gpio, pin), high ? down : !down);
+    if (wake && down && s->pmu) {
+        pcf50633_latch_wake_event(s->pmu, pin == b->hold ? 0x02 : 0x01);
+    }
 }
 
 /* The app bridge's buttons (contrib/ios-app), on the board's pins; no-op on other machines. */
@@ -1176,6 +1263,21 @@ static void s5l8920_machine_reset(MachineState *machine, ResetType type)
     S5L8920MachineState *s = S5L8920_MACHINE(machine);
 
     qemu_devices_reset(type);
+    if (s->resumed) {
+        /*
+         * LLB talked to the PMU over I2C and leaves each controller's interrupt
+         * enables on (CTRL 0x30, STATUS cleared; LLB 0x84001030); the kernel's
+         * I2C driver resumes on that and waits for the done interrupt. After
+         * the devices' reset, which clears them.
+         */
+        s->resumed = false;
+        for (int n = 0; n < 3; n++) {
+            address_space_stl_le(&address_space_memory, S5L8920_I2C_BASE(n) + 0x08, 0x30,
+                                 MEMTXATTRS_UNSPECIFIED, NULL);
+            address_space_stl_le(&address_space_memory, S5L8920_I2C_BASE(n) + 0x0c, 0x37,
+                                 MEMTXATTRS_UNSPECIFIED, NULL);
+        }
+    }
     s5l8920_set_button(s, s->board->buttons.hold, s->btn_hold);
     s5l8920_set_button(s, s->board->buttons.menu, s->btn_home);
     if (s->pmu) {   /* the charge and level the properties asked for survive the PMU's reset */

@@ -10,6 +10,9 @@
  *   - mux 6 is the dock D+/D- the charger biased: with a host's pull-downs it
  *     reads 0 mV (USBHost), otherwise mid-scale 0x800 (a brick, "Detached").
  *     mV = adc * 5000 / 4096. (4.3.x cable detection, smoke #35)
+ *   - "pmu go hib" (0x12 bit 1) drops the AP rail ("ap-power") when the board
+ *     wires it; Home powers it back on, and the AP's power-on reset leaves the
+ *     PMU's registers (0x8F's suspend marker, the button event) as they were.
  *
  * Mutation (named, must fail this test): in d1815_send's PMU_SYS_CTRL case, replace
  *     if (d1815_halt_reason(s)) {
@@ -19,7 +22,7 @@
  *
  * SLICE hw/arm/s5l8930_i2c.c define PMU_[A-Za-z0-9_]+|D1815_ADDR
  * SLICE hw/arm/s5l8930_i2c.c range struct S5L8930D1815State { | \n/*\n * The guest's own power-off
- * SLICE hw/arm/s5l8930_i2c.c fn d1815_halt_reason d1815_update_irq d1815_adc_done s5l8930_d1815_button s5l8930_d1815_set_usb_host s5l8930_d1815_set_vbat s5l8930_d1815_usb_cable_event d1815_rtc_count d1815_recv d1815_send d1815_reset s5l8930_d1815_guest_shutdown_confirmed d1815_post_load
+ * SLICE hw/arm/s5l8930_i2c.c fn d1815_halt_reason d1815_set_ap_power d1815_update_irq d1815_adc_done s5l8930_d1815_button s5l8930_d1815_take_suspend s5l8930_d1815_set_usb_host s5l8930_d1815_set_vbat s5l8930_d1815_usb_cable_event d1815_rtc_count d1815_recv d1815_send d1815_reset s5l8930_d1815_guest_shutdown_confirmed d1815_post_load
  */
 #include <assert.h>
 #define trace_event_get_state_backends(id) 0
@@ -123,5 +126,26 @@ int main(void) {
     wr(&s, PMU_SYS_CTRL, 0x0f);
     assert(resets == 2 && shutdowns == 0);
 
-    puts("PASS: D1815 restart confirms a stay-off halt, ADC start-bit clear, mux-6 cable classification");
+    /* --- hibernate: 0x12 bit 1 drops the rail, Home brings it back, the PMU keeps its state --- */
+    int ap = 1;
+    S5L8930D1815State h = { .irq = &irq, .adc_timer = &timer, .ap_power = &ap };
+    d1815_reset((DeviceState *)&h);
+    wr(&h, PMU_BOOT_REASON, 0x80);                           /* the kernel's suspend marker */
+    wr(&h, PMU_OOC, 0x02);
+    assert(!ap && h.ap_off && !shutdowns && !(h.regs[PMU_OOC] & 2));
+    s5l8930_d1815_button((DeviceState *)&h, false, true);    /* Home */
+    assert(ap && !h.ap_off && h.ap_waking);
+    d1815_reset((DeviceState *)&h);                          /* the AP's power-on reset */
+    assert(h.regs[PMU_BOOT_REASON] == 0x80 && (h.regs[PMU_EVENT] & PMU_EVENT_A_MENU));
+    assert(s5l8930_d1815_take_suspend((DeviceState *)&h) && h.regs[PMU_BOOT_REASON] == 0x40);
+    d1815_reset((DeviceState *)&h);                          /* a cold reset clears the events */
+    assert(!(h.regs[PMU_EVENT] & PMU_EVENT_A_MENU));
+    /* Unwired (iBoot/ROM boots): the command is stored and nothing switches. */
+    S5L8930D1815State u = { .irq = &irq, .adc_timer = &timer };
+    d1815_reset((DeviceState *)&u);
+    wr(&u, PMU_OOC, 0x02);
+    assert(!u.ap_off && (u.regs[PMU_OOC] & 2));
+
+    puts("PASS: D1815 restart confirms a stay-off halt, ADC start-bit clear, mux-6 cable classification, "
+         "hibernate rail");
 }

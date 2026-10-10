@@ -404,10 +404,11 @@ done:
 
 void pcf50633_latch_wake_event(Pcf50633State *s, uint8_t bits)
 {
-    // Latch the wake-button interrupt in EVENT_C (reg 0x03). It stays set until
+    // Latch the wake-button interrupt in its event byte ("wake-event-reg"; the
+    // D1759's EVENT_C, reg 0x03). It stays set until
     // iOS reads the event block (read-to-clear above), so it survives a quick
     // press/release until the guest's PMU interrupt handler consumes it.
-    pmu_latch_event(s, PMU_EVENT_C_REG, bits);
+    pmu_latch_event(s, s->wake_event_reg, bits);
     /* The wake buttons power the AP on whatever the masks say: 7E18 goes to
      * sleep with both masked in EVENT_C (0x09 = 0xab). */
     if (s->ap_off) {
@@ -635,6 +636,9 @@ static const Property pcf50633_properties[] = {
     /* The PCF50633's BCD calendar at 0x59 (1.x) instead of the D1759's counter at 0x5c. */
     DEFINE_PROP_BOOL("rtc-bcd", Pcf50633State, rtc_bcd, false),
     DEFINE_PROP_UINT8("event-count", Pcf50633State, event_count, 3),
+    /* Where the wake buttons latch: the D1759's EVENT_C; the D1755's event byte 0x01, as the
+     * D1815's (DT wake_button_* 'STAT' 0x180/0x181 = event byte 0 bits 0/1). */
+    DEFINE_PROP_UINT8("wake-event-reg", Pcf50633State, wake_event_reg, PMU_EVENT_C_REG),
     DEFINE_PROP_UINT8("adc-reg", Pcf50633State, adc_reg, PMU_ADC_CONTROL),
     DEFINE_PROP_UINT8("brick-mux", Pcf50633State, brick_mux, 0xff),
     DEFINE_PROP_UINT8("rtc-reg", Pcf50633State, rtc_reg, PMU_RTC_COUNTER),
