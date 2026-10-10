@@ -605,9 +605,59 @@ static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2],
     return on[0] || on[1];
 }
 
+/*
+ * The video layer (0x1038 bit 10; block at +0x3000): NV12 that the pipe scales and converts itself, as
+ * 4.x plays a movie (MPMoviePlayer: VXD decodes, the M2 scaler turns the frame upright, the pipe shows
+ * it under UI1, which CA leaves clear there). +0x307c/+0x3080 Y and CbCr bases, +0x3088/+0x308c their
+ * strides, +0x3094 source w << 16 | h, +0x309c destination size, +0x30a0 destination origin,
+ * +0x3024..+0x3044 the YCbCr-to-RGB matrix (signed 4.12, rows R, G, B; columns Y, Cb, Cr).
+ * ponytail: nearest sampling where the pipe has polyphase taps (+0x3120 on); the blend order taken as
+ * video under UI1 (+0x2044/+0x2048); low stride bits (+0x3088 = 0x142) dropped as flags.
+ */
+static bool video_compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *out)
+{
+    uint32_t *r = s->pipe[0].regs;
+    unsigned sw = (r[0x3094 / 4] >> 16) & 0xfff, sh = r[0x3094 / 4] & 0xfff;
+    unsigned dw = (r[0x309c / 4] >> 16) & 0xfff, dh = r[0x309c / 4] & 0xfff;
+    unsigned x0 = r[0x30a0 / 4] >> 16, y0 = r[0x30a0 / 4] & 0xffff;
+    unsigned ys = r[0x3088 / 4] & ~0xfu, uvs = r[0x308c / 4] & ~0xfu;
+    int m[9];
+
+    if (!(r[DP_LAYERS / 4] & 0x400) || !sw || !sh || !dw || !dh || sw > 4096 || sh > 4096 ||
+        ys < sw || uvs < sw || (sw | sh) & 1) {
+        return false;
+    }
+    for (int i = 0; i < 9; i++) {
+        m[i] = (int16_t)r[0x3024 / 4 + i];
+    }
+    g_autofree uint8_t *yp = g_malloc((size_t)sw * sh), *uvp = g_malloc((size_t)sw * sh / 2);
+    for (unsigned y = 0; y < sh; y++) {
+        fb_read(s, r[0x307c / 4] + y * ys, yp + (size_t)y * sw, sw);
+        if (!(y & 1)) {
+            fb_read(s, r[0x3080 / 4] + y / 2 * uvs, uvp + (size_t)y / 2 * sw, sw);
+        }
+    }
+    memset(out, 0, (size_t)w * h * 4);
+    for (unsigned y = y0; y < MIN(y0 + dh, h); y++) {
+        unsigned sy = (unsigned)((uint64_t)(y - y0) * sh / dh);
+        for (unsigned x = x0; x < MIN(x0 + dw, w); x++) {
+            unsigned sx = (unsigned)((uint64_t)(x - x0) * sw / dw);
+            const uint8_t *c = uvp + (size_t)(sy / 2) * sw + (sx & ~1u);
+            int in[3] = { yp[(size_t)sy * sw + sx] - 16, c[0] - 128, c[1] - 128 };
+            uint32_t px = 0xff000000u;
+            for (int k = 0; k < 3; k++) {
+                int v = (m[k * 3] * in[0] + m[k * 3 + 1] * in[1] + m[k * 3 + 2] * in[2] + 2048) >> 12;
+                px |= (uint32_t)MIN(255, MAX(0, v)) << (16 - 8 * k);    /* BGRA: R in bits 16-23 */
+            }
+            out[(size_t)y * w + x] = px;
+        }
+    }
+    return true;
+}
+
 /* The panel image from the layers' fetched rows (layers_fetch). */
 static void blend(const UILayer u[2], const bool on[2], const uint8_t *src, unsigned w,
-                  unsigned h, uint32_t *out)
+                  unsigned h, uint32_t *out, const uint32_t *base)
 {
     const uint8_t *lsrc[2];
     g_autofree uint32_t *row = g_new(uint32_t, MAX(MAX(on[0] ? u[0].sw : 0, on[1] ? u[1].sw : 0), w));
@@ -617,7 +667,11 @@ static void blend(const UILayer u[2], const bool on[2], const uint8_t *src, unsi
     for (unsigned y = 0; y < h; y++) {
         uint32_t *d = out + (size_t)y * w;
 
-        memset(d, 0, w * 4);
+        if (base) {
+            memcpy(d, base + (size_t)y * w, w * 4);
+        } else {
+            memset(d, 0, w * 4);
+        }
         for (int l = 0; l < 2; l++) {
             const UILayer *L = &u[l];
             unsigned dw = L->x1 - L->x0;
@@ -626,7 +680,7 @@ static void blend(const UILayer u[2], const bool on[2], const uint8_t *src, unsi
                 continue;
             }
             /* Unscaled BGRA that replaces what is under it: the row as it is. */
-            if ((l == 0 || !on[0]) && L->fmt == 0 && L->sw == dw) {
+            if ((l == 0 || !on[0]) && !base && L->fmt == 0 && L->sw == dw) {
                 memcpy(d + L->x0, lsrc[l] + (y - L->y0) * layer_row_bytes(L), dw * 4);
                 continue;
             }
@@ -636,7 +690,7 @@ static void blend(const UILayer u[2], const bool on[2], const uint8_t *src, unsi
                             : (unsigned)((uint64_t)(x - L->x0) * L->sw / dw);
                 uint32_t t = row[sx], a = t >> 24;
 
-                if (l == 0 || a == 0xff || !on[0]) {
+                if ((l == 0 && !base) || a == 0xff || (!on[0] && !base)) {
                     d[x] = t;
                 } else if (a) {
                     uint32_t b = d[x], ia = 255 - a, o = 0xff000000u;
@@ -661,8 +715,10 @@ static bool compose(S5L8930DisplayState *s, unsigned w, unsigned h, uint32_t *ou
         return false;
     }
     if (out) {
+        g_autofree uint32_t *base = g_new(uint32_t, (size_t)w * h);
+        bool video = video_compose(s, w, h, base);
         layers_fetch(s, u, on);
-        blend(u, on, s->src_next, w, h, out);
+        blend(u, on, s->src_next, w, h, out, video ? base : NULL);
     }
     return true;
 }
@@ -694,9 +750,11 @@ static void front_latch(S5L8930DisplayState *s)
     bool on[2];
     bool valid = layers(s, w, h, u, on, key);
     size_t len = valid ? layers_fetch(s, u, on) : 0;
+    g_autofree uint32_t *base = g_new(uint32_t, (size_t)w * h);
+    bool video = valid && video_compose(s, w, h, base);
 
     /* The front was composed from these very layers and bytes. */
-    if (valid && valid == s->front_valid && !memcmp(key, s->front_key, sizeof(key)) &&
+    if (valid && !video && valid == s->front_valid && !memcmp(key, s->front_key, sizeof(key)) &&
         len == s->src_len && !memcmp(u, s->src_layers, sizeof(u)) &&
         !memcmp(s->src_next, s->src, len)) {
         return;
@@ -707,7 +765,7 @@ static void front_latch(S5L8930DisplayState *s)
         s->src_next = t;
         s->src_len = len;
         memcpy(s->src_layers, u, sizeof(u));
-        blend(u, on, s->src, w, h, (uint32_t *)s->front_next);
+        blend(u, on, s->src, w, h, (uint32_t *)s->front_next, video ? base : NULL);
     }
     /* Swap in the new picture only when it differs: an unchanged relatch leaves front_gen alone. */
     if (valid != s->front_valid || memcmp(key, s->front_key, sizeof(key)) ||

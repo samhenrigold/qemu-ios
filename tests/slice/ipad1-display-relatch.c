@@ -8,7 +8,7 @@
  *
  * SLICE:types hw/arm/s5l8930_display.c define (DP_LAYERS|DP_UI_BASE|DP_UI_FORMAT|DP_UI_ADDR|DP_UI_STRIDE|DP_UI_DST_ORIGIN|DP_UI_SRC_SIZE|DP_UI_DST_END)[[:space:](]
  * SLICE:types hw/arm/s5l8930_display.c typedef UILayer
- * SLICE hw/arm/s5l8930_display.c fn scanout_layer layer_row_bytes layer_fetch layers_fetch layer_row layers blend front_latch
+ * SLICE hw/arm/s5l8930_display.c fn scanout_layer layer_row_bytes layer_fetch layers_fetch layer_row layers video_compose blend front_latch
  * PKG glib-2.0
  */
 #include <assert.h>

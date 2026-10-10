@@ -173,6 +173,76 @@ static bool scaler_rgb(IPodScalerState *s)
     return true;
 }
 
+/* Read `len` bytes at a bus address, a page at a time. False if any page is unmapped. */
+static bool scaler_read_bus(IPodScalerState *s, uint32_t va, void *buf, unsigned len)
+{
+    uint8_t *p = buf;
+
+    while (len) {
+        unsigned n = MIN(len, 0x1000 - (va & 0xfff));
+        hwaddr pa = scaler_pa(s, va);
+
+        if (pa == (hwaddr)-1) {
+            return false;
+        }
+        cpu_physical_memory_read(pa, p, n);
+        va += n;
+        p += n;
+        len -= n;
+    }
+    return true;
+}
+
+/*
+ * NV12 to NV12, turned 90 degrees when the destination's width is the source's height: how 4.x puts a
+ * decoded movie frame (VXD's 480x270 at stride 512) upright for the iPhone 4's portrait panel
+ * (270x480 at stride 320), formats +0x10/+0x30 both 0, planes at +0x14/+0x18 and +0x34/+0x38, plane
+ * strides in bytes at +0x1c and +0x3c (UV << 16 | Y).
+ * ponytail: unscaled only, and one turning direction (the movie came out upright with it); +0x58 (3
+ * here) likely selects it.
+ */
+static bool scaler_nv12(IPodScalerState *s)
+{
+    uint32_t *r = s->regs;
+    unsigned sw = (r[0x24 / 4] >> 16) & 0x1fff, sh = r[0x24 / 4] & 0x1fff;
+    unsigned dw = (r[0x40 / 4] >> 16) & 0x1fff, dh = r[0x40 / 4] & 0x1fff;
+    unsigned sys = r[0x1c / 4] & 0xffff, suvs = r[0x1c / 4] >> 16;
+    unsigned dys = r[0x3c / 4] & 0xffff, duvs = r[0x3c / 4] >> 16;
+    bool rot = dw == sh && dh == sw && sw != sh;
+
+    if ((r[0x10 / 4] & 7) || (r[0x30 / 4] & 7) || !sw || !sh || sw > 2048 || sh > 2048 || (sw | sh) & 1 ||
+        (!rot && (dw != sw || dh != sh)) || sys < sw || suvs < sw || dys < dw || duvs < dw) {
+        return false;
+    }
+    g_autofree uint8_t *y = g_malloc((size_t)sw * sh), *uv = g_malloc((size_t)sw * sh / 2);
+    g_autofree uint8_t *row = g_malloc(dw);
+    for (unsigned i = 0; i < sh; i++) {
+        if (!scaler_read_bus(s, r[0x14 / 4] + i * sys, y + (size_t)i * sw, sw) ||
+            (!(i & 1) && !scaler_read_bus(s, r[0x18 / 4] + i / 2 * suvs, uv + (size_t)i / 2 * sw, sw))) {
+            return false;
+        }
+    }
+    for (unsigned j = 0; j < dh; j++) {          /* luma: destination (x, j) is source row sh - 1 - x, column j */
+        for (unsigned x = 0; x < dw; x++) {
+            row[x] = rot ? y[(size_t)(sh - 1 - x) * sw + j] : y[(size_t)j * sw + x];
+        }
+        if (!scaler_write_bus(s, r[0x34 / 4] + j * dys, row, dw)) {
+            return false;
+        }
+    }
+    for (unsigned j = 0; j < dh / 2; j++) {      /* chroma pairs, the same turn at half size */
+        for (unsigned x = 0; x < dw / 2; x++) {
+            const uint8_t *c = rot ? uv + (size_t)(sh / 2 - 1 - x) * sw + 2 * j : uv + (size_t)j * sw + 2 * x;
+            row[2 * x] = c[0];
+            row[2 * x + 1] = c[1];
+        }
+        if (!scaler_write_bus(s, r[0x38 / 4] + j * duvs, row, dw)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool scaler_range(uint64_t base, unsigned stride, unsigned rows,
                          unsigned bytes)
 {
@@ -279,7 +349,7 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
             timer_del(s->done);
             s->regs[3] |= 1;
         }
-        if (!scaler_convert(s) && !scaler_rgb(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
+        if (!scaler_convert(s) && !scaler_rgb(s) && !scaler_nv12(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
         timer_mod(s->done, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MAX(20000, pixels * 5));
     }

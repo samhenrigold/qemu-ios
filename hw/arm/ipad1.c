@@ -1711,6 +1711,9 @@ static void ipad1_init(MachineState *machine)
      * off one to confirm. */
     ipod_scaler_set_version(scaler, 0x20007);
 
+    /* VXD, the H.264 decoder (DT vxd: reg 0x85000000, interrupt 0x30). */
+    sysbus_create_simple("s5l8920.vxd", 0x85000000, ipad1_irq(s, 0x30));
+
     /* SWI: backlight and DPSM core voltage; only the busy bit matters, and the backlight level is reported. */
     {
         DeviceState *swi = qdev_new("ipodtouch.swi");

@@ -219,6 +219,7 @@ documented quirk/patch, S stub.
 | BCM4329 | the iPod's dongle model, `P=N81`, n81.bin version | variant (board data) | H |
 | Gyro (ap3gdl @0x68, INT1 0x21 / INT2 0x05) | ST L3G4200D (WHO_AM_I 0xd3): registers, 32-slot FIFO and its modes, INT2 levels, ODR timer; zero rate at rest, the turn's rate while the host changes the attitude (`gyro_mount`, the DT orientation inverted). The kboot DT's `gyro-sensitivity-calibration` (iBoot fills it from syscfg) gets a nominal identity at reset | new | R (calibration P) |
 | Cameras / ISP | none; `camera=off` (default) unmatches the DT's `isp` node | absent (see debts) | P |
+| VXD (H.264 decoder, 0x85000000, IRQ 0x30) | `s5l8920.vxd` (`hw/arm/s5l8920_vxd.c`, every A4 board): the MSVDX's DXVA firmware played at its comms area and message rings; each render's slice decoded on the host (`s5l8920_vxd_h264.c`, libavcodec) with its SPS and PPS rebuilt from the registers and the slice header's fit; the M2 scaler turns NV12 frames upright and the display pipe shows its video layer. Movies play on 4.2.1 (NOVA's, n90ap-8C148); 6.x and 7.x decode but show no picture yet; MPEG-4 renders complete without one | shared | H |
 
 ## Guest debugging
 
