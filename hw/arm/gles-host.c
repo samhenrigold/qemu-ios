@@ -1509,6 +1509,9 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
  */
 /* The ES half-float type, which the desktop spells GL_HALF_FLOAT (0x140B). */
 #define GLES_HALF_FLOAT_OES 0x8D61
+/* OES_packed_depth_stencil's format and type, the desktop's (EXT_packed_depth_stencil) values. */
+#define GLES_DEPTH_STENCIL_OES 0x84F9
+#define GLES_UNSIGNED_INT_24_8_OES 0x84FA
 
 static unsigned gles_components(uint32_t fmt)
 {
@@ -1529,7 +1532,8 @@ static unsigned gles_components(uint32_t fmt)
  * the enums in their engine binaries: the ES 1.1 set, APPLE/IMG BGRA8888 with
  * its REV type, the two REV 16-bit types (EXT/IMG_read_format), the packed
  * 8_8_8_8 and 4_4_4_4/5_5_5_1 orders, OES_texture_float and _half_float, and
- * OES_depth_texture (4.2.1's SGX). Zero is a pair no driver of theirs took.
+ * OES_depth_texture and OES_packed_depth_stencil (4.2.1's SGX). Zero is a pair no
+ * driver of theirs took.
  */
 static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
 {
@@ -1551,6 +1555,8 @@ static size_t gles_texel_bytes(uint32_t fmt, uint32_t type)
         return fmt == GL_DEPTH_COMPONENT ? 2 : 0;
     case GL_UNSIGNED_INT:
         return fmt == GL_DEPTH_COMPONENT ? 4 : 0;
+    case GLES_UNSIGNED_INT_24_8_OES:
+        return fmt == GLES_DEPTH_STENCIL_OES ? 4 : 0;
     case GL_FLOAT:
         return 4 * gles_components(fmt);
     case GLES_HALF_FLOAT_OES:

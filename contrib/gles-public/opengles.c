@@ -179,6 +179,8 @@ static void fe_getSynciv(void *gc, unsigned sync, unsigned pname, int bufsize, i
     if (length) *length = bufsize > 0 ? 1 : 0;
 }
 
+static const char *fe_es2_extension_string(void);
+
 static const char *fe_getString(void *gc, unsigned name)
 {
     static char ext[256];
@@ -188,7 +190,7 @@ static const char *fe_getString(void *gc, unsigned name)
         case 0x1F01: return "PowerVR SGX 535";
         case 0x1F02: return "OpenGL ES 2.0";
         case 0x8B8C: return "OpenGL ES GLSL ES 1.00";
-        case 0x1F03: return "GL_IMG_texture_compression_pvrtc";
+        case 0x1F03: return fe_es2_extension_string();
         default:     return "";
         }
     }
@@ -1200,13 +1202,13 @@ static void *fe_stock_symbol(const char *name)
     return 0;
 }
 
-static const char *fe_stock_encode(void)
+/* `path`'s Mach-O header as the shared cache maps it (setting fe_stock_slide), and its __TEXT (*base 0 if none). */
+static const unsigned *fe_cache_image(const char *path, const char **base, unsigned long *size)
 {
-    static const char want[] = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
-    static const char tag[] = "{__GLIFunctionDispatchRec=";
     unsigned long long start = 0;
     const unsigned char *c;
     unsigned moff, ioff, icount, i, slide;
+    *base = 0;
     if (syscall(294, &start) != 0 || !start || start >> 32) return 0;
     c = (const unsigned char *)(unsigned long)start;
     if (c[0] != 'd' || c[1] != 'y' || c[2] != 'l' || c[3] != 'd' || c[4] != '_' || c[5] != 'v' || c[6] != '1') return 0;
@@ -1217,29 +1219,76 @@ static const char *fe_stock_encode(void)
         const unsigned *mh;
         const unsigned char *lc;
         unsigned k, ncmds;
-        if (!gles_streq((const char *)c + fe_u32(img + 24), want)) continue;
+        if (!gles_streq((const char *)c + fe_u32(img + 24), path)) continue;
         mh = (const unsigned *)(unsigned long)(fe_u32(img) + slide);
         if (mh[0] != 0xfeedface) return 0;
-        fe_stock_mh = mh;
         fe_stock_slide = slide;
         ncmds = mh[4];
         lc = (const unsigned char *)mh + 28;
         for (k = 0; k < ncmds; k++) {
             const unsigned *cmd = (const unsigned *)lc;
             if (cmd[0] == 1 && gles_streq((const char *)lc + 8, "__TEXT")) {
-                const char *base = (const char *)(unsigned long)(cmd[6] + slide);
-                unsigned long size = cmd[7], off;
-                for (off = 0; off + sizeof tag - 1 <= size; off++) {
-                    unsigned t = 0;
-                    while (tag[t] && base[off + t] == tag[t]) t++;
-                    if (!tag[t]) return base + off;
-                }
+                *base = (const char *)(unsigned long)(cmd[6] + slide);
+                *size = cmd[7];
             }
             lc += cmd[1];
         }
-        return 0;
+        return mh;
     }
     return 0;
+}
+
+/* Where the `n` bytes at `tag` first appear in [base, base + size), or 0. */
+static const char *fe_find(const char *base, unsigned long size, const char *tag, unsigned long n)
+{
+    unsigned long off;
+    for (off = 0; base && off + n <= size; off++) {
+        unsigned long t = 0;
+        while (t < n && base[off + t] == tag[t]) t++;
+        if (t == n) return base + off;
+    }
+    return 0;
+}
+
+static const char *fe_stock_encode(void)
+{
+    static const char tag[] = "{__GLIFunctionDispatchRec=";
+    const char *base;
+    unsigned long size = 0;
+    fe_stock_mh = fe_cache_image("/System/Library/Frameworks/OpenGLES.framework/OpenGLES", &base, &size);
+    return fe_find(base, size, tag, sizeof tag - 1);
+}
+
+/* ES 2.0's GL_EXTENSIONS into `out` (`cap` bytes): each extension below that the firmware's own GLEngine names
+ * among those it can report (`text`, its __TEXT), then PVRTC. The host implements all of them. 3.2's GLEngine has
+ * OES_packed_depth_stencil and no OES_depth_texture; 4.2.1's and later have both. N.O.V.A. 3 renders its
+ * post-processing depth into a depth texture on the iPhone 4, and without the extensions its engine had no format
+ * for one and the game died on the missing texture (issue 23). */
+static void fe_es2_extensions(char *out, unsigned cap, const char *text, unsigned long size)
+{
+    static const char *const ext[] = { "GL_OES_depth_texture", "GL_OES_packed_depth_stencil" };
+    static const char pvrtc[] = "GL_IMG_texture_compression_pvrtc";
+    unsigned i, k, n = 0;
+    for (i = 0; i < sizeof ext / sizeof ext[0]; i++) {
+        for (k = 0; ext[i][k]; k++) ;
+        if (!fe_find(text, size, ext[i], k + 1) || n + k + 1 >= cap) continue;   /* the whole name: its NUL too */
+        for (k = 0; ext[i][k]; k++) out[n++] = ext[i][k];
+        out[n++] = ' ';
+    }
+    for (k = 0; pvrtc[k] && n + 1 < cap; k++) out[n++] = pvrtc[k];
+    out[n] = 0;
+}
+
+static const char *fe_es2_extension_string(void)
+{
+    static char ext[128];
+    if (!ext[0]) {
+        const char *base;
+        unsigned long size = 0;
+        fe_cache_image("/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine", &base, &size);
+        fe_es2_extensions(ext, sizeof ext, base, size);
+    }
+    return ext;
 }
 
 /* {GC, table}: 5.x QuartzCore and CoreImage load the engine's context from word 0 and call field k through word
