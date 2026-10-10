@@ -107,6 +107,17 @@ typedef struct IosBbCore {
     bool ctzr_on;              /* +CTZR=1: time zone reports wanted, on ctzr_ch */
     int ctzr_ch;
     bool sim_present;
+    /*
+     * The SIM's PIN (CHV1) and its unblocking key (PUK), as the card keeps them (GSM 11.11,
+     * TS 102 221): kept across a modem reset and, with sim_file set, across power-offs, in
+     * that file as one line "sim-pin <on 0|1> <pin> <puk> <pin tries left> <puk tries left>".
+     * A new SIM has PIN 1111 (off), PUK 12345678, 3 PIN and 10 PUK tries.
+     */
+    bool pin_on;
+    char pin[9], puk[9];
+    int pin_left, puk_left;
+    char sim_file[1024];
+    bool pin_ok;               /* the PIN has been entered since the modem last reset */
     unsigned lac, ci;
     char imei[16], imsi[16], iccid[21];
     int answer_delay_ms;       /* MO calls: remote picks up after this (<0: never) */
@@ -214,6 +225,8 @@ bool ios_bb_emergency_call(const IosBbCore *bb);
 bool ios_bb_attached(const IosBbCore *bb);
 /* Whether the motor +xdrv=4 drives runs at bb->now_ms. */
 bool ios_bb_vibrating(const IosBbCore *bb);
+/* The SIM's lock: "off" (no PIN), "pin" (waiting for it), "ready" (PIN entered), "puk", "blocked". */
+const char *ios_bb_sim_lock(const IosBbCore *bb);
 /* The numbers the modem treats as emergency numbers (TS 22.101 10.1.1). */
 bool ios_bb_is_emergency_number(const char *number);
 

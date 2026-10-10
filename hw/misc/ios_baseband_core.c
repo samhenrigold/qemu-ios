@@ -1302,6 +1302,14 @@ static bool radio_ok(const IosBbCore *bb)
     return bb->cfun == 1 && bb->registered;
 }
 
+static bool sim_locked(const IosBbCore *bb);
+
+/* Calls, SMS and data need the SIM unlocked; an emergency call needs only the radio. */
+static bool service_ok(const IosBbCore *bb)
+{
+    return radio_ok(bb) && !sim_locked(bb);
+}
+
 /* Emit the URCs that create a ringing call on 1.0 (DLCI 1). */
 static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
 {
@@ -1335,7 +1343,7 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 {
     IosBbCall *c;
 
-    if (!bb->ch[bb->call_ch].open || !radio_ok(bb) || !number[0]) {
+    if (!bb->ch[bb->call_ch].open || !service_ok(bb) || !number[0]) {
         return false;
     }
     /*
@@ -1540,8 +1548,8 @@ static int reg_stat(const IosBbCore *bb)
     if (bb->cfun != 1) {
         return 0;                                /* no RF: not registered, not searching */
     }
-    if (bb->cops_detached) {
-        return 0;
+    if (bb->cops_detached || sim_locked(bb)) {
+        return 0;                                /* a locked SIM has no IMSI to register with */
     }
     return bb->registered ? 1 : 2;
 }
@@ -1747,7 +1755,8 @@ static void dial_command(IosBbCore *bb, int ch, const char *num)
         }
     }
     nbuf[n] = 0;
-    if (!n || !bb->ch[bb->call_ch].open || !radio_ok(bb)) {
+    if (!n || !bb->ch[bb->call_ch].open ||
+        !(ios_bb_is_emergency_number(nbuf) ? radio_ok(bb) : service_ok(bb))) {
         at_error(bb, ch);                        /* final code 1: call failed */
         return;
     }
@@ -1839,7 +1848,7 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     unsigned n, tpdu;
     IosBbSms *slot;
 
-    if (!bb->ch[bb->sms_ch].open || !radio_ok(bb) || !ios_bb_sms_sender_ok(number) || !text[0]) {
+    if (!bb->ch[bb->sms_ch].open || !service_ok(bb) || !ios_bb_sms_sender_ok(number) || !text[0]) {
         return false;
     }
     number += number[0] == '+';
@@ -1912,6 +1921,240 @@ static void radio_nvram_block(IosBbCore *bb, int ch, int block)
     }
     n = snprintf(line, sizeof(line), "\r\n+XDRV: 9,1,0,%d,%s\r\n\r\nOK\r\n", block, hex);
     chan_write(bb, ch, line, n);              /* longer than chan_printf's buffer */
+}
+
+/* ---------------------------------------------------------------- SIM PIN */
+
+/*
+ * The SIM's PIN and PUK (27.007 +CPIN, +CLCK "SC", +CPWD "SC"; the card side is GSM 11.11's
+ * CHV1 and UNBLOCK CHV1). There is no 3GPP default PIN; 1111 is a common carrier default (and
+ * AT&T's, the original iPhone's), and a new SIM's PIN is off, as most carriers ship it. Three
+ * wrong PINs in a row block it until the PUK (8 digits, ten tries) sets a new one; ten wrong
+ * PUKs block the SIM for good. Every iOS from 1.0 to 7.x sends the same commands:
+ * +cpin?, +cpin="<pin>", +cpin="<puk>","<new pin>", +clck="SC",<0|1|2>[,"<pin>"],
+ * +cpwd="SC","<old>","<new>" and +xpincnt (tries left).
+ */
+#define IOS_BB_PIN_TRIES 3
+#define IOS_BB_PUK_TRIES 10
+
+static bool sim_locked(const IosBbCore *bb)
+{
+    return bb->sim_present && (bb->pin_left == 0 || (bb->pin_on && !bb->pin_ok));
+}
+
+const char *ios_bb_sim_lock(const IosBbCore *bb)
+{
+    if (bb->puk_left == 0) {
+        return "blocked";
+    }
+    if (bb->pin_left == 0) {
+        return "puk";
+    }
+    if (!bb->pin_on) {
+        return "off";
+    }
+    return bb->pin_ok ? "ready" : "pin";
+}
+
+/* min to 8 digits (a PIN is 4-8, a PUK 8). */
+static bool sim_code_ok(const char *s, size_t min)
+{
+    size_t n = strlen(s);
+
+    return n >= min && n <= 8 && strspn(s, "0123456789") == n;
+}
+
+/* Written in place (no rename), so a watcher of the device's files sees no file replaced. */
+static void sim_save(const IosBbCore *bb)
+{
+    FILE *f;
+
+    if (!bb->sim_file[0] || !(f = fopen(bb->sim_file, "w"))) {
+        return;
+    }
+    fprintf(f, "sim-pin %d %s %s %d %d\n", bb->pin_on, bb->pin, bb->puk, bb->pin_left, bb->puk_left);
+    fclose(f);
+}
+
+/* A new SIM, or the one sim_file describes. */
+static void sim_load(IosBbCore *bb)
+{
+    char pin[16], puk[16];
+    int on, pin_left, puk_left;
+    FILE *f;
+
+    bb->pin_on = false;
+    snprintf(bb->pin, sizeof(bb->pin), "1111");
+    snprintf(bb->puk, sizeof(bb->puk), "12345678");
+    bb->pin_left = IOS_BB_PIN_TRIES;
+    bb->puk_left = IOS_BB_PUK_TRIES;
+    if (!bb->sim_file[0] || !(f = fopen(bb->sim_file, "r"))) {
+        return;
+    }
+    if (fscanf(f, "sim-pin %d %15s %15s %d %d", &on, pin, puk, &pin_left, &puk_left) == 5 &&
+        sim_code_ok(pin, 4) && sim_code_ok(puk, 8) && pin_left >= 0 && pin_left <= IOS_BB_PIN_TRIES &&
+        puk_left >= 0 && puk_left <= IOS_BB_PUK_TRIES) {
+        bb->pin_on = on != 0;
+        snprintf(bb->pin, sizeof(bb->pin), "%s", pin);
+        snprintf(bb->puk, sizeof(bb->puk), "%s", puk);
+        bb->pin_left = pin_left;
+        bb->puk_left = puk_left;
+    }
+    fclose(f);
+}
+
+static void cme_error(IosBbCore *bb, int ch, int err)
+{
+    chan_printf(bb, ch, "\r\n+CME ERROR: %d\r\n", err);
+}
+
+/* Up to max comma-separated fields of arg, quotes dropped, each cut at 23 characters. */
+static int at_fields(const char *arg, char f[][24], int max)
+{
+    int n = 0;
+    size_t len = 0;
+    bool quoted = false;
+
+    for (int i = 0; i < max; i++) {
+        f[i][0] = 0;
+    }
+    if (!*arg) {
+        return 0;
+    }
+    for (const char *p = arg; *p; p++) {
+        if (*p == '"') {
+            quoted = !quoted;
+        } else if (*p == ',' && !quoted) {
+            if (++n == max) {
+                break;
+            }
+            len = 0;
+        } else if (len < 23) {
+            f[n][len++] = *p;
+            f[n][len] = 0;
+        }
+    }
+    return MIN(n + 1, max);
+}
+
+/*
+ * One PIN check (VERIFY, ENABLE, DISABLE or CHANGE CHV1): the right PIN restores the tries,
+ * a wrong one costs one, and the last wrong one blocks the PIN until the PUK.
+ * False with the error already sent.
+ */
+static bool sim_check_pin(IosBbCore *bb, int ch, const char *pin)
+{
+    if (bb->pin_left == 0) {
+        cme_error(bb, ch, 12);                   /* SIM PUK required */
+        return false;
+    }
+    if (strcmp(pin, bb->pin) == 0) {
+        bb->pin_left = IOS_BB_PIN_TRIES;
+        bb->pin_ok = true;
+        sim_save(bb);
+        return true;
+    }
+    if (--bb->pin_left == 0) {
+        bb->pin_ok = false;
+    }
+    sim_save(bb);
+    cme_error(bb, ch, 16);                       /* incorrect password */
+    return false;
+}
+
+/* The SIM lock commands; false if cmd is none of them. */
+static bool sim_command(IosBbCore *bb, int ch, const char *cmd)
+{
+    char f[3][24];
+    const char *arg;
+    int n;
+
+    if (strcmp(cmd, "cpin?") == 0) {
+        if (!bb->sim_present) {
+            cme_error(bb, ch, 10);               /* SIM not inserted */
+        } else if (bb->puk_left == 0) {
+            cme_error(bb, ch, 13);               /* SIM failure: blocked for good */
+        } else {
+            chan_printf(bb, ch, "\r\n+CPIN: %s\r\n",
+                        bb->pin_left == 0 ? "SIM PUK" : sim_locked(bb) ? "SIM PIN" : "READY");
+            at_ok(bb, ch);
+        }
+        return true;
+    }
+    if (strncmp(cmd, "xpincnt", 7) == 0) {
+        /* PIN1, PIN2, PUK1, PUK2 tries left (CommCenter reads fields 0 and 2). */
+        chan_printf(bb, ch, "\r\n+XPINCNT: %d,3,%d,10\r\n", bb->pin_left, bb->puk_left);
+        at_ok(bb, ch);
+        return true;
+    }
+    if ((arg = arg_after(cmd, "cpin=", NULL))) {
+        bool was_locked = sim_locked(bb);
+
+        n = at_fields(arg, f, 2);
+        if (!bb->sim_present) {
+            cme_error(bb, ch, 10);
+        } else if (bb->puk_left == 0) {
+            cme_error(bb, ch, 13);
+        } else if (bb->pin_left == 0) {
+            /* +CPIN="<puk>","<new pin>": UNBLOCK CHV1, which also turns the PIN on. */
+            if (n < 2 || !sim_code_ok(f[1], 4)) {
+                cme_error(bb, ch, 3);
+            } else if (strcmp(f[0], bb->puk) == 0) {
+                snprintf(bb->pin, sizeof(bb->pin), "%s", f[1]);
+                bb->pin_on = true;
+                bb->pin_ok = true;
+                bb->pin_left = IOS_BB_PIN_TRIES;
+                bb->puk_left = IOS_BB_PUK_TRIES;
+                sim_save(bb);
+                at_ok(bb, ch);
+            } else {
+                bb->puk_left--;
+                sim_save(bb);
+                cme_error(bb, ch, 16);
+            }
+        } else if (!was_locked) {
+            cme_error(bb, ch, 3);                /* no PIN asked for: operation not allowed */
+        } else if (sim_check_pin(bb, ch, f[0])) {
+            at_ok(bb, ch);
+        }
+        if (was_locked && !sim_locked(bb)) {
+            reg_schedule(bb);                    /* the SIM's IMSI is readable now: register */
+        }
+        return true;
+    }
+    if ((arg = arg_after(cmd, "clck=", NULL))) {
+        n = at_fields(arg, f, 3);
+        if (strcmp(f[0], "sc") != 0) {
+            if (n > 1 && strcmp(f[1], "2") == 0) {
+                chan_printf(bb, ch, "\r\n+CLCK: 0\r\n");   /* FDN and the other locks: off */
+            }
+            at_ok(bb, ch);
+        } else if (n > 1 && strcmp(f[1], "2") == 0) {
+            chan_printf(bb, ch, "\r\n+CLCK: %d\r\n", bb->pin_on);
+            at_ok(bb, ch);
+        } else if (n < 3 || (strcmp(f[1], "0") != 0 && strcmp(f[1], "1") != 0)) {
+            cme_error(bb, ch, 3);
+        } else if (sim_check_pin(bb, ch, f[2])) {
+            bb->pin_on = f[1][0] == '1';
+            sim_save(bb);
+            at_ok(bb, ch);
+        }
+        return true;
+    }
+    if ((arg = arg_after(cmd, "cpwd=", NULL))) {
+        n = at_fields(arg, f, 3);
+        if (strcmp(f[0], "sc") != 0) {
+            at_ok(bb, ch);                       /* PIN2 and barring passwords: not modeled */
+        } else if (n < 3 || !sim_code_ok(f[2], 4) || !bb->pin_on) {
+            cme_error(bb, ch, 3);                /* CHANGE CHV1 needs the PIN on (GSM 11.11 9.2.10) */
+        } else if (sim_check_pin(bb, ch, f[1])) {
+            snprintf(bb->pin, sizeof(bb->pin), "%s", f[2]);
+            sim_save(bb);
+            at_ok(bb, ch);
+        }
+        return true;
+    }
+    return false;
 }
 
 /* Parse one complete "at<cmd>" line (already lower-cased). */
@@ -2117,13 +2360,7 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
         at_ok(bb, ch);
         return;
     }
-    if (strcmp(cmd, "cpin?") == 0) {
-        if (!bb->sim_present) {
-            chan_printf(bb, ch, "\r\n+CME ERROR: 10\r\n");
-        } else {
-            chan_printf(bb, ch, "\r\n+CPIN: READY\r\n");
-            at_ok(bb, ch);
-        }
+    if (sim_command(bb, ch, cmd)) {
         return;
     }
     if ((arg = arg_after(cmd, "cmux=", NULL))) {
@@ -2294,18 +2531,6 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
 
         str_to_hexstr(bb->sca, hex, sizeof(hex));
         chan_printf(bb, ch, "\r\n+CSCA: \"%s\",129\r\n", hex);
-        at_ok(bb, ch);
-        return;
-    }
-    if (strncmp(cmd, "xpincnt", 7) == 0) {
-        chan_printf(bb, ch, "\r\n+XPINCNT: 3,3,10,10\r\n");
-        at_ok(bb, ch);
-        return;
-    }
-    if ((arg = arg_after(cmd, "clck=", NULL))) {
-        if (strstr(arg, ",2")) {
-            chan_printf(bb, ch, "\r\n+CLCK: 0\r\n");   /* FDN off */
-        }
         at_ok(bb, ch);
         return;
     }
@@ -2501,7 +2726,7 @@ static void at_command(IosBbCore *bb, int ch, const char *line)
                     }
                 }
             }
-        } else if (bb->data_out && radio_ok(bb)) {
+        } else if (bb->data_out && service_ok(bb)) {
             bb->pdp_active = true;
             at_ok(bb, ch);
         } else {
@@ -2966,6 +3191,10 @@ void ios_bb_reset(IosBbCore *bb)
     int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
     unsigned power_offs = bb->power_offs;
     IosBbGps gps = bb->gps;
+    /* The SIM card keeps its PIN, PUK and tries; only "PIN entered" goes with the modem. */
+    bool pin_on = bb->pin_on;
+    int pin_left = bb->pin_left, puk_left = bb->puk_left;
+    char pin[9], puk[9], sim_file[sizeof(bb->sim_file)];
 
     memcpy(operator_long, bb->operator_long, sizeof(operator_long));
     memcpy(operator_short, bb->operator_short, sizeof(operator_short));
@@ -2975,8 +3204,18 @@ void ios_bb_reset(IosBbCore *bb)
     memcpy(imei, bb->imei, sizeof(imei));
     memcpy(imsi, bb->imsi, sizeof(imsi));
     memcpy(iccid, bb->iccid, sizeof(iccid));
+    memcpy(pin, bb->pin, sizeof(pin));
+    memcpy(puk, bb->puk, sizeof(puk));
+    memcpy(sim_file, bb->sim_file, sizeof(sim_file));
 
     memset(bb, 0, sizeof(*bb));
+
+    bb->pin_on = pin_on;
+    bb->pin_left = pin_left;
+    bb->puk_left = puk_left;
+    memcpy(bb->pin, pin, sizeof(pin));
+    memcpy(bb->puk, puk, sizeof(puk));
+    memcpy(bb->sim_file, sim_file, sizeof(sim_file));
 
     memcpy(bb->operator_long, operator_long, sizeof(operator_long));
     memcpy(bb->operator_short, operator_short, sizeof(operator_short));
@@ -3043,4 +3282,5 @@ void ios_bb_init(IosBbCore *bb, IosBbOutFn out, void *opaque)
     bb->opaque = opaque;
     bb->now_ms = 0;
     ios_bb_reset(bb);                            /* fills the transport defaults */
+    sim_load(bb);
 }

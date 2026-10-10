@@ -98,6 +98,17 @@ PDP data DLCIs are allocated from 6 up at runtime. URCs arrive on the channel wh
 * `+cimi`: field 0 raw IMSI ("Home PLMN is %d MCC %d MNC %d"). `+ccid`: field 0 raw ICCID.
 * `+xpincnt`: field 0 = PIN1 attempts, field 2 = PUK1 attempts (`+XPINCNT: 3,3,10,10`).
 * `+clck="FD",2`: field 0 compared with "0" (FDN off) -> `+cimi`.
+* SIM PIN (Settings > Phone > SIM PIN, and the SIM Locked sheet). 1.0, 4.2.1 and 6.1.3's
+  CommCenterClassic carry the same command strings: `+clck="SC",2` (state), `+clck="SC",<0|1>,"<pin>"`,
+  `+cpwd="SC","<old>","<new>"`, `+cpin="<pin>"`, `+cpin="<puk>","<new pin>"`, then `+xpincnt` for
+  the tries the sheet shows. The modem models the card (GSM 11.11 CHV1): PIN 1111, off, on a new SIM;
+  a wrong PIN is `+CME ERROR: 16` and costs one of 3 tries, the third blocks it (`+CPIN: SIM PUK`, other
+  PIN commands `+CME ERROR: 12`), the PUK 12345678 (10 tries) sets a new PIN and turns it on, and a
+  locked SIM reports `+CPIN: SIM PIN` after every modem reset and power-on and does not register.
+  The PIN, PUK and tries persist in the ios-baseband `sim-file` (the app keeps it in the device's
+  overlay); `sim-lock` reports off/pin/ready/puk/blocked. CommCenter also keeps its own PIN cache
+  ("A PIN is cached for this SIM; will auto-issue"): after an unclean restart it re-sends the PIN by
+  itself, so only a clean power-off shows the SIM Locked sheet at the next boot, as on a phone.
 
 ## Registration (GsmRegistrationModel, DLCI 2)
 

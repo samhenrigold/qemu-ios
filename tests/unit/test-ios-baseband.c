@@ -1625,6 +1625,109 @@ static void test_radio_nvram(void)
     CHECK(strstr((char *)outbuf, "000000001234569") != NULL);
 }
 
+/*
+ * The SIM's PIN (issue 49): CommCenter's +clck="SC" turns it on and off with the PIN, +cpwd
+ * changes it, a locked SIM answers +CPIN: SIM PIN after a modem reset and after a power-off
+ * (the sim-file), wrong PINs cost tries until the PUK, and a locked SIM does not register.
+ */
+static IosBbCore sim;
+
+static const char *sim_at(const char *line)
+{
+    outlen = 0;
+    sim.now_ms = tnow;
+    ios_bb_input(&sim, (const uint8_t *)line, strlen(line));
+    outbuf[outlen] = 0;
+    return (const char *)outbuf;
+}
+
+static void sim_power_on(const char *file)
+{
+    memset(&sim, 0, sizeof(sim));
+    sim.sim_present = true;
+    sim.registered = true;
+    snprintf(sim.sim_file, sizeof(sim.sim_file), "%s", file);
+    ios_bb_init(&sim, core_out, NULL);
+}
+
+static void test_sim_pin(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("ios-bb-sim-XXXXXX", NULL);
+    g_autofree char *file = g_build_filename(dir, "sim", NULL);
+    g_autofree char *saved = NULL;
+
+    sim_power_on(file);                          /* no file yet: a new SIM, PIN 1111, off */
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: READY\r\n\r\nOK\r\n", "new SIM ready");
+    check_str(sim_at("at+clck=\"SC\",2\r"), "\r\n+CLCK: 0\r\n\r\nOK\r\n", "PIN off");
+    check_str(sim_at("at+clck=\"FD\",2\r"), "\r\n+CLCK: 0\r\n\r\nOK\r\n", "FDN off");
+    check_str(sim_at("at+cpin=\"1111\"\r"), "\r\n+CME ERROR: 3\r\n", "no PIN asked for");
+
+    /* Turn it on: a wrong PIN costs a try, the right one restores them. */
+    check_str(sim_at("at+clck=\"SC\",1,\"0000\"\r"), "\r\n+CME ERROR: 16\r\n", "wrong PIN");
+    check_str(sim_at("at+xpincnt\r"), "\r\n+XPINCNT: 2,3,10,10\r\n\r\nOK\r\n", "two tries left");
+    check_str(sim_at("at+clck=\"SC\",2\r"), "\r\n+CLCK: 0\r\n\r\nOK\r\n", "still off");
+    check_str(sim_at("at+clck=\"SC\",1,\"1111\"\r"), "\r\nOK\r\n", "PIN on");
+    check_str(sim_at("at+clck=\"SC\",2\r"), "\r\n+CLCK: 1\r\n\r\nOK\r\n", "PIN on, queried");
+    check_str(sim_at("at+xpincnt\r"), "\r\n+XPINCNT: 3,3,10,10\r\n\r\nOK\r\n", "tries back");
+    check_str(ios_bb_sim_lock(&sim), "ready", "entered");
+    CHECK(g_file_get_contents(file, &saved, NULL, NULL));
+    check_str(saved ? saved : "", "sim-pin 1 1111 12345678 3 10\n", "sim-file");
+
+    /* Power off and on: the SIM asks for its PIN and the phone does not register until then. */
+    sim_power_on(file);
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: SIM PIN\r\n\r\nOK\r\n", "locked after power-on");
+    check_str(ios_bb_sim_lock(&sim), "pin", "waiting for the PIN");
+    check_str(sim_at("at+creg?\r"), "\r\n+CREG: 0,0,0,0\r\n\r\nOK\r\n", "not registered");
+    check_str(sim_at("at+cpin=\"1112\"\r"), "\r\n+CME ERROR: 16\r\n", "wrong PIN at the prompt");
+    check_str(sim_at("at+cpin=\"1111\"\r"), "\r\nOK\r\n", "unlocked");
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: READY\r\n\r\nOK\r\n", "ready");
+    check_str(sim_at("at+creg?\r"), "\r\n+CREG: 0,1,0,0\r\n\r\nOK\r\n", "registered");
+
+    /* Change it: the old PIN must be right, and the new one holds after a modem reset. */
+    check_str(sim_at("at+cpwd=\"SC\",\"9999\",\"4321\"\r"), "\r\n+CME ERROR: 16\r\n", "change, wrong PIN");
+    check_str(sim_at("at+cpwd=\"SC\",\"1111\",\"12\"\r"), "\r\n+CME ERROR: 3\r\n", "too short");
+    check_str(sim_at("at+cpwd=\"SC\",\"1111\",\"4321\"\r"), "\r\nOK\r\n", "changed");
+    ios_bb_reset(&sim);
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: SIM PIN\r\n\r\nOK\r\n", "locked after a reset");
+    check_str(sim_at("at+cpin=\"1111\"\r"), "\r\n+CME ERROR: 16\r\n", "the old PIN");
+    check_str(sim_at("at+cpin=\"4321\"\r"), "\r\nOK\r\n", "the new PIN");
+
+    /* Turn it off: needs the PIN; the next start asks for nothing, and there is no PIN to change. */
+    check_str(sim_at("at+clck=\"SC\",0,\"1111\"\r"), "\r\n+CME ERROR: 16\r\n", "off, wrong PIN");
+    check_str(sim_at("at+clck=\"SC\",0,\"4321\"\r"), "\r\nOK\r\n", "off");
+    sim_power_on(file);
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: READY\r\n\r\nOK\r\n", "off after power-on");
+    check_str(sim_at("at+cpwd=\"SC\",\"4321\",\"5555\"\r"), "\r\n+CME ERROR: 3\r\n", "no change while off");
+
+    /* Three wrong PINs block it; the PUK sets a new PIN (and turns it on), a wrong PUK costs one of ten. */
+    sim_at("at+clck=\"SC\",1,\"0000\"\r");
+    sim_at("at+clck=\"SC\",1,\"0000\"\r");
+    check_str(sim_at("at+clck=\"SC\",1,\"0000\"\r"), "\r\n+CME ERROR: 16\r\n", "third wrong PIN");
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: SIM PUK\r\n\r\nOK\r\n", "PUK needed");
+    check_str(sim_at("at+clck=\"SC\",1,\"4321\"\r"), "\r\n+CME ERROR: 12\r\n", "the PIN no longer works");
+    check_str(sim_at("at+cpin=\"00000000\",\"2222\"\r"), "\r\n+CME ERROR: 16\r\n", "wrong PUK");
+    check_str(sim_at("at+xpincnt\r"), "\r\n+XPINCNT: 0,3,9,10\r\n\r\nOK\r\n", "nine PUK tries");
+    sim_power_on(file);
+    check_str(sim_at("at+cpin?\r"), "\r\n+CPIN: SIM PUK\r\n\r\nOK\r\n", "still PUK after power-on");
+    check_str(sim_at("at+cpin=\"12345678\",\"2222\"\r"), "\r\nOK\r\n", "unblocked");
+    check_str(sim_at("at+xpincnt\r"), "\r\n+XPINCNT: 3,3,10,10\r\n\r\nOK\r\n", "tries back");
+    check_str(ios_bb_sim_lock(&sim), "ready", "unblocked and entered");
+    check_str(sim_at("at+clck=\"SC\",2\r"), "\r\n+CLCK: 1\r\n\r\nOK\r\n", "unblocking turns the PIN on");
+
+    /* Ten wrong PUKs block the SIM for good. */
+    for (int i = 0; i < 3; i++) {
+        sim_at("at+clck=\"SC\",0,\"0000\"\r");
+    }
+    for (int i = 0; i < 10; i++) {
+        sim_at("at+cpin=\"00000000\",\"2222\"\r");
+    }
+    check_str(ios_bb_sim_lock(&sim), "blocked", "blocked");
+    check_str(sim_at("at+cpin?\r"), "\r\n+CME ERROR: 13\r\n", "SIM failure");
+
+    unlink(file);
+    rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1632,6 +1735,7 @@ int main(int argc, char **argv)
     g_test_add_func("/baseband/ifx", test_ifx);
     g_test_add_func("/baseband/h5-link-1.0", test_h5_link_1_0);
     g_test_add_func("/baseband/radio-nvram", test_radio_nvram);
+    g_test_add_func("/baseband/sim-pin", test_sim_pin);
     g_test_run();
     if (failures) {
         fprintf(stderr, "test-ios-baseband: %d failure(s)\n", failures);

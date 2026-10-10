@@ -14,10 +14,11 @@
  *
  * The Mac app drives it over QMP (qom-set on the device's properties): carrier,
  * mcc-mnc, signal-dbm, registered, sim-present, battery-percent (wired by the
- * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms; the actions
+ * board from the PMU), voicemail, imei/imsi/iccid, answer-delay-ms, sim-file (where the SIM keeps
+ * its PIN); the actions
  * incoming-call, remote-answer, remote-hangup and incoming-sms ("<num>|<text>");
- * the observables attached, power-offs, call-state, emergency-call, last-dialed, last-mo-sms and
- * mo-sms-count; and with gps=on (the 3GS) the GPS receiver's gps-fix.
+ * the observables attached, power-offs, call-state, emergency-call, last-dialed, last-mo-sms,
+ * mo-sms-count and sim-lock; and with gps=on (the 3GS) the GPS receiver's gps-fix.
  *
  * The 3GS and iPhone 4 put the same modem behind SPI2 instead (BasebandSPI's IFX
  * framing, docs/baseband/commcenter-4.2.1-3gs.md): with ifx-version 1/2 and
@@ -407,6 +408,12 @@ STR_PROP(voicemail, voicemail)
 STR_PROP(imei, imei)
 STR_PROP(imsi, imsi)
 STR_PROP(iccid, iccid)
+STR_PROP(sim_file, sim_file)
+
+static char *iosbb_get_sim_lock(Object *obj, Error **errp)
+{
+    return g_strdup(ios_bb_sim_lock(&IOS_BASEBAND(obj)->bb));
+}
 
 /*
  * Integer properties with a "the model state changed" hook. QOM here only
@@ -802,6 +809,22 @@ static const VMStateDescription vmstate_ios_baseband_off = {
     }
 };
 
+/* The SIM's PIN state (sim_file has the card's part too; this keeps a snapshot's own). */
+static const VMStateDescription vmstate_ios_baseband_sim_pin = {
+    .name = "ios-baseband/sim-pin",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bb.pin_on, IosBasebandState),
+        VMSTATE_CHAR_ARRAY(bb.pin, IosBasebandState, 9),
+        VMSTATE_CHAR_ARRAY(bb.puk, IosBasebandState, 9),
+        VMSTATE_INT32(bb.pin_left, IosBasebandState),
+        VMSTATE_INT32(bb.puk_left, IosBasebandState),
+        VMSTATE_BOOL(bb.pin_ok, IosBasebandState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_ios_baseband = {
     .name = "ios-baseband",
     .version_id = 2,
@@ -900,6 +923,7 @@ static const VMStateDescription vmstate_ios_baseband = {
         &vmstate_ios_baseband_xemc,
         &vmstate_ios_baseband_vib,
         &vmstate_ios_baseband_gps,
+        &vmstate_ios_baseband_sim_pin,
         NULL
     }
 };
@@ -1034,6 +1058,13 @@ static void iosbb_instance_init(Object *obj)
         "Whether the fake network registers the phone when the radio is on");
     object_property_add_bool(obj, "sim-present", iosbb_get_sim_present,
                              iosbb_set_sim_present);
+    object_property_add_str(obj, "sim-file", iosbb_get_sim_file, iosbb_set_sim_file);
+    object_property_set_description(obj, "sim-file",
+        "Where the SIM keeps its PIN, PUK and tries left across power-offs (read at realize, "
+        "written on every change); unset, each start has a new SIM (PIN 1111, off)");
+    object_property_add_str(obj, "sim-lock", iosbb_get_sim_lock, NULL);
+    object_property_set_description(obj, "sim-lock",
+        "off (no PIN), pin (waiting for it), ready (PIN entered), puk or blocked");
 
     object_property_add_str(obj, "incoming-call", NULL, iosbb_set_incoming_call);
     object_property_set_description(obj, "incoming-call",
