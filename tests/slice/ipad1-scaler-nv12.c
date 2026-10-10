@@ -1,5 +1,6 @@
 /* The scaler's NV12-to-NV12 path (scaler_nv12): a decoded movie frame turned upright for the iPhone 4's portrait
- * panel (480x270 at stride 512 to 270x480 at stride 320 on a 4.2.1 device; small sizes here), both planes.
+ * panel (480x270 at stride 512 to 270x480 at stride 320 on a 4.2.1 device; small sizes here), both planes. And its
+ * NV12-to-RGB path (scaler_convert) behind a DART, as the 3GS uses it.
  *
  * SLICE hw/arm/ipod_touch_scaler.c range typedef struct { | static const MemoryRegionOps
  * PKG glib-2.0
@@ -71,6 +72,21 @@ int main(void)
     assert(!scaler_nv12(&s));
     r[0x40/4] = SH << 16 | SW; r[0x30/4] = 6;
     assert(!scaler_nv12(&s));
+
+    /* NV12 to BGRA, unscaled, through the DART: the 3GS's movie path on 3.1.3 (480x270 to 480x270 at 32 bpp, its
+     * buffers dart0 IOVAs). The matrix here (2.9, rows R, G, B) gives each channel the luma. */
+    enum { DRGB = 0x104000 };
+    memset(r, 0, 0x80);
+    r[0x14/4] = Y; r[0x18/4] = UV; r[0x1c/4] = SYS << 16 | SYS; r[0x24/4] = SW << 16 | SH;
+    r[0x30/4] = 6; r[0x34/4] = DRGB; r[0x3c/4] = SW; r[0x40/4] = SW << 16 | SH;
+    for (unsigned i = 0; i < 9; i++)
+        r[0x220/4 + i] = i % 3 ? 0 : 0x200;
+    assert(scaler_convert(&s));
+    for (unsigned y = 0; y < SH; y++)
+        for (unsigned x = 0; x < SW; x++) {
+            const uint8_t *px = &ram[DRGB - 0x100000 + (y * SW + x) * 4];
+            assert(px[0] == luma(x, y) && px[1] == luma(x, y) && px[2] == luma(x, y) && px[3] == 255);
+        }
     printf("ok\n");
     return 0;
 }

@@ -15,6 +15,7 @@
 #include "hw/core/irq.h"
 #include "system/address-spaces.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 #include "qemu/bswap.h"
 #include "migration/vmstate.h"
@@ -64,9 +65,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8920VXDState, S5L8920_VXD)
 #define TO_HOST_WORDS       0xf0
 
 #define MSG_RENDER          0x81
+#define   RENDER_NO_RESPONSE 0x0800 /* word 7 flags: no CMD_COMPLETED for this one */
+#define   RENDER_HOST_INT   0x4000  /* word 7 flags: interrupt the host at its end (a picture's last slice) */
 #define MSG_CMD_COMPLETED   0xc0
 
 #define MTX_RAM_WORDS       0x10000
+
+/*
+ * A render completes after its decode time, not at once: the A4's VXD keeps up with 720p30 H.264 (108,000
+ * macroblocks a second, about 9 us each). Each message costs 30 us to set up and a picture's last slice 8 us for
+ * each of the picture's macroblocks (word 6 gives the picture's last one, not the slice's), one after another, as
+ * the MTX takes its messages in order.
+ */
+#define VXD_SETUP_NS        30000
+#define VXD_MB_NS           8000
+#define VXD_PENDING         16
 
 struct S5L8920VXDState {
     SysBusDevice parent_obj;
@@ -77,6 +90,11 @@ struct S5L8920VXDState {
     uint32_t ram[2][MTX_RAM_WORDS];   /* code (MCMID 0x10..), data (0x18..) */
     VXDH264 *h264;
     uint32_t ram_addr;                /* word address for MTX_RAM_DATA */
+    QEMUTimer *done;                  /* the oldest pending render's end */
+    uint32_t pending;                 /* renders decoded, not yet completed */
+    uint32_t fence[VXD_PENDING];      /* their fences and ends, oldest first */
+    int64_t due[VXD_PENDING];
+    int64_t busy_until;               /* when the last of them ends */
     FILE *trace;
 };
 
@@ -222,11 +240,49 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
     return r->bs_va && r->luma;
 }
 
+/* A coded slice's NAL header byte: forbidden bit clear, type 1 or 5. */
+static bool vxd_slice_nal(uint8_t h)
+{
+    return !(h & 0x80) && ((h & 0x1f) == 1 || (h & 0x1f) == 5);
+}
+
 /*
- * Decode one slice: the bitstream DMA ends where its NAL ends, and the guest's
- * buffer holds the sample as the movie stores it (a 4-byte length before each
- * NAL), so the NAL's start is found from its length.
+ * Where the slice's NAL starts in buf, which holds `back` bytes before the bitstream DMA's start and the `len` bytes
+ * it reads, and whether the stream is Annex B; -1 if no slice NAL is found. The DMA ends where the NAL ends and starts at or after its header. The
+ * guest's buffer holds the sample as the movie stores it, a 4-byte length before each NAL (4.x on), so the NAL's
+ * start is found from its length; or as an Annex B stream (3.1.3's AppleVXD375Framework), the NAL after the last
+ * start code before the DMA's start (a NAL's payload never holds 00 00 01).
  */
+static int vxd_nal_start(const uint8_t *buf, int back, unsigned len, bool *annexb)
+{
+    for (int i = back - 4; i >= 0; i--) {
+        if (ldl_be_p(buf + i) == back + len - (i + 4) && vxd_slice_nal(buf[i + 4])) {
+            *annexb = false;
+            return i + 4;
+        }
+    }
+    for (int i = back; i >= 3; i--) {
+        if (!buf[i - 3] && !buf[i - 2] && buf[i - 1] == 1) {
+            *annexb = true;
+            return vxd_slice_nal(buf[i]) ? i : -1;     /* the nearest start code is this NAL's, slice or not */
+        }
+    }
+    return -1;
+}
+
+/*
+ * Whether the bytes after a slice's NAL start another slice of the same picture: a slice NAL, after a start code
+ * (00 00 01 or 00 00 00 01) in an Annex B stream or a 4-byte length in a sample (00 00 01 xx is a length there),
+ * whose first_mb_in_slice (the header's first ue(v)) isn't 0, which it is when its first bit is 1.
+ */
+static bool vxd_more_slices(const uint8_t next[6], bool annexb)
+{
+    unsigned h = annexb ? (!next[0] && !next[1] && next[2] == 1 ? 3 : ldl_be_p(next) == 1 ? 4 : 0)
+                        : (ldl_be_p(next) - 1u > 0x3fffff ? 0 : 4);
+    return h && vxd_slice_nal(next[h]) && !(next[h + 1] & 0x80);
+}
+
+/* Decode one slice (vxd_nal_start says where its NAL is). */
 static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
 {
     enum { BACK = 64 };
@@ -237,21 +293,21 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
     if (r->bs_va < BACK || !vxd_rw(ptd, base, buf, BACK + r->bs_len, false)) {
         return -1;
     }
-    int nal = -1;
-    for (int i = BACK - 4; i >= 0 && nal < 0; i--) {
-        uint8_t h = buf[i + 4];
-        if (ldl_be_p(buf + i) == end - (base + i + 4) && !(h & 0x80) && ((h & 0x1f) == 1 || (h & 0x1f) == 5)) {
-            nal = i + 4;
-        }
-    }
+    bool annexb;
+    int nal = vxd_nal_start(buf, BACK, r->bs_len, &annexb);
     if (nal < 0) {
-        VXD_LOG(s, "no NAL before %08x (len %x sr %x)\n", r->bs_va, r->bs_len, r->sr_offset);
+        VXD_LOG(s, "no slice NAL before %08x (len %x sr %x)\n", r->bs_va, r->bs_len, r->sr_offset);
+        if (s->trace) {
+            for (unsigned i = 0; i < BACK + MIN(r->bs_len, 32u); i++) {
+                fprintf(s->trace, "%s%02x", i == BACK ? " | " : " ", buf[i]);
+            }
+            fprintf(s->trace, "\n");
+        }
         return -1;
     }
-    /* The picture's last slice unless the sample's next NAL is a slice that doesn't start at macroblock 0. */
+    /* The picture's last slice unless the sample's next NAL is another slice of it. */
     uint8_t next[6];
-    bool last = !vxd_rw(ptd, end, next, sizeof(next), false) || ldl_be_p(next) - 1 > 0x3fffff ||
-                (next[4] & 0x80) || ((next[4] & 0x1f) != 1 && (next[4] & 0x1f) != 5) || (next[5] & 0x80);
+    bool last = !vxd_rw(ptd, end, next, sizeof(next), false) || !vxd_more_slices(next, annexb);
     VXDSlice sl = {
         .nal = buf + nal, .len = BACK + r->bs_len - nal,
         .sr_bit = (BACK - nal) * 8 + r->sr_offset,
@@ -283,6 +339,8 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
 /* The firmware's start: its signature and where its rings are. */
 static void vxd_firmware_start(S5L8920VXDState *s)
 {
+    timer_del(s->done);          /* a restarted firmware has nothing in flight */
+    s->pending = 0;
     *vxd_comms(s, COMMS_TO_MTX_BUF) = TO_MTX_OFF << 16 | TO_MTX_WORDS;
     *vxd_comms(s, COMMS_TO_HOST_BUF) = TO_HOST_OFF << 16 | TO_HOST_WORDS;
     *vxd_comms(s, COMMS_SIGNATURE) = COMMS_SIGNATURE_VALUE;
@@ -301,6 +359,26 @@ static void vxd_post(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
     vxd_update_irq(s);
 }
 
+/* Posts every pending completion whose time has come, oldest first; the timer waits for the next. */
+static void vxd_complete(void *opaque)
+{
+    S5L8920VXDState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned n = 0;
+
+    while (n < s->pending && s->due[n] <= now) {
+        uint32_t done[3] = { MSG_CMD_COMPLETED << 8 | 12, s->fence[n], 0 };
+        vxd_post(s, done, 3);
+        n++;
+    }
+    s->pending -= n;
+    memmove(s->fence, s->fence + n, s->pending * sizeof(s->fence[0]));
+    memmove(s->due, s->due + n, s->pending * sizeof(s->due[0]));
+    if (s->pending) {
+        timer_mod(s->done, s->due[0]);
+    }
+}
+
 static void vxd_message(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
 {
     uint8_t id = msg[0] >> 8;
@@ -309,9 +387,31 @@ static void vxd_message(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
     int got = id == MSG_RENDER && words >= 3 && vxd_parse_render(msg[1], msg[2], &r) ? vxd_decode(s, msg[1], &r) : -2;
     VXD_LOG(s, "message %02x fence %u slice %08x: %s\n", id, words > 4 ? msg[4] : 0, words > 6 ? msg[6] : 0,
             got == 1 ? "picture" : got == 0 ? "slice" : got == -1 ? "FAILED" : "not a render");
-    /* ponytail: every message completes at once, decoded or not; fence = word 4 (psb's FW_VA_RENDER). */
-    uint32_t done[3] = { MSG_CMD_COMPLETED << 8 | 12, words > 4 ? msg[4] : 0, 0 };
-    vxd_post(s, done, 3);
+    /*
+     * A render takes its decode time, decoded or not; fence = word 4 (psb's FW_VA_RENDER). Only a message whose flags
+     * (word 7) ask for the host's interrupt (FW_VA_RENDER_HOST_INT, a picture's last slice) or that doesn't waive the
+     * reply (FW_VA_RENDER_NO_RESPONCE_MSG, every other slice) gets a CMD_COMPLETED: a picture completes once, at its
+     * end. Completed at each slice, a two-slice picture's fence came back while its second slice was still decoding.
+     */
+    int64_t cost = VXD_SETUP_NS;
+    if (got != -2 && words > 7 && (msg[7] & RENDER_HOST_INT)) {     /* the picture's macroblocks, at its last slice */
+        unsigned wmb = ((r.size & 0xfff) + 16) / 16, last = msg[6] >> 16;
+        cost += (int64_t)((last >> 8) * wmb + (last & 0xff) + 1) * VXD_MB_NS;
+    }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->busy_until = MAX(now, s->busy_until) + cost;
+    if (id == MSG_RENDER && words > 7 && (msg[7] & (RENDER_HOST_INT | RENDER_NO_RESPONSE)) == RENDER_NO_RESPONSE) {
+        return;
+    }
+    if (s->pending == VXD_PENDING) {          /* more outstanding than the driver ever queues: end the oldest now */
+        s->due[0] = 0;
+        vxd_complete(s);
+    }
+    s->fence[s->pending] = words > 4 ? msg[4] : 0;
+    s->due[s->pending++] = s->busy_until;
+    if (!timer_pending(s->done)) {
+        timer_mod(s->done, s->due[0]);
+    }
 }
 
 static void vxd_kick(S5L8920VXDState *s)
@@ -445,6 +545,7 @@ static void vxd_init(Object *obj)
     S5L8920VXDState *s = S5L8920_VXD(obj);
 
     s->h264 = vxd_h264_new();
+    s->done = timer_new_ns(QEMU_CLOCK_VIRTUAL, vxd_complete, s);
     memory_region_init_io(&s->iomem, obj, &vxd_ops, s, TYPE_S5L8920_VXD, 0x100000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
@@ -464,21 +565,29 @@ static void vxd_reset(DeviceState *dev)
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->comms, 0, sizeof(s->comms));
     s->ram_addr = 0;
+    timer_del(s->done);
+    s->pending = 0;
+    s->busy_until = 0;
 }
 
 /*
- * The registers and the comms area (the rings, their indexes, the firmware's signature) are the state: the host
- * decoder starts over, so a restored device decodes again from the stream's next IDR. MTX RAM is left out: only
- * a firmware upload's read-back looks at it.
+ * The registers and the comms area (the rings, their indexes, the firmware's signature) are the state, and from
+ * version 2 the renders still decoding: the host decoder starts over, so a restored device decodes again from the
+ * stream's next IDR. MTX RAM is left out: only a firmware upload's read-back looks at it.
  */
 static const VMStateDescription vxd_vmstate = {
     .name = TYPE_S5L8920_VXD,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, S5L8920VXDState, 0x1000 / 4),
         VMSTATE_UINT32_ARRAY(comms, S5L8920VXDState, 0x1000 / 4),
         VMSTATE_UINT32(ram_addr, S5L8920VXDState),
+        VMSTATE_TIMER_PTR_V(done, S5L8920VXDState, 2),
+        VMSTATE_UINT32_V(pending, S5L8920VXDState, 2),
+        VMSTATE_UINT32_ARRAY_V(fence, S5L8920VXDState, VXD_PENDING, 2),
+        VMSTATE_INT64_ARRAY_V(due, S5L8920VXDState, VXD_PENDING, 2),
+        VMSTATE_INT64_V(busy_until, S5L8920VXDState, 2),
         VMSTATE_END_OF_LIST()
     },
 };

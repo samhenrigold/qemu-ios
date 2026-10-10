@@ -239,7 +239,7 @@ offsets at 0x80000000).
 | USB | the S5L8720's PHY + DWC OTG (device mode), built-in host | shared | R |
 | TV-out | the S5L8720's `ipodtouch.tvout`: SDO 0x85600000, mixers 0x85200000/0x85100000, IRQs 0x23/0x27 | shared | H |
 | I2S0 | the A4's `s5l8930.i2s`, registers at 0x84500400, its TX FIFO window (MMIO 1) at 0x84500000 where CDMA channel 0x15 writes; the CDMA's `paced-base` puts that FIFO on the audio clock | variant | R |
-| VXD | none: the DT's `vxd` node is unmatched (see docs/n88/README.md, Wi-Fi) | | S |
+| VXD (H.264 decoder, 0x85000000, IRQ 0x2a) | `s5l8920.vxd`, as on the 3GS (docs/n88/README.md); no movie checked on this board yet | shared | H |
 | Everything else | the unimplemented window 0x80000000-0xbfffffff (SDIO/Wi-Fi, JPEG, AMC, PWM) | | S |
 
 ## Guest debugging

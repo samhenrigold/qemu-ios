@@ -17,8 +17,10 @@ static void cpu_physical_memory_read(uint64_t a,void *p,size_t n)
 { assert(a>=BASE && a+n<=BASE+sizeof(ram));memcpy(p,ram+(a-BASE),n); }
 typedef struct { uint32_t pw, ph; void *xlate; } IPodTouchLCDState;
 static const IPodTouchLCDState st={320,480,NULL};
+/* Behind a DART (the 3GS's M2 CLCD): IOVA 0x40000000 + n is BASE + n. */
+#define IOVA 0x40000000u
 static void lcd_bus_read(const IPodTouchLCDState *s,uint32_t a,uint8_t *b,uint32_t n)
-{ (void)s;cpu_physical_memory_read(a,b,n); }
+{ cpu_physical_memory_read(s->xlate ? a - IOVA + BASE : a,b,n); }
 #include "slice.h"
 int main(void)
 {
@@ -52,6 +54,12 @@ int main(void)
     uint8_t uv[]={128,128,90,240};memcpy(ram+256,uv,4);
     assert(lcd_compose_planes(&st,r,out));
     assert(!memcmp(out,"\0\0\0\xff\xff\xff\xff\xff\0\0\xfe\xff",12));
+    /* The same NV12 video plane with its planes at bus addresses (the 3GS on 6.1.6 shows a movie this way). */
+    static const IPodTouchLCDState dart={320,480,(void *)1};
+    r[0x11c/4]=IOVA;r[0x120/4]=IOVA+256;memset(out,0,12);
+    assert(lcd_compose_planes(&dart,r,out));
+    assert(!memcmp(out,"\0\0\0\xff\xff\xff\xff\xff\0\0\xfe\xff",12));
+    r[0x11c/4]=BASE;r[0x120/4]=BASE+256;
     r[0x118/4]=3;r[0x13c/4]=(2<<16)|4;
     assert(lcd_compose_planes(&st,r,out));
     assert(!memcmp(out,"\0\0\0\xff",4));

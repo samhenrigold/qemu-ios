@@ -441,20 +441,6 @@ static void s5l8920_cpu_reset(void *opaque)
         a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
                    &(A4DTEdit){ "isp", "compatible", "none", 5 });
     }
-    /*
-     * No VXD (the H.264 decoder, an MSVDX with its own MTX core) model either.
-     * AppleVXD375 powers it on at start inside a command gate on arm-io's shared
-     * work loop and polls: DMAC IRQ_STAT 0x50c for the firmware download's FIN
-     * (1000 x 1 ms), then MTX register access (0xfc) and the firmware's comms
-     * signature 0x2fe0 == 0xa5a5a5a5; unanswered, that holds the gate ~1.2 s.
-     * AppleBaseband::start waits behind it in addEventSource, and 3.x's
-     * AppleBCMWLANN88PlatformManager gives AppleBaseband only 20 ms
-     * (waitForMatchingService) once the card has enumerated: "Failed to get
-     * Baseband service", no Wi-Fi. Unmatched, the board reads as having no
-     * hardware decoder, which it already was in effect (power-on failed).
-     */
-    a4_dt_edit((uint8_t *)data, image_len, load_pa, bootargs_pa,
-               &(A4DTEdit){ "vxd", "compatible", "none", 5 });
     address_space_write(&address_space_memory, load_pa, MEMTXATTRS_UNSPECIFIED,
                         data, image_len);
     for (gsize off = image_len; off + KBOOT_SEGMENT_LEN <= size - KBOOT_TRAILER_LEN;) {
@@ -901,7 +887,7 @@ static void s5l8920_init(MachineState *machine)
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_mmio_map(sbd, 0, S5L8920_CDMA_BASE);
     sysbus_mmio_map(sbd, 1, S5L8920_AES_BASE);
-    for (i = 0; i < S5L8920_CDMA_CHANNELS; i++) {
+    for (i = 1; i < S5L8920_CDMA_CHANNELS; i++) {     /* channel 0's slot is the global block; 0x2a is the VXD's */
         sysbus_connect_irq(sbd, i, s5l8920_irq(s, S5L8920_IRQ_CDMA(i)));
     }
     if (bt_uart) {
@@ -1079,6 +1065,9 @@ static void s5l8920_init(MachineState *machine)
                                                s5l8920_irq(s, S5L8920_IRQ_SCALER)),
                           s5l8920_dart_xlate, dart0, 0);
     sysbus_create_simple("ipodtouch.swi", S5L8920_SWI_BASE, NULL);
+
+    /* VXD, the H.264 decoder (DT vxd: reg 0x85000000, interrupt 0x2a). */
+    sysbus_create_simple("s5l8920.vxd", 0x85000000, s5l8920_irq(s, 0x2a));
 
     /*
      * TV-out: the S5L8720's SDO and mixers (DT tv-out reg 0x5600000,

@@ -198,9 +198,14 @@ static void pipe_fifo_write_word(DisplayPipe *p, uint32_t val);
 
 static void pipe_fifo_write(DisplayPipe *p, uint32_t val)
 {
-    if (val & 0x80000000) {                     /* transaction header */
+    /*
+     * A transaction header (bit 31; 6.x and 7.x also set bit 29, with the transaction's word count in bits 16-25) only
+     * between packets: inside one every word is data, bit 31 or not. The video layer's polyphase taps carry negative
+     * coefficients (0xf0808000 in 6.1.6's first movie swap), and read as a header one ended the swap early and named
+     * it 0x8000, so AppleDisplayPipe never saw its swap complete and IOMobileFramebuffer swapped no more.
+     */
+    if ((val & 0x80000000) && p->pkt_left == 0) {
         p->swap_id = val & 0xffff;
-        p->pkt_left = 0;
         p->swap_pending = true;
         return;
     }
@@ -596,13 +601,18 @@ static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2],
     for (int l = 0; l < 2; l++) {
         on[l] = scanout_layer(s, l, w, h, &u[l]);
     }
+    /*
+     * The video layer alone lights the panel too: 7.1.2 plays a full-screen movie with both UI layers off (0x1038 =
+     * 0x400, the frame letterboxed at 640x360). Counted as dark, the movie showed black.
+     */
+    bool video = s->pipe[0].regs[DP_LAYERS / 4] & 0x400;
     if (key) {
         key[0] = w << 16 | h;
-        key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0);
+        key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0) | (video ? 4 : 0);
         key[2] = on[0] ? u[0].base : 0;
         key[3] = on[1] ? u[1].base : 0;
     }
-    return on[0] || on[1];
+    return on[0] || on[1] || video;
 }
 
 /*

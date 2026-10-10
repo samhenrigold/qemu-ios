@@ -262,18 +262,19 @@ static bool scaler_convert(IPodScalerState *s)
      * scaling needs the programmed polyphase filters, not guessed sampling. */
     if (!w || !h || w > 2048 || h > 2048 || (w | h) & 1 ||
         r[0x10 / 4] || (fmt != 4 && fmt != 6) || (r[0x30 / 4] & ~7u) ||
-        r[0x20 / 4] || r[0x24 / 4] != r[0x40 / 4] ||
-        !scaler_range(ybase, ys, h, w) ||
-        !scaler_range(uvbase, uvs, h / 2, w) ||
-        !scaler_range(dest, ds, h, w * bpp)) return false;
+        r[0x20 / 4] || r[0x24 / 4] != r[0x40 / 4] || ys < w || uvs < w || ds < w * bpp ||
+        (!s->xlate && (!scaler_range(ybase, ys, h, w) ||
+                       !scaler_range(uvbase, uvs, h / 2, w) ||
+                       !scaler_range(dest, ds, h, w * bpp)))) return false;
     g_autofree uint8_t *yplane = g_malloc((size_t)w * h);
     g_autofree uint8_t *uvplane = g_malloc((size_t)w * h / 2);
     g_autofree uint8_t *row = g_malloc(w * bpp);
-    /* Snapshot sources before writing: IOSurface transfers may alias. */
+    /* Snapshot sources before writing: IOSurface transfers may alias. Through the DART on the S5L8920 (3GS). */
     for (unsigned y = 0; y < h; y++) {
-        cpu_physical_memory_read(ybase + y * ys, yplane + y * w, w);
-        if (!(y & 1)) cpu_physical_memory_read(uvbase + (y / 2) * uvs,
-                                             uvplane + (y / 2) * w, w);
+        if (!scaler_read_bus(s, ybase + y * ys, yplane + y * w, w) ||
+            (!(y & 1) && !scaler_read_bus(s, uvbase + (y / 2) * uvs, uvplane + (y / 2) * w, w))) {
+            return false;
+        }
     }
     int matrix[9];
     for (unsigned i = 0; i < 9; i++) {
@@ -299,7 +300,9 @@ static bool scaler_convert(IPodScalerState *s)
                 row[x * 4 + 2] = rgb[0]; row[x * 4 + 3] = 255;
             }
         }
-        cpu_physical_memory_write(dest + y * ds, row, w * bpp);
+        if (!scaler_write_bus(s, dest + y * ds, row, w * bpp)) {
+            return false;
+        }
     }
     return true;
 }

@@ -16,11 +16,12 @@ the serial log's "Joined BSS" on 3.0, where the probe's httpget does not run). t
 the card. What 3.x needed:
 - Product 0xa8f2: 3.0's AppleBCM4325-42.43 matches the N88 only by it ("N88 4325 D1"; 0x4325 needs its DVT boards'
   "P=N88 m=3.1"/"m=3.2"), so with 0x4325 no driver attached. 3.1 to 6.1.6 match either.
-- No VXD: 3.1.x's AppleBCMWLANN88PlatformManager::init waits 20 ms (waitForMatchingService) for AppleBaseband, which
-  registers at the end of its start. That start sat ~1.2 s in addEventSource on arm-io's shared work loop, whose
-  gate AppleVXD375's power-on held while polling the unmodeled decoder (DMAC 0x50c FIN 1000 x 1 ms, MTX 0xfc, the
-  firmware's 0x2fe0 signature), so the card enumerated first: "Failed to get Baseband service", no Wi-Fi. kboot now
-  unmatches the `vxd` node on both S5L8920 boards (the decoder never powered on anyway). Found with gdbstub
+- The VXD and 3.1.x Wi-Fi: 3.1.x's AppleBCMWLANN88PlatformManager::init waits 20 ms (waitForMatchingService) for
+  AppleBaseband, which registers at the end of its start. That start sat ~1.2 s in addEventSource on arm-io's shared
+  work loop, whose gate AppleVXD375's power-on held while polling an unmodeled decoder (DMAC 0x50c FIN 1000 x 1 ms,
+  MTX 0xfc, the firmware's 0x2fe0 signature), so the card enumerated first: "Failed to get Baseband service", no
+  Wi-Fi. kboot unmatched the `vxd` node until the decoder had a model; `s5l8920.vxd` answers that power-on at once, so
+  the node is matched again and 3.1.3's Wi-Fi comes up with it (sessions single on fk-7E18). Found with gdbstub
   breakpoints on IOService::probeCandidates/startCandidate, IORecursiveLockLock/Unlock on the work loop's gate and
   IODelay callers.
 
@@ -105,7 +106,7 @@ Machine properties as the N18's (docs/n18/README.md).
 | UART3 | BCM4325 HCI (`ipod_touch_bt.c`'s chardev); the CDMA receive chain from URXH is paced by the UART's FIFO | board data | H |
 | ISP | none: the DT's `isp` node is unmatched (`no_isp`), as the A4 machines' | board data | S |
 | PWM (0x83500000) | `s5l8920.pwm` (`hw/arm/s5l8920_pwm.c`): channel 0 (DT pwm/vibrator) runs the vibration motor, which the app hears (`qemu_ios_ui_vibrator`, `hw/misc/ios_vibrator.c`); channel 2 is the codec MCLK, unwired | shared | H |
-| VXD | none: the DT's `vxd` node is unmatched (both S5L8920 boards); unanswered, its power-on held arm-io's work loop ~1.2 s | | S |
+| VXD (H.264 decoder, 0x85000000, IRQ 0x2a) | `s5l8920.vxd`, the A4's model (docs/n81/README.md); 3.1.3 hands it Annex B slices. Movies show on the CLCD's NV12 video plane (6.1.6 NOVA's intros, n88ap-10B500) | shared | H |
 
 `explicit-start`: the s5l8920x firmware leaves FMI control at 3 or 5 between transfers and starts each
 with its own control write. The last page of a multi-page read follows a status poll, not a read command,

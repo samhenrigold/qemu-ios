@@ -1555,7 +1555,7 @@ static void ipad1_init(MachineState *machine)
     s->cdma = dev;
     sysbus_mmio_map(sbd, 0, S5L8930_CDMA_BASE);
     sysbus_mmio_map(sbd, 1, S5L8930_AES_BASE);
-    for (i = 0; i < S5L8930_CDMA_CHANNELS; i++) {
+    for (i = 1; i < S5L8930_CDMA_CHANNELS; i++) {     /* channel 0's slot is the global block; 0x30 is the VXD's */
         sysbus_connect_irq(sbd, i, ipad1_irq(s, S5L8930_IRQ_CDMA(i)));
     }
 

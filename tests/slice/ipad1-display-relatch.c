@@ -132,5 +132,22 @@ int main(void)
         assert(f[8 + c] == t[8 + c]);
     }
     assert(f[3] == 0xff && !memcmp(f + 8, t + 8, (W * H - 2) * 4));
+
+    /* The video layer alone, both UI layers off (7.1.2's full-screen movie): it still reaches the panel. A 4x2 NV12
+     * source of luma 235, scaled to the whole panel with a matrix that gives each channel luma - 16. */
+    const uint32_t vy = 0x8000, vuv = 0x8100;
+    r[DP_LAYERS / 4] = 0x400;
+    memset(ram + vy, 235, 32);
+    memset(ram + vuv, 128, 16);
+    r[0x307c / 4] = vy; r[0x3080 / 4] = vuv; r[0x3088 / 4] = r[0x308c / 4] = 16;
+    r[0x3094 / 4] = 4 << 16 | 2; r[0x309c / 4] = W << 16 | H; r[0x30a0 / 4] = 0;
+    for (int i = 0; i < 9; i++) {
+        r[0x3024 / 4 + i] = i % 3 ? 0 : 0x1000;
+    }
+    front_latch(s);
+    assert(s->front_valid && s->front_gen == 5);
+    for (unsigned i = 0; i < W * H; i++) {
+        assert(s->front[i * 4] == 219 && s->front[i * 4 + 1] == 219 && s->front[i * 4 + 2] == 219);
+    }
     return 0;
 }

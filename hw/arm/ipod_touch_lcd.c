@@ -625,17 +625,18 @@ static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, ui
             !ow || !oh || ow > 2048 || oh > 2048 ||
             xr != ((uint64_t)sw << 16) / ow ||
             yr != ((uint64_t)sh << 16) / oh ||
-            !lcd_plane_range(ybase, ys, cy + sh, cx + sw) ||
-            !lcd_plane_range(uvbase, uvs, (cy + sh + 1) / 2,
-                              (cx + sw + 1) & ~1u)) return false;
+            /* behind the S5L8920's DART, bus addresses (the RGB planes' rule) */
+            (!s->xlate && (!lcd_plane_range(ybase, ys, cy + sh, cx + sw) ||
+                           !lcd_plane_range(uvbase, uvs, (cy + sh + 1) / 2,
+                                            (cx + sw + 1) & ~1u)))) return false;
         ybase += cy * ys + cx;
         uvbase += (cy / 2) * uvs + (cx & ~1u);
         g_autofree uint8_t *y = g_malloc((size_t)sw * sh);
         g_autofree uint8_t *uv = g_malloc((size_t)cw * ch);
         for (unsigned row = 0; row < sh; row++)
-            cpu_physical_memory_read(ybase + row * ys, y + row * sw, sw);
+            lcd_bus_read(s, ybase + row * ys, y + row * sw, sw);
         for (unsigned row = 0; row < ch; row++)
-            cpu_physical_memory_read(uvbase + row * uvs, uv + row * cw, cw);
+            lcd_bus_read(s, uvbase + row * uvs, uv + row * cw, cw);
         g_autofree uint8_t *filtered = scaled ? g_malloc((size_t)ow * oh * 3) : NULL;
         if (scaled) {
             lcd_filter_plane(y, sw, sh, sw, 1, filtered, ow, oh, xr, yr, 0, 0,
