@@ -679,19 +679,21 @@ static bool lcd_compose_planes(const IPodTouchLCDState *s, const uint32_t *r, ui
         unsigned x0 = p[5] >> 16, y0 = p[5] & 0xffff;
         unsigned rotation = p[0] >> 22;
         if (!w || w > 2048 || !h || h > 2048 || p[2] > 8192 || p[3] ||
-            (p[0] & 0xf00) != 0x700 || (rotation != 0 && rotation != 3) ||
+            (p[0] & 0xf00) != 0x700 || (rotation != 0 && rotation != 1 && rotation != 3) ||
             (!s->xlate && !lcd_plane_range(p[1], stride, h, w * 4))) return false;
-        /* RGB scanout can bypass CA composition too. Mode 3 rotates its
-         * padded landscape surface into the physical portrait panel, just
-         * like the video plane. Geometry and origin are guest registers. */
+        /* RGB scanout can bypass CA composition too. Modes 3 and 1 turn a
+         * padded landscape surface into the physical portrait panel, the two
+         * ways a landscape app can face (mode 1 is mode 3 turned half round:
+         * Jetpack Joyride on a 3GS 6.1.6); geometry and origin are guest
+         * registers. */
         unsigned dw = rotation ? h : w, dh = rotation ? w : h;
         g_autofree uint8_t *pixels = g_malloc((size_t)w * h * 4);
         for (unsigned sy = 0; sy < h; sy++)    /* behind an IOMMU (the M2 CLCD), bus addresses */
             lcd_bus_read(s, p[1] + sy * stride, pixels + (size_t)sy * w * 4, w * 4);
         for (unsigned dy = 0; dy < dh && dy + y0 < ph; dy++) {
             for (unsigned dx = 0; dx < dw && dx + x0 < pw; dx++) {
-                unsigned sx = rotation ? dy : dx;
-                unsigned sy = rotation ? h - 1 - dx : dy;
+                unsigned sx = rotation == 3 ? dy : rotation ? w - 1 - dy : dx;
+                unsigned sy = rotation == 3 ? h - 1 - dx : rotation ? dx : dy;
                 const uint8_t *src = pixels + ((size_t)sy * w + sx) * 4;
                 uint8_t *dst = out + ((dy + y0) * pw + dx + x0) * 4;
                 unsigned alpha = plane ? src[3] : 255;

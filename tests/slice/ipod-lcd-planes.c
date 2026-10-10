@@ -120,6 +120,18 @@ int main(void)
         }
         assert(!memcmp(out+(y*320+x)*4,expected,4));
     }
+    /* Mode 1, the other landscape (Jetpack Joyride 1.7.5 on a 3GS 6.1.6 programs 0x00600700): mode 3
+     * turned half round, so the surface's last column is the panel's first row. */
+    r[0x20/4]=0x00600700;
+    assert(lcd_needs_plane_composition(r,320,480));assert(lcd_compose_planes(&st,r,out));
+    for(unsigned y=0;y<480;y++) for(unsigned x=0;x<320;x++) {
+        uint8_t expected[4]={0};
+        if(y>=27 && y<453) {
+            unsigned sx=425-(y-27),sy=x;
+            expected[0]=sx&255;expected[1]=sy&255;expected[2]=sx>>8;expected[3]=255;
+        }
+        assert(!memcmp(out+(y*320+x)*4,expected,4));
+    }
     /* Preserve the common dirty-tracked portrait path; route padded or
      * positioned RGB0 through composition even without an overlay. */
     r[0x20/4]=0x00200700;r[0x28/4]=320;r[0x30/4]=(320<<16)|480;r[0x34/4]=0;
@@ -127,9 +139,9 @@ int main(void)
     r[0x28/4]=321;assert(lcd_needs_plane_composition(r,320,480));
     r[0x28/4]=320;r[0x34/4]=1;assert(lcd_needs_plane_composition(r,320,480));
     r[0x34/4]=0;r[1]=0;assert(!lcd_needs_plane_composition(r,320,480));
-    r[1]=0x10;r[0x20/4]=0x00600700;assert(!lcd_compose_planes(&st,r,out));
+    r[1]=0x10;r[0x20/4]=0x00a00700;assert(!lcd_compose_planes(&st,r,out));   /* mode 2: never seen */
     r[0x20/4]=0x00e00f00;assert(!lcd_compose_planes(&st,r,out));
     r[0x20/4]=0x00e00700;r[0x24/4]=0x0fffffc0;assert(!lcd_compose_planes(&st,r,out));
     r[0x24/4]=BASE;r[0x28/4]=0x40000140;assert(!lcd_compose_planes(&st,r,out));
-    puts("PASS: LCD RGB0 padded landscape scanout, NV12 rotation, overlays, bounded DMA");
+    puts("PASS: LCD RGB0 padded landscape scanout in both landscapes, NV12 rotation, overlays, bounded DMA");
 }
