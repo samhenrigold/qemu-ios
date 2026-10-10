@@ -377,6 +377,7 @@ struct IPad1MachineState {
     DeviceState *iopcore;
     bool resume_boot;                    /* the next reset is the AP's power-on out of hibernate */
     bool resumed;                        /* this reset resumed the kernel */
+    DeviceState *pmgr;                   /* its timebase runs on across a hibernate */
     QEMUTimer *ap_off_timer;             /* the PMU's hibernate cut, a moment after the command */
     bool gles_debug;                     /* paint what the GL bridge refuses magenta (tests) */
     bool kbd_cmd, kbd_shift;
@@ -648,6 +649,7 @@ static void ipad1_ap_power(void *opaque, int n, int on)
     if (on) {
         timer_del(s->ap_off_timer);
         s->resume_boot = true;
+        object_property_set_bool(OBJECT(s->pmgr), "keep-timebase", true, &error_abort);
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     } else {
         /*
@@ -1346,6 +1348,7 @@ static void ipad1_init(MachineState *machine)
     sysbus_create_simple("s5l8930.dmc", 0xbf800000, NULL);
 
     dev = qdev_new(TYPE_S5L8930_PMGR);
+    s->pmgr = dev;
     sbd = SYS_BUS_DEVICE(dev);
     /*
      * POWER_ID[31:24] is the boot security epoch LLB writes: the CHIPID fuse

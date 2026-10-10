@@ -46,6 +46,7 @@ struct S5L8920PMGRState {
 
     uint32_t regs[PMGR_SIZE / 4];
     int64_t tick_base_ns;
+    bool keep_timebase;         /* "keep-timebase": the next reset is the AP's wake, see reset */
     S5L8920EventTimer evt[2];
 };
 
@@ -159,7 +160,17 @@ static void s5l8920_pmgr_reset(DeviceState *dev)
     S5L8920PMGRState *s = S5L8920_PMGR(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
-    s->tick_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    /*
+     * The 24 MHz timebase keeps counting across the AP's hibernate: xnu's
+     * mach_absolute_time must not go back, or every timer armed before the sleep
+     * (launchd's intervals, configd's ThermalMonitor) waits until the counter
+     * catches up with the uptime at sleep. The machine sets "keep-timebase"
+     * before the wake's reset (kboot boards; no LLB restores it).
+     */
+    if (!s->keep_timebase) {
+        s->tick_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    }
+    s->keep_timebase = false;
     for (int i = 0; i < ARRAY_SIZE(s->evt); i++) {
         S5L8920EventTimer *t = &s->evt[i];
 
@@ -171,8 +182,19 @@ static void s5l8920_pmgr_reset(DeviceState *dev)
     }
 }
 
+static bool pmgr_get_keep_timebase(Object *obj, Error **errp)
+{
+    return (((S5L8920PMGRState *)obj))->keep_timebase;
+}
+
+static void pmgr_set_keep_timebase(Object *obj, bool value, Error **errp)
+{
+    ((S5L8920PMGRState *)obj)->keep_timebase = value;
+}
+
 static void s5l8920_pmgr_init(Object *obj)
 {
+    object_property_add_bool(obj, "keep-timebase", pmgr_get_keep_timebase, pmgr_set_keep_timebase);
     S5L8920PMGRState *s = S5L8920_PMGR(obj);
 
     memory_region_init_io(&s->iomem, obj, &s5l8920_pmgr_ops, s, TYPE_S5L8920_PMGR, PMGR_SIZE);

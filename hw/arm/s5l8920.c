@@ -308,6 +308,7 @@ struct S5L8920MachineState {
     QEMUTimer *pwroff_timer;             /* system_powerdown gesture */
     bool resume_boot;                    /* the next reset is the AP's power-on out of hibernate */
     bool resumed;                        /* this reset resumed the kernel */
+    DeviceState *pmgr;                   /* its timebase runs on across a hibernate */
     QEMUTimer *ap_off_timer;             /* the PMU's hibernate cut, a moment after the command */
     int pwroff_phase, pwroff_step, pwroff_tries;
 };
@@ -501,6 +502,7 @@ static void s5l8920_ap_power(void *opaque, int n, int on)
     if (on) {
         timer_del(s->ap_off_timer);
         s->resume_boot = true;
+        object_property_set_bool(OBJECT(s->pmgr), "keep-timebase", true, &error_abort);
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     } else {
         /*
@@ -784,7 +786,7 @@ static void s5l8920_init(MachineState *machine)
     qdev_prop_set_uint32(s->iopcore, "dram-base", 0);   /* the kext's phys - 0x40000000 */
     qdev_realize_and_unref(s->iopcore, NULL, &error_fatal);
 
-    sysbus_create_varargs("s5l8920.pmgr", S5L8920_PMGR_BASE,
+    s->pmgr = sysbus_create_varargs("s5l8920.pmgr", S5L8920_PMGR_BASE,
                           s5l8920_irq(s, S5L8920_IRQ_TIMER0),
                           s5l8920_irq(s, S5L8920_IRQ_TIMER1), NULL);
 

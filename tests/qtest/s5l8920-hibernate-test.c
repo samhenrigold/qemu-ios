@@ -6,7 +6,8 @@
  * turns it on, and the machine resumes as LLB does. DRAM keeps the kernel's
  * trampoline (kboot is not staged again), 'XSOM' 'PSUS' at DRAM + 0x80 is
  * cleared, the scratch marker reads "resumed" and I2C0 is set up as LLB leaves
- * it (CTRL 0x30), which the kernel's I2C driver resumes on. Without the DRAM marker a
+ * it (CTRL 0x30), which the kernel's I2C driver resumes on, and the PMGR
+ * timebase keeps counting (xnu's absolute time must not go back). Without the DRAM marker a
  * wake boots: kboot's image is staged over DRAM's base again.
  */
 #include "qemu/osdep.h"
@@ -23,6 +24,7 @@ static char *kboot;
 typedef struct {
     const char *machine;
     uint8_t scratch, power, hib;    /* the suspend marker, the power command and its hibernate value */
+    uint32_t ticks;                 /* the PMGR timebase's low word */
 } Board;
 
 static void pmu_write(QTestState *q, uint8_t reg, uint8_t val)
@@ -81,8 +83,12 @@ static void check(const void *data)
     qtest_writel(q, DRAM, TRAMPOLINE);
     qtest_writel(q, DRAM + 0x80, 0x4d4f5358);   /* 'XSOM' */
     qtest_writel(q, DRAM + 0x84, 0x53555350);   /* 'PSUS' */
+    qtest_clock_step(q, 1000 * 1000 * 1000);
+    uint32_t t0 = qtest_readl(q, b->ticks);
+    g_assert_cmpuint(t0, >=, 24000000);                       /* 1 s of 24 MHz */
     hibernate_and_wake(q, b);
     g_assert_cmphex(wait_word(q, DRAM + 0x80, 0), ==, 0);
+    g_assert_cmpuint(qtest_readl(q, b->ticks), >=, t0);       /* the timebase did not restart */
     g_assert_cmphex(qtest_readl(q, DRAM + 0x84), ==, 0);
     g_assert_cmphex(qtest_readl(q, DRAM), ==, TRAMPOLINE);
     g_assert_cmphex(qtest_readl(q, 0), ==, TRAMPOLINE);         /* what the CPU starts at */
@@ -97,9 +103,9 @@ static void check(const void *data)
 }
 
 static const Board boards[] = {
-    { "n88", 0x6f, 0x0d, 0x26 },            /* D1755: 8C148 "pmu go hib" sets 0x26 in 0x0d */
-    { "n18", 0x6f, 0x0d, 0x26 },
-    { "iPhone-4", 0x8f, 0x12, 0x02 },       /* D1815: 0x8F, then 0x12 bit 1 */
+    { "n88", 0x6f, 0x0d, 0x26, 0xbf100200 },   /* D1755: 8C148 "pmu go hib" sets 0x26 in 0x0d */
+    { "n18", 0x6f, 0x0d, 0x26, 0xbf100200 },
+    { "iPhone-4", 0x8f, 0x12, 0x02, 0xbf102000 },  /* D1815: 0x8F, then 0x12 bit 1 */
 };
 
 int main(int argc, char **argv)

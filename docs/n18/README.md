@@ -266,8 +266,11 @@ offsets at 0x80000000).
    AP's rail 20 ms later and a wake button brings it back (2026-10-10): the SoC resets with DRAM and the PMU kept
    and, as kboot stands in for LLB, the machine does what LLB's resume does (n88 8C148a LLB 0x84000720: 0x6f
    marked resumed, the DRAM marker cleared, the I2C controllers left at CTRL 0x30, a jump to 0 with r0 = 0).
-   "pmu wake events: menu", the lock screen lights and the guest agent answers. Open: after a resume the kernel
-   has not hibernated a second time (420-1100 s windows, n88 and n90).
+   "pmu wake events: menu", the lock screen lights and the guest agent answers. The PMGR timebase keeps
+   counting across the wake (xnu's absolute time must not go back). The device sleeps again once configd's
+   ThermalMonitor drops the NoIdleSleep assertion it takes on every wake, which needs every thermal sensor: the
+   baseband's (XDRVI 5,17, the fake modem reports sensors 0, 1, 3, 4, 5) and the battery's (configd's
+   AppleHDQGasGauge, which reads the gauge only with its SWI line, PMU GPIO 6 = status C 0x07 bit 5, high).
 7. **it_keybag**: the iPad's armv7 build (`build/ipad1-guest/it_keybag`), copied; same volume layout.
 8. **GL scene on the panel** (fixed 2026-10-05, d6ab1dab16). For a full-screen GL view, 4.x scans the app's
    surface out directly. CLCD window 1 is the 240x360 GL surface (stride 240, origin 40,60, double-buffered);

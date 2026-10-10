@@ -63,8 +63,10 @@ int main(void)
     s5l8930_d1815_set_usb_host(&s, false);
     assert(rd(&s, 0x07) == 0);
     wr(&s, 0x84, 0x77);                               /* PMURTC's offset */
-    wr(&s, 0x46, 0x10); wr(&s, 0x47, 0); wr(&s, 0x48, 0); wr(&s, 0x49, 0); wr(&s, 0x4a, 0x41);
     int64_t base = s.rtc_base;
+    /* 4.2.1's sleep sets the wake alarm a day ahead: the counter keeps its time */
+    wr(&s, 0x46, 0x10); wr(&s, 0x47, 0); wr(&s, 0x48, 0); wr(&s, 0x49, 0); wr(&s, 0x4a, 0x41);
+    assert(s.rtc_base == base && rd(&s, 0x4a) == 0x41);
     wr(&s, 0x0c, 0x00); wr(&s, 0x30, 0x04);           /* ordinary registers */
     wr(&s, 0x8f, 0x90);                               /* 9B206 halt: the reason, then the restart */
     wr(&s, 0x7b, 0x0b);

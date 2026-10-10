@@ -263,9 +263,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930D1815State, S5L8930_D1815)
 #define PMU_ADC_MUX_VBAT    4
 #define PMU_ADC_MUX_BRICK   6       /* DT function-brick_id_voltage 'Vcda' 06 */
 #define PMU_ADC_RES         0x31    /* 12-bit: (r[0] & 0xF) | r[1] << 4 */
-#define PMU_RTC_PRELOAD     0x46    /* 4 bytes, latched into the counter... */
-#define PMU_RTC_CTRL        0x4A    /* ...by writing 0x41 here */
-#define PMU_RTC_CTRL_LOAD   (1u << 6)
+/*
+ * 0x46-0x49 and 0x4A bit 6 are the wake alarm, not a counter load: 4.2.1's sleep writes
+ * the counter one day ahead there with 0x4A = 0x41 just before "pmu go hib", and the kernel
+ * never sets the counter (AppleD1815PMURTC's setCurrentDateTime "should not be called"; it
+ * keeps the calendar's offset in scratch 0x84). Loading it moved the guest's clock a day
+ * ahead at every wake. ponytail: the alarm is stored, not fired; a device left asleep a day
+ * stays asleep.
+ */
+#define PMU_RTC_ALARM       0x46    /* 4 bytes, the counter value to wake at */
+#define PMU_RTC_CTRL        0x4A    /* bit 6: the alarm enabled */
 #define PMU_RTC_COUNT       0x4C    /* live seconds counter, LE, read twice */
 /*
  * 0x80-0x9F are the D1815's scratch bank, in its always-on domain with the
@@ -577,13 +584,6 @@ static int d1815_send(I2CSlave *i2c, uint8_t data)
         if (data & PMU_ADC_START) {
             timer_mod(s->adc_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SCALE_MS);
-        }
-        return 0;
-    case PMU_RTC_CTRL:
-        s->regs[reg] = data;
-        if (data & PMU_RTC_CTRL_LOAD) {
-            s->rtc_base = (int64_t)ldl_le_p(&s->regs[PMU_RTC_PRELOAD]) -
-                          time(NULL);
         }
         return 0;
     default:
