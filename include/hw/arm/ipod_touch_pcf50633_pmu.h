@@ -77,6 +77,7 @@ typedef struct Pcf50633State {
 	bool shutdown_armed;  // obsolete host flag; retained for snapshot wire compatibility
 	uint8_t shutdown_reg;   /* "shutdown-reg" property */
 	uint8_t usb_status_reg, usb_status_bits;   /* "usb-status-reg"/"-bits": the cable level */
+	uint8_t battery_swi_reg, battery_swi_bits; /* "battery-swi-reg"/"-bits": the SWI line, high */
 	bool rtc_bcd;           /* "rtc-bcd": the PCF50633 calendar at 0x59 (1.x) */
 	uint8_t event_count;    /* "event-count": Dialog event bytes at 0x01 (D1759 3, D1755 4) */
 	uint8_t wake_event_reg; /* "wake-event-reg": the wake buttons' event byte (D1759 0x03, D1755 0x01) */

@@ -3068,13 +3068,20 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
     }
     if (bb->temp_due_ms && now_ms >= bb->temp_due_ms) {
         /*
-         * 5,17: one temperature reading, <0>,<sensor>,<value>,<value>. iOS 6's battery model
-         * (CommCenterClassic) takes field 3 as a sensor id and asserts it is 0-5 (0 RFTemp,
-         * 1 BBChipTemp, 2 BatteryTemp, 3 BoardTemp, 4 RefTemp, 5 APCPUTemp); 4.x only needs
-         * the URC to arrive. The modem reports its own chip.
+         * 5,17: one temperature reading, <sensor>,1,<value>,<value>. The sensor ids are
+         * 0 RFTemp, 1 BBChipTemp, 2 BatteryTemp, 3 BoardTemp, 4 RefTemp, 5 APCPUTemp; iOS 6's
+         * battery model (CommCenterClassic) asserts 0-5. Each period reports every sensor but
+         * the battery's, which configd reads from the gas gauge: 4.x's ThermalMonitor (configd)
+         * runs its full update only once all six sensors have reported, and that update is what
+         * releases the NoIdleSleep assertion it takes on every wake. One reading (sensor 0) kept
+         * the device from ever hibernating again after a resume.
          */
         if (bb->ch[bb->temp_ch].open || bb->temp_ch == 0) {
-            chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,0,1,25,25\r\n");
+            static const int sensors[] = { 0, 1, 3, 4, 5 };
+
+            for (int i = 0; i < ARRAY_SIZE(sensors); i++) {
+                chan_printf(bb, bb->temp_ch, "\r\n+XDRVI: 5,17,%d,1,25,25\r\n", sensors[i]);
+            }
         }
         bb->temp_due_ms = now_ms + bb->temp_period_ms;
     }

@@ -198,5 +198,15 @@ int main(void) {
     irq=0;assert(pcf50633_post_load(&n,5)==0 && irq);
     n.regs[12]=1;pcf50633_reset(&n);assert(!irq && n.regs[12]==0);
     for(unsigned i=0;i<5;i++) assert(n.regs[2+i]==0 && n.regs[7+i]==0xff);
-    puts("PASS: PCF50635 five-bank IRQs, EXTON1 edges, cable events and snapshot rejection; backlight enable/level per register map; D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration");
+    /* battery-swi-reg/-bits: the D1755's status C 0x07 bit 5, the gas gauge's SWI line, reads
+     * high whatever is stored; unset (the default) leaves the register as stored. */
+    {
+        Pcf50633State g={PROPS,.irq=&irq,.adc_timer=&timer,.shutdown_reg=0x0d,.event_count=4,
+                         .battery_swi_reg=0x07,.battery_swi_bits=0x20};
+        pcf50633_reset(&g);
+        assert(rd(&g,0x07)==0x20);
+        g.regs[0x07]=0x01;assert(rd(&g,0x07)==0x21);
+        g.battery_swi_bits=0;assert(rd(&g,0x07)==0x01);
+    }
+    puts("PASS: PCF50635 five-bank IRQs, EXTON1 edges, cable events and snapshot rejection; backlight enable/level per register map; D1759 ADC settling/conversion, ten-bit results, masks, cable events, reset, fractional drain and migration; the battery SWI input");
 }

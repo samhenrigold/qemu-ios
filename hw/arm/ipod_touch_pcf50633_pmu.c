@@ -392,6 +392,12 @@ done:
         // cable (usb-attached on the 2G, a usb-tcp-addr on the 1G).
         res = (res & ~s->usb_status_bits) | (s->usb_cable ? s->usb_status_bits : 0);
     }
+    if (s->battery_swi_bits && reg == s->battery_swi_reg) {
+        /* The battery's SWI line, a PMU GPIO input ("battery-swi-reg"/"-bits"), idles high
+         * with a healthy pack. configd's AppleHDQGasGauge reads it before talking HDQ and,
+         * low, logs "gas gauge SWI line low: issuing reset" and never reads the gauge. */
+        res |= s->battery_swi_bits;
+    }
 
     if (pmu_trace()) {
         pmu_trace_access("read ", reg, res & 0xff);
@@ -624,6 +630,9 @@ static const Property pcf50633_properties[] = {
     DEFINE_PROP_UINT8("shutdown-reg", Pcf50633State, shutdown_reg, PMU_SHUTDOWN_REG),
     DEFINE_PROP_UINT8("usb-status-reg", Pcf50633State, usb_status_reg, PMU_PWRSRC_STATUS),
     DEFINE_PROP_UINT8("usb-status-bits", Pcf50633State, usb_status_bits, PMU_PWRSRC_USB),
+    /* A PMU GPIO input read high: the battery's SWI line (none by default). */
+    DEFINE_PROP_UINT8("battery-swi-reg", Pcf50633State, battery_swi_reg, 0),
+    DEFINE_PROP_UINT8("battery-swi-bits", Pcf50633State, battery_swi_bits, 0),
     /* The backlight: its enable register/bit and level register (0 = on/off only). The
      * defaults are the D1759's (0x10 bit 6, 0x30); 1.x's PCF50633 drives LEDENA 0x29 bit 0
      * (cleared when the display sleeps) and LEDOUT 0x28 (a 6-bit LED current, not rendered). */

@@ -549,6 +549,18 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
             qdev_prop_set_uint8(DEVICE(slave), "wake-event-reg", 0x01);
             qdev_prop_set_uint8(DEVICE(slave), "shutdown-reg", 0x0d);
             qdev_prop_set_uint8(DEVICE(slave), "usb-status-reg", 0x05);
+            if (s->board->gauge_uart >= 0) {
+                /*
+                 * The gauge's SWI line is PMU GPIO 6 (DT gas-gauge function-battery_swi
+                 * 'GPIO' 5, pmu event_name-gpio6 'battery'), status C 0x07 bit 5, as the
+                 * D1815's 0x09 bit 5. Read low, configd never read the battery, so the
+                 * power source had no Temperature and ThermalMonitor never got all its
+                 * sensors: its NoIdleSleep assertion from each wake was never released
+                 * and the device never hibernated a second time.
+                 */
+                qdev_prop_set_uint8(DEVICE(slave), "battery-swi-reg", 0x07);
+                qdev_prop_set_uint8(DEVICE(slave), "battery-swi-bits", 0x20);
+            }
             /* ADC as the D1815's (control 0x30, 10-bit result 0x31-0x32,
              * _readADCGated 805cd2ca..805cd412); the RTC counter at 0x4c
              * (read twice as a ripple guard). */

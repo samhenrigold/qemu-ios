@@ -1344,10 +1344,18 @@ static void test_ifx(void)
     ifx_frame(&x, &c, "", miso, 0x7fc, got);
     CHECK(strstr(got, "+XDRVI: 5,17,") != NULL);
     {
-        /* iOS 6 asserts field 3 (the sensor id) is 0-5 and then reads two values. */
-        int f2 = -1, sensor = -1, v1 = -1, v2 = -1;
-        CHECK(sscanf(strstr(got, "+XDRVI: 5,17,"), "+XDRVI: 5,17,%d,%d,%d,%d", &f2, &sensor, &v1, &v2) == 4);
-        CHECK(sensor >= 0 && sensor <= 5);
+        /* One reading per sensor but the battery's (configd reads that from the gas gauge):
+         * field 3 is the sensor id, 0-5 (iOS 6 asserts it), then three values. 4.x's
+         * ThermalMonitor waits for every sensor before its full update, the one that releases
+         * its wake assertion. */
+        unsigned seen = 0;
+        for (const char *p = strstr(got, "+XDRVI: 5,17,"); p; p = strstr(p + 1, "+XDRVI: 5,17,")) {
+            int sensor = -1, f4 = -1, v1 = -1, v2 = -1;
+            CHECK(sscanf(p, "+XDRVI: 5,17,%d,%d,%d,%d", &sensor, &f4, &v1, &v2) == 4);
+            CHECK(sensor >= 0 && sensor <= 5);
+            seen |= 1u << sensor;
+        }
+        CHECK(seen == 0x3b);
     }
 
     /* No H5 on SPI: after +cmux the mux frames ride the IFX payload directly. */
