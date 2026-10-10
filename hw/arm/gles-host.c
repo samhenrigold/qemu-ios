@@ -4786,12 +4786,28 @@ static char *gles_es2_string(CPUState *cpu, uint32_t ptr, int32_t len)
 }
 
 /* ES GLSL 1.00 -> desktop GLSL 1.20: drop #version and precision statements,
- * and define the precision qualifiers away. */
+ * and define the precision qualifiers away.
+ *
+ * An ES shader sees GL_ES defined as 1 (GLSL ES 1.00, 3.4). Desktop GLSL has no
+ * such macro, refuses `#define GL_ES` (GL_ is reserved) and fails `#if GL_ES`
+ * on the undefined name, so GL_ES is spelled ES_GL_ES, which is defined. The
+ * Glitch engine's shaders (N.O.V.A. 3) open with `#if GL_ES && ...`; without
+ * this they failed to compile and the game's menu buttons never drew. */
 static char *gles_es2_glsl(const char *src)
 {
     GString *out = g_string_new("#version 120\n"
-                                "#define lowp\n#define mediump\n#define highp\n");
-    const char *p = src;
+                                "#define lowp\n#define mediump\n#define highp\n#define ES_GL_ES 1\n");
+    GString *es = g_string_new(NULL);
+    const char *p, *q;
+
+    for (p = src; (q = strstr(p, "GL_ES")); p = q + 5) {
+        bool word = (q == src || !(g_ascii_isalnum(q[-1]) || q[-1] == '_')) &&
+                    !(g_ascii_isalnum(q[5]) || q[5] == '_');
+        g_string_append_len(es, p, q - p);
+        g_string_append(es, word ? "ES_GL_ES" : "GL_ES");
+    }
+    g_string_append(es, p);
+    p = es->str;
 
     while (*p) {
         const char *eol = strchr(p, '\n');
@@ -4815,6 +4831,7 @@ static char *gles_es2_glsl(const char *src)
         }
         p += n;
     }
+    g_string_free(es, true);
     return g_string_free(out, false);
 }
 
