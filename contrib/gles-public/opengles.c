@@ -141,11 +141,6 @@ static int fe_es2(void)
     return have;
 }
 
-/* glGetString is answered here: the caller reads the bytes, and this image is guest memory. ES 1.1 answers with
- * the core's strings (every extension named is real on the host) plus the two 2.x CoreAnimation refuses GL
- * compositing without ("need APPLE_texture_rectangle extension; need APPLE_core_surface_texture extension"):
- * glTexImageCoreSurfaceAPPLE is the core's BindCoreSurface and the host samples GL_TEXTURE_RECTANGLE. ES 2.0
- * answers as the SGX, which an ES2 app checks before it compiles anything. */
 /* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
  * next, so a fence is signaled the moment it exists. Answered here, nothing goes to the host. */
 #define FE_GL_ALREADY_SIGNALED 0x911A
@@ -179,33 +174,10 @@ static void fe_getSynciv(void *gc, unsigned sync, unsigned pname, int bufsize, i
     if (length) *length = bufsize > 0 ? 1 : 0;
 }
 
-static const char *fe_es2_extension_string(void);
-
-static const char *fe_getString(void *gc, unsigned name)
-{
-    static char ext[256];
-    if (gc && ((GuestGC *)gc)->api == 2) {
-        switch (name) {
-        case 0x1F00: return "Imagination Technologies";
-        case 0x1F01: return "PowerVR SGX 535";
-        case 0x1F02: return "OpenGL ES 2.0";
-        case 0x8B8C: return "OpenGL ES GLSL ES 1.00";
-        case 0x1F03: return fe_es2_extension_string();
-        default:     return "";
-        }
-    }
-    if (name == 0x1F03) {
-        if (!ext[0]) {
-            const char *s = s_getString(gc, name), *add = " GL_APPLE_texture_rectangle GL_APPLE_core_surface_texture";
-            unsigned i = 0, k = 0;
-            while (s[k] && i < sizeof ext - 1) ext[i++] = s[k++];
-            for (k = 0; add[k] && i < sizeof ext - 1;) ext[i++] = add[k++];
-            ext[i] = 0;
-        }
-        return ext;
-    }
-    return s_getString(gc, name);
-}
+static const char *fe_getString(void *gc, unsigned name);
+static int fe_getIntegerv(void *gc, unsigned pname, unsigned params);
+static int fe_getFloatv(void *gc, unsigned pname, unsigned params);
+static int fe_getBooleanv(void *gc, unsigned pname, unsigned params);
 
 /* The host reads a string argument with a debug read that cannot fault pages in: touch them first. */
 static int fe_shaderSource(void *gc, unsigned sh, unsigned count, unsigned strs, unsigned lens)
@@ -243,6 +215,9 @@ static void fe_hello(void)
     done = 1;
     gles_hand_table(fe_hand);
     fe_hand[GLES_ID_glGetString] = (void *)fe_getString;
+    fe_hand[GLES_ID_glGetIntegerv] = (void *)fe_getIntegerv;
+    fe_hand[GLES_ID_glGetFloatv] = (void *)fe_getFloatv;
+    fe_hand[GLES_ID_glGetBooleanv] = (void *)fe_getBooleanv;
     fe_hand[GLES_ID_glShaderSource] = (void *)fe_shaderSource;
     fe_hand[GLES_ID_glBindAttribLocation] = (void *)fe_bindAttribLocation;
     fe_hand[GLES_ID_glGetAttribLocation] = (void *)fe_getAttribLocation;
@@ -1259,36 +1234,266 @@ static const char *fe_stock_encode(void)
     return fe_find(base, size, tag, sizeof tag - 1);
 }
 
-/* ES 2.0's GL_EXTENSIONS into `out` (`cap` bytes): each extension below that the firmware's own GLEngine names
- * among those it can report (`text`, its __TEXT), then PVRTC. The host implements all of them. 3.2's GLEngine has
- * OES_packed_depth_stencil and no OES_depth_texture; 4.2.1's and later have both. N.O.V.A. 3 renders its
- * post-processing depth into a depth texture on the iPhone 4, and without the extensions its engine had no format
- * for one and the game died on the missing texture (issue 23). */
-static void fe_es2_extensions(char *out, unsigned cap, const char *text, unsigned long size)
+/* ------------------------------------------------------ what the GPU reports --- */
+
+/* The GPU this firmware drives, as the column of the tables below: the MBX (ES 1.1 only) where there is no
+ * GLEngine.bundle, else the SGX 535 (every SGX board here: iPhone 3GS, iPod touch 3G and 4G, iPhone 4, iPad), in an
+ * ES 1.1 or an ES 2.0 context. */
+enum { FE_MBX, FE_SGX1, FE_SGX2 };
+static int fe_gpu(void *gc) { return !fe_es2() ? FE_MBX : gc && ((GuestGC *)gc)->api == 2 ? FE_SGX2 : FE_SGX1; }
+
+/* The image at `path` in the shared cache, else the file itself mapped read-only (2.x and 3.x keep the GL engines
+ * out of the cache): its bytes in *base (0 if neither), which stay mapped. */
+extern int open(const char *, int, ...);
+extern int close(int);
+extern long long lseek(int, long long, int);
+extern void *mmap(void *, unsigned long, int, int, int, long long);
+static void fe_image(const char *path, const char **base, unsigned long *size)
 {
-    static const char *const ext[] = { "GL_OES_depth_texture", "GL_OES_packed_depth_stencil" };
-    static const char pvrtc[] = "GL_IMG_texture_compression_pvrtc";
-    unsigned i, k, n = 0;
-    for (i = 0; i < sizeof ext / sizeof ext[0]; i++) {
-        for (k = 0; ext[i][k]; k++) ;
-        if (!fe_find(text, size, ext[i], k + 1) || n + k + 1 >= cap) continue;   /* the whole name: its NUL too */
-        for (k = 0; ext[i][k]; k++) out[n++] = ext[i][k];
-        out[n++] = ' ';
+    int fd;
+    long long n;
+    void *p;
+    if (fe_cache_image(path, base, size) && *base) return;
+    *base = 0; *size = 0;
+    if ((fd = open(path, 0)) < 0) return;
+    n = lseek(fd, 0, 2);
+    p = n > 0 && n < (1 << 26) ? mmap(0, (unsigned long)n, 1, 2, fd, 0) : (void *)-1;   /* PROT_READ, MAP_PRIVATE */
+    close(fd);
+    if (p != (void *)-1) { *base = p; *size = (unsigned long)n; }
+}
+
+/* The engine whose strings say what the GPU reports: MBXGLEngine on the MBX, the SGX driver for its name and build,
+ * GLEngine for the SGX's extension names and GLSL version. */
+#define FE_MBX_ENGINE "/System/Library/Frameworks/OpenGLES.framework/MBXGLEngine.bundle/MBXGLEngine"
+#define FE_SGX_ENGINE "/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine"
+#define FE_SGX_DRIVER "/System/Library/Extensions/IMGSGX535GLDriver.bundle/IMGSGX535GLDriver"
+
+/* The first C string in [text, text + size) that starts with `prefix` (at a string's start), or 0. */
+static const char *fe_cstring(const char *text, unsigned long size, const char *prefix)
+{
+    unsigned long n = slen(prefix), off = 0;
+    const char *p;
+    while (off < size && (p = fe_find(text + off, size - off, prefix, n))) {
+        if (p == text || p[-1] == 0) return p;
+        off = (unsigned long)(p - text) + 1;
     }
-    for (k = 0; pvrtc[k] && n + 1 < cap; k++) out[n++] = pvrtc[k];
+    return 0;
+}
+
+/* Whether `text` names extension `name` whole: the engines keep each as a string, MBXGLEngine's with a trailing
+ * space, so it starts a string and ends at a NUL or a space. */
+static int fe_names(const char *text, unsigned long size, const char *name)
+{
+    unsigned long n = slen(name), off = 0;
+    const char *p;
+    while (off < size && (p = fe_find(text + off, size - off, name, n))) {
+        unsigned long end = (unsigned long)(p - text) + n;
+        if ((p == text || p[-1] == 0) && (end == size || text[end] == 0 || text[end] == ' ')) return 1;
+        off = (unsigned long)(p - text) + 1;
+    }
+    return 0;
+}
+
+/* GL_EXTENSIONS: the extensions the hardware reports (MBXGLEngine's public list on the MBX; Apple's list for the
+ * SGX 535 in "OpenGL ES Hardware Platform Guide for iOS", ES 1.1 and ES 2.0) that the bridge implements, each one only
+ * where this firmware's engine names it, so a later extension (EXT_discard_framebuffer from 4.0, APPLE_sync from 6.0)
+ * stays out of an earlier firmware. FE_X_OLD: on the MBX already in 2.2.1, whose engine is the OpenGLES this file
+ * replaces, so with no engine to read only those are given.
+ *
+ * Left out though the hardware reports them, for want of a host implementation: APPLE_copy_texture_levels,
+ * APPLE_framebuffer_multisample, APPLE_rgb_422, EXT_debug_label, EXT_debug_marker, EXT_map_buffer_range,
+ * EXT_separate_shader_objects, EXT_shader_framebuffer_fetch, EXT_shader_texture_lod, EXT_texture_storage,
+ * OES_element_index_uint, OES_mapbuffer, OES_matrix_palette, OES_stencil8 (a stencil-only renderbuffer the host's
+ * framebuffers don't take) and OES_vertex_array_object. APPLE_texture_rectangle and APPLE_core_surface_texture are
+ * the MBX engine's private pair, which 2.x CoreAnimation needs before it composites with GL. */
+#define FE_X_MBX  1
+#define FE_X_SGX1 2
+#define FE_X_SGX2 4
+#define FE_X_OLD  8
+static const struct { const char *name; unsigned char on; } fe_ext_table[] = {
+    { "GL_APPLE_core_surface_texture",     FE_X_MBX | FE_X_OLD },
+    { "GL_APPLE_sync",                     FE_X_SGX2 },
+    { "GL_APPLE_texture_2D_limited_npot",  FE_X_SGX1 },
+    { "GL_APPLE_texture_format_BGRA8888",  FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_APPLE_texture_max_level",        FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_APPLE_texture_rectangle",        FE_X_MBX | FE_X_OLD },
+    { "GL_EXT_blend_minmax",               FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_EXT_discard_framebuffer",        FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_EXT_read_format_bgra",           FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_EXT_texture_filter_anisotropic", FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_OLD },
+    { "GL_EXT_texture_lod_bias",           FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_IMG_read_format",                FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_OLD },
+    { "GL_IMG_texture_compression_pvrtc",  FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_OLD },
+    { "GL_IMG_texture_format_BGRA8888",    FE_X_MBX | FE_X_OLD },
+    { "GL_OES_blend_equation_separate",    FE_X_SGX1 },
+    { "GL_OES_blend_func_separate",        FE_X_SGX1 },
+    { "GL_OES_blend_subtract",             FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_compressed_paletted_texture", FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_depth24",                    FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_OLD },
+    { "GL_OES_depth_texture",              FE_X_SGX2 },
+    { "GL_OES_draw_texture",               FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_fbo_render_mipmap",          FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_OES_framebuffer_object",         FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_packed_depth_stencil",       FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_OES_point_size_array",           FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_point_sprite",               FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_read_format",                FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_rgb8_rgba8",                 FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_OLD },
+    { "GL_OES_standard_derivatives",       FE_X_SGX2 },
+    { "GL_OES_stencil_wrap",               FE_X_SGX1 },
+    { "GL_OES_texture_float",              FE_X_SGX2 },
+    { "GL_OES_texture_half_float",         FE_X_SGX2 },
+    { "GL_OES_texture_mirrored_repeat",    FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+};
+
+/* The list for `gpu` into `out` (`cap` bytes), given its engine's __TEXT (`text`, 0 if none was found). */
+static void fe_extensions(char *out, unsigned cap, int gpu, const char *text, unsigned long size)
+{
+    unsigned i, k, n = 0, col = 1u << gpu;
+    for (i = 0; i < sizeof fe_ext_table / sizeof fe_ext_table[0]; i++) {
+        const char *e = fe_ext_table[i].name;
+        if (!(fe_ext_table[i].on & col)) continue;
+        if (text ? !fe_names(text, size, e) : !(fe_ext_table[i].on & FE_X_OLD)) continue;
+        if (n + slen(e) + 1 >= cap) break;
+        if (n) out[n++] = ' ';
+        for (k = 0; e[k]; k++) out[n++] = e[k];
+    }
     out[n] = 0;
 }
 
-static const char *fe_es2_extension_string(void)
+/* GL_VERSION: the SGX driver's own ("OpenGL ES 2.0 IMGSGX535-63.24"; 7.x keeps only the build, "IMGSGX535-97.7",
+ * and GLEngine puts it together the same way), MBXGLEngine's ("OpenGL ES-CM 1.1 (48)"), or the bare version. */
+static const char *fe_version(char *out, unsigned cap, int gpu, const char *text, unsigned long size)
 {
-    static char ext[128];
-    if (!ext[0]) {
-        const char *base;
-        unsigned long size = 0;
-        fe_cache_image("/System/Library/Frameworks/OpenGLES.framework/GLEngine.bundle/GLEngine", &base, &size);
-        fe_es2_extensions(ext, sizeof ext, base, size);
+    const char *v = gpu == FE_SGX2 ? "OpenGL ES 2.0" : "OpenGL ES-CM 1.1", *b;
+    unsigned n = 0, k;
+    if (gpu == FE_MBX) return (b = fe_cstring(text, size, v)) ? b : v;
+    if (!(b = fe_find(text, size, "IMGSGX535-", 10))) return v;
+    for (k = 0; v[k] && n + 1 < cap; k++) out[n++] = v[k];
+    if (n + 1 < cap) out[n++] = ' ';
+    for (k = 0; b + k < text + size && b[k] && n + 1 < cap; k++) out[n++] = b[k];
+    out[n] = 0;
+    return out;
+}
+
+/* glGetString, answered here (the caller reads the bytes, and this image and the engines are guest memory) as the
+ * device's GPU answers, each string read once per column. */
+static const char *fe_getString(void *gc, unsigned name)
+{
+    static char ext[3][1024], ver[3][64];
+    static const char *renderer[3], *version[3], *glsl;
+    int gpu = fe_gpu(gc);
+    if (!renderer[gpu]) {
+        const char *text, *drv;
+        unsigned long size, dsize;
+        fe_image(gpu == FE_MBX ? FE_MBX_ENGINE : FE_SGX_ENGINE, &text, &size);
+        fe_extensions(ext[gpu], sizeof ext[gpu], gpu, text, size);
+        if (gpu != FE_MBX) {
+            if (!glsl && !(glsl = fe_cstring(text, size, "OpenGL ES GLSL ES 1.0"))) glsl = "OpenGL ES GLSL ES 1.00";
+            fe_image(FE_SGX_DRIVER, &drv, &dsize);
+            text = drv; size = dsize;
+        }
+        version[gpu] = fe_version(ver[gpu], sizeof ver[gpu], gpu, text, size);
+        if (!(renderer[gpu] = fe_cstring(text, size, "PowerVR ")))
+            renderer[gpu] = gpu == FE_MBX ? "PowerVR MBXLite with VGPLite" : "PowerVR SGX 535";
     }
-    return ext;
+    switch (name) {
+    case 0x1F00: return "Imagination Technologies";
+    case 0x1F01: return renderer[gpu];
+    case 0x1F02: return version[gpu];
+    case 0x1F03: return ext[gpu];
+    case 0x8B8C: if (gpu == FE_SGX2) return glsl;              /* SHADING_LANGUAGE_VERSION: ES 2.0 only */
+                 /* fall through */
+    default:     return "";
+    }
+}
+
+/* glGet's implementation limits as the GPU reports them, where the host's (the Mac's: 16384-texel textures, 16
+ * units) are larger: an app sizes its atlases and picks its paths from these, and CoreAnimation tiles any layer
+ * larger than MAX_TEXTURE_SIZE, as on the device. MBX: MBXGLEngine's get (3.1.3, run on each name). SGX 535: Apple's
+ * "OpenGL ES Hardware Platform Guide for iOS" tables 1-2 and 1-3, which agree with the driver's configuration
+ * (IMGSGX535GLDriver glrSetConfigData, 3.2: 2048, 511.0, 16.0, 4.0). -1: not this GPU's or not clamped (the SGX's
+ * anisotropy and smooth widths, which neither source gives). A pair is a range (low, high) except VIEWPORT_DIMS. */
+static const struct { unsigned short pname, n; short v[3][2]; } fe_limit_table[] = {
+    /*                                  MBX          SGX ES 1.1   SGX ES 2.0 */
+    { 0x0D33, 1, { { 1024 },     { 2048 },     { 2048 } } },        /* MAX_TEXTURE_SIZE */
+    { 0x84E8, 1, { { 1024 },     { 2048 },     { 2048 } } },        /* MAX_RENDERBUFFER_SIZE */
+    { 0x851C, 1, { { -1 },       { 2048 },     { 2048 } } },        /* MAX_CUBE_MAP_TEXTURE_SIZE */
+    { 0x0D3A, 2, { { 1024, 1024 }, { 2048, 2048 }, { 2048, 2048 } } }, /* MAX_VIEWPORT_DIMS */
+    { 0x846D, 2, { { 1, 64 },    { 1, 511 },   { 1, 511 } } },      /* ALIASED_POINT_SIZE_RANGE */
+    { 0x846E, 2, { { 1, 64 },    { 1, 16 },    { 1, 16 } } },       /* ALIASED_LINE_WIDTH_RANGE */
+    { 0x0B12, 2, { { 1, 64 },    { 1, 511 },   { -1 } } },          /* SMOOTH_POINT_SIZE_RANGE */
+    { 0x0B22, 2, { { 1, 1 },     { -1 },       { -1 } } },          /* SMOOTH_LINE_WIDTH_RANGE */
+    { 0x84E2, 1, { { 2 },        { 8 },        { -1 } } },          /* MAX_TEXTURE_UNITS */
+    { 0x0D32, 1, { { 1 },        { 6 },        { -1 } } },          /* MAX_CLIP_PLANES */
+    { 0x0D31, 1, { { 8 },        { 8 },        { -1 } } },          /* MAX_LIGHTS */
+    { 0x0D36, 1, { { 16 },       { 16 },       { -1 } } },          /* MAX_MODELVIEW_STACK_DEPTH */
+    { 0x0D38, 1, { { 2 },        { 2 },        { -1 } } },          /* MAX_PROJECTION_STACK_DEPTH */
+    { 0x0D39, 1, { { 4 },        { 4 },        { -1 } } },          /* MAX_TEXTURE_STACK_DEPTH */
+    { 0x84FD, 1, { { 2 },        { 4 },        { -1 } } },          /* MAX_TEXTURE_LOD_BIAS_EXT */
+    { 0x84FF, 1, { { 2 },        { -1 },       { -1 } } },          /* MAX_TEXTURE_MAX_ANISOTROPY_EXT */
+    { 0x8869, 1, { { -1 },       { -1 },       { 16 } } },          /* MAX_VERTEX_ATTRIBS */
+    { 0x8DFB, 1, { { -1 },       { -1 },       { 128 } } },         /* MAX_VERTEX_UNIFORM_VECTORS */
+    { 0x8DFC, 1, { { -1 },       { -1 },       { 8 } } },           /* MAX_VARYING_VECTORS */
+    { 0x8DFD, 1, { { -1 },       { -1 },       { 64 } } },          /* MAX_FRAGMENT_UNIFORM_VECTORS */
+    { 0x8872, 1, { { -1 },       { -1 },       { 8 } } },           /* MAX_TEXTURE_IMAGE_UNITS */
+    { 0x8B4C, 1, { { -1 },       { -1 },       { 0 } } },           /* MAX_VERTEX_TEXTURE_IMAGE_UNITS */
+    { 0x8B4D, 1, { { -1 },       { -1 },       { 8 } } },           /* MAX_COMBINED_TEXTURE_IMAGE_UNITS */
+};
+
+/* How many values `pname` has if it is one of `gpu`'s limits, else 0; then clamp the host's answer `v` to it. */
+static unsigned fe_limit(int gpu, unsigned pname, float v[2], int clamp)
+{
+    unsigned i;
+    for (i = 0; i < sizeof fe_limit_table / sizeof fe_limit_table[0]; i++) {
+        const short *hw = fe_limit_table[i].v[gpu];
+        unsigned n = fe_limit_table[i].n;
+        if (fe_limit_table[i].pname != pname || hw[0] < 0) continue;
+        if (!clamp) return n;
+        if (n == 2 && pname != 0x0D3A) {                    /* a range: raise its low end, lower its high */
+            if (v[0] < hw[0]) v[0] = hw[0];
+            if (v[1] > hw[1]) v[1] = hw[1];
+        } else {
+            if (v[0] > hw[0]) v[0] = hw[0];
+            if (n == 2 && v[1] > hw[1]) v[1] = hw[1];
+        }
+        return n;
+    }
+    return 0;
+}
+
+static int fe_getIntegerv(void *gc, unsigned pname, unsigned params)
+{
+    int *p = (int *)(unsigned long)params, r = (int)qc(GLES_ID_glGetIntegerv, gc, 2, A(pname, params));
+    unsigned n = fe_limit(fe_gpu(gc), pname, 0, 0);
+    float v[2];
+    if (r || !p || !n) return r;
+    v[0] = p[0]; v[1] = n == 2 ? p[1] : 0;
+    fe_limit(fe_gpu(gc), pname, v, 1);
+    p[0] = (int)v[0];
+    if (n == 2) p[1] = (int)v[1];
+    return r;
+}
+static int fe_getFloatv(void *gc, unsigned pname, unsigned params)
+{
+    float *p = (float *)(unsigned long)params;
+    int r = (int)qc(GLES_ID_glGetFloatv, gc, 2, A(pname, params));
+    unsigned n = fe_limit(fe_gpu(gc), pname, 0, 0);
+    if (r || !p || !n) return r;
+    if (n == 1) { float v[2] = { p[0], 0 }; fe_limit(fe_gpu(gc), pname, v, 1); p[0] = v[0]; }
+    else fe_limit(fe_gpu(gc), pname, p, 1);
+    return r;
+}
+static int fe_getBooleanv(void *gc, unsigned pname, unsigned params)
+{
+    unsigned char *p = (unsigned char *)(unsigned long)params;
+    unsigned n = fe_limit(fe_gpu(gc), pname, 0, 0);
+    int v[2], r;
+    if (!n) return (int)qc(GLES_ID_glGetBooleanv, gc, 2, A(pname, params));
+    if ((r = fe_getIntegerv(gc, pname, (unsigned)(unsigned long)v)) || !p) return r;
+    p[0] = v[0] != 0;
+    if (n == 2) p[1] = v[1] != 0;
+    return r;
 }
 
 /* {GC, table}: 5.x QuartzCore and CoreImage load the engine's context from word 0 and call field k through word

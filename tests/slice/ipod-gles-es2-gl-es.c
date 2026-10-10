@@ -5,6 +5,9 @@
  * failed to compile and its menu's buttons never drew. The shaders below take that shape; the fragment shader paints
  * green only on the GL_ES side of its #if.
  *
+ * A shader that asks for OES_standard_derivatives (which the SGX reports) compiles too: GLSL 1.20 has dFdx, dFdy
+ * and fwidth in its core and no OES extension of that name, so a `require` of it failed the compile.
+ *
  * SLICE hw/arm/gles-host.c fn gles_es2_glsl gles_es2_use_program
  * CFLAGS -Wno-deprecated-declarations -framework OpenGL
  * PKG glib-2.0
@@ -98,8 +101,12 @@ int main(void) {
     glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
     printf("center %d,%d,%d\n", px[0], px[1], px[2]);
     assert(px[0] == 0 && px[1] == 255 && px[2] == 0);
+    glDeleteShader(compile(GL_FRAGMENT_SHADER,
+                           "#extension GL_OES_standard_derivatives : require\n"
+                           "precision mediump float;\n"
+                           "void main() { gl_FragColor = vec4(fwidth(gl_FragCoord.x)); }\n"));
     assert(glGetError() == GL_NO_ERROR);
     CGLSetCurrentContext(NULL);
     CGLDestroyContext(ctx);
-    puts("PASS: ES 2.0 shaders see GL_ES");
+    puts("PASS: ES 2.0 shaders see GL_ES and take OES_standard_derivatives");
 }

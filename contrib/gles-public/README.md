@@ -33,6 +33,11 @@ Nothing is chosen by build number:
   `__GLIFunctionDispatchRec`, whose @encode is read from the stock OpenGLES image in the mapped shared cache
   (`shared_region_check_np`). 5.x QuartzCore and CoreImage call GL only through it.
 - **ES 2.0** where the firmware ships the SGX engine (`OpenGLES.framework/GLEngine.bundle`); ES 1.1 everywhere.
+- **What the GPU reports.** The MBX where there is no GLEngine.bundle, else the SGX 535. `glGetString` answers from the
+  firmware's own engine, in the cache or else its file: the renderer and version from MBXGLEngine or the SGX driver
+  ("OpenGL ES-CM 1.1 (48)", "OpenGL ES 2.0 IMGSGX535-63.24"), the extensions the hardware reports, the bridge
+  implements and the engine names (`fe_ext_table` lists those left out). `glGet` clamps the host's limits to the
+  GPU's (`fe_limit_table`: MBX 1024-texel textures and 2 units; SGX 2048, 8 units, ES 2.0's 128/64/8 vectors).
 
 FirmwareKit's `FitCheck.glesFrontEnd` proves at prepare that each of these exists in the firmware, and a misfit fails
 the prepare. The first CoreAnimation use prints `[gles] CoreAnimation composites through the host (first …)`: the

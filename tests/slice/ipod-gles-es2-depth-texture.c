@@ -6,7 +6,10 @@
  * back null and the game crashed on it when a mission loaded (issue 23). The list now takes each from the stock
  * GLEngine's own extension names: 4.2.1's has both, 3.2's only OES_packed_depth_stencil.
  *
- * SLICE:fe contrib/gles-public/opengles.c fn fe_find fe_es2_extensions
+ * SLICE:fe contrib/gles-public/opengles.c range enum { FE_MBX | static int fe_gpu
+ * SLICE:fe contrib/gles-public/opengles.c fn fe_find fe_names
+ * SLICE:fe contrib/gles-public/opengles.c range #define FE_X_MBX | /* The list for `gpu`
+ * SLICE:fe contrib/gles-public/opengles.c fn fe_extensions
  * SLICE hw/arm/gles-host.c range /* The ES half-float type | /* The pixel type the host takes
  * CFLAGS -Wno-deprecated-declarations -framework OpenGL
  */
@@ -18,25 +21,27 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+static unsigned slen(const char *s) { return (unsigned)strlen(s); }
 #include "fe.h"
 #include "slice.h"
 
 static const char *list(const char *text, unsigned long size)
 {
-    static char out[128];
-    fe_es2_extensions(out, sizeof out, text, size);
+    static char out[1024];
+    fe_extensions(out, sizeof out, FE_SGX2, text, size);
     return out;
 }
 
 int main(void)
 {
     /* GLEngine __TEXT excerpts: 4.2.1's names both, 3.2's no OES_depth_texture (a longer name doesn't count). */
-    static const char e421[] = "GL_ARB_shadow\0GL_OES_depth_texture\0GL_ARB_depth_texture\0GL_OES_packed_depth_stencil\0";
-    static const char e32[] = "GL_ARB_shadow\0GL_OES_depth_texture_cube_map\0GL_OES_packed_depth_stencil\0";
+    static const char e421[] = "GL_ARB_shadow\0GL_OES_depth_texture\0GL_ARB_depth_texture\0GL_OES_packed_depth_stencil\0"
+                               "GL_IMG_texture_compression_pvrtc\0";
+    static const char e32[] = "GL_ARB_shadow\0GL_OES_depth_texture_cube_map\0GL_OES_packed_depth_stencil\0"
+                              "GL_IMG_texture_compression_pvrtc\0";
     assert(!strcmp(list(e421, sizeof e421),
-                   "GL_OES_depth_texture GL_OES_packed_depth_stencil GL_IMG_texture_compression_pvrtc"));
-    assert(!strcmp(list(e32, sizeof e32), "GL_OES_packed_depth_stencil GL_IMG_texture_compression_pvrtc"));
-    assert(!strcmp(list(0, 0), "GL_IMG_texture_compression_pvrtc"));   /* no cache, or no GLEngine in it */
+                   "GL_IMG_texture_compression_pvrtc GL_OES_depth_texture GL_OES_packed_depth_stencil"));
+    assert(!strcmp(list(e32, sizeof e32), "GL_IMG_texture_compression_pvrtc GL_OES_packed_depth_stencil"));
 
     /* What the engine then allocates: DEPTH_COMPONENT/UNSIGNED_SHORT and DEPTH_STENCIL/UNSIGNED_INT_24_8 at the
      * iPhone 4's 960x640, attached as a framebuffer's depth (and stencil), as glTexImage2D's slot passes them on. */

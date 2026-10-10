@@ -4823,7 +4823,9 @@ static char *gles_es2_glsl(const char *src)
         while (t < p + n && (*t == ' ' || *t == '\t')) {
             t++;
         }
-        if (!strncmp(t, "#version", 8)) {
+        if (!strncmp(t, "#version", 8) ||
+            (!strncmp(t, "#extension", 10) &&       /* dFdx/dFdy/fwidth are core in GLSL 1.20, which knows no OES name */
+             g_strstr_len(t, p + n - t, "GL_OES_standard_derivatives"))) {
             g_string_append_c(out, '\n');           /* keep line numbers */
         } else if (!strncmp(t, "precision", 9) && (t[9] == ' ' || t[9] == '\t')) {
             const char *semi = memchr(t, ';', p + n - t);
