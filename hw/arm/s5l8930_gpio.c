@@ -62,6 +62,7 @@ struct S5L8930GPIOState {
     uint32_t cfg[GPIO_MAX_PINS];
     uint32_t input[GPIO_GROUPS];      /* external pin levels, bit per pin */
     uint32_t rest_low[GPIO_GROUPS];   /* inputs a reset leaves low: switches the board holds there */
+    uint32_t rest_high[GPIO_GROUPS];  /* and high, over the straps below (a 3G iPad's radio-present 0x607) */
     uint32_t enabled[GPIO_GROUPS];
     uint32_t status[GPIO_GROUPS];
 };
@@ -306,6 +307,7 @@ static void s5l8930_gpio_reset(DeviceState *dev)
     }
     for (unsigned g = 0; g < GPIO_GROUPS; g++) {
         s->input[g] &= ~s->rest_low[g];
+        s->input[g] |= s->rest_high[g];
     }
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->status, 0, sizeof(s->status));
@@ -319,8 +321,10 @@ void s5l8930_gpio_set_rest_level(DeviceState *dev, unsigned pin, bool level)
 
     if (level) {
         s->rest_low[pin / 32] &= ~(1u << (pin % 32));
+        s->rest_high[pin / 32] |= 1u << (pin % 32);
     } else {
         s->rest_low[pin / 32] |= 1u << (pin % 32);
+        s->rest_high[pin / 32] &= ~(1u << (pin % 32));
     }
     s5l8930_gpio_set_input(s, pin, level);
 }

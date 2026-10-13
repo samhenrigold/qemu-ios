@@ -218,6 +218,7 @@ void ios_baseband_spi_xfer(DeviceState *dev, const uint8_t *mosi, uint8_t *miso,
     size_t rxlen;
 
 
+    s->boot_uart = false;                  /* the kernel's link: replies go to SPI from now on */
     s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     ios_bb_ifx_xfer(&s->ifx, mosi, miso, n, &rx, &rxlen);
     if (rxlen) {
@@ -241,9 +242,8 @@ static void iosbb_tick_timer(void *opaque)
     iosbb_vibrator_update(s);
     if (s->ifx_version) {
         iosbb_srdy_update(s);
-    } else {
-        iosbb_flush(s);
     }
+    iosbb_flush(s);
 
     due = ios_bb_next_due(&s->bb);
     if (s->out_len) {
@@ -265,10 +265,23 @@ static void iosbb_arm(IosBasebandState *s, int64_t at_ms)
 
 /* ------------------------------------------------------------- chardev (UART peer) */
 
+/* An SPI modem's replies: to the UART while iBoot is talking on it, else to the IFX link. */
+static void iosbb_ifx_out(void *opaque, const uint8_t *buf, size_t len)
+{
+    IosBasebandState *s = opaque;
+
+    if (s->boot_uart) {
+        iosbb_out(s, buf, len);
+    } else {
+        ios_bb_ifx_queue(&s->ifx, buf, len);
+    }
+}
+
 static int iosbb_chr_write(Chardev *chr, const uint8_t *buf, int len)
 {
     IosBasebandState *s = IOS_BB_CHARDEV(chr)->dev;
 
+    s->boot_uart = s->ifx_version != 0;     /* iBoot's AT on the SPI modem's UART: answer there */
     s->bb.now_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     ios_bb_input(&s->bb, buf, len);
     /* Replies come from the timer (see the file comment). */
@@ -941,6 +954,7 @@ static void iosbb_machine_reset(void *opaque)
 
     ios_bb_reset(&s->bb);
     s->out_len = 0;
+    s->boot_uart = false;
     timer_del(s->timer);
     iosbb_vibrator_update(s);
     if (s->ifx_version) {
@@ -961,15 +975,14 @@ static void iosbb_realize(DeviceState *dev, Error **errp)
             return;
         }
         ios_bb_ifx_init(&s->ifx, s->ifx_version, s->ifx_max_data);
-        ios_bb_init(&s->bb, ios_bb_ifx_queue, &s->ifx);
-    } else {
-        if (!s->chr) {
-            s->chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IOS_BB, NULL, NULL,
-                                      &error_abort);
-            IOS_BB_CHARDEV(s->chr)->dev = s;
-        }
-        ios_bb_init(&s->bb, iosbb_out, s);
     }
+    /* On SPI the modem's UART carries only iBoot's AT before the kernel (the iPad's uart1). */
+    if (!s->chr) {
+        s->chr = qemu_chardev_new(NULL, TYPE_CHARDEV_IOS_BB, NULL, NULL,
+                                  &error_abort);
+        IOS_BB_CHARDEV(s->chr)->dev = s;
+    }
+    ios_bb_init(&s->bb, s->ifx_version ? iosbb_ifx_out : iosbb_out, s);
     s->bb.nitz = s->nitz;
     s->timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, iosbb_tick_timer, s);
     if (getenv("IOS_BB_TRACE")) {

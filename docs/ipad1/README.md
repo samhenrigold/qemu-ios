@@ -16,6 +16,7 @@ in `../archive/ipad1-PLAN.md`; what follows are the parts of it that still gover
 | `ios4.md` | The declared-inputs pipeline across a major version (8C148) |
 | `ios5.md` | The iOS 5 / 4.3 spike: what each build expects, the blockers by fidelity class (IOP mailbox v3, security epoch 2) |
 | `location.md` | Location without GPS: the network location service answered by the proxy |
+| `3g.md` | The Wi-Fi + 3G model (`baseband=on`): what differs on its board, iBoot's radio handshake, the model |
 | `guest-services.md` | What guest code the iPad carries and why (AppSync dylib, pasteboard) |
 | `app-compat.md`, `app-compat-results.md` | The app-compatibility inventory and results (3.2.2 and 4.2.1) |
 | `addresses-7B500.md` | Firmware addresses re-derived for 7B500 |

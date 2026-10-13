@@ -125,6 +125,9 @@ typedef struct A4Board {
     uint8_t bb_ifx;
     uint16_t bb_max_data;
     uint16_t bb_mrdy, bb_srdy;
+    /* The UART iBoot talks AT to the radio on before the kernel (its +cgsn fills baseband/device-imei), and
+     * whether iBoot looks for a radio at all: the radio-present strap, GPIO 0x607 (0 = neither: kboot only). */
+    int8_t bb_uart;
     /* buttons/ringerab's polarity (its GPIO function's flags 0x100): which level of pin 4 is "silent".
      * GPIO inputs rest high, which on an active-high switch is silent: every system sound muted. */
     bool ringer_active_high;
@@ -221,6 +224,15 @@ static const A4Board a4_k48 = {
     /* what the K48 image in wifiFirmwareLoader reports */
     .wifi_fw_version = "wl0: Jul 21 2010 21:58:50 version 4.218.175.43",
     .wifi_mac = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 },  /* = DT */
+    /*
+     * The Wi-Fi + 3G model (baseband=on): the same board with the 3GS's X-Gold modem on spi2 (the K48 DT's
+     * spi2 has protocol-version 1 and max-data-size 0x7f8 on 3.2 through 5.1.1, and its baseband node is
+     * 'baseband,n82'). iBoot reads the radio-present strap and talks to the modem over uart1
+     * (docs/ipad1/3g.md).
+     */
+    .bb_ifx = 1, .bb_max_data = 0x7f8,
+    .bb_mrdy = 0x0605, .bb_srdy = 0x0104,
+    .bb_uart = 1,
 };
 
 /*
@@ -1726,6 +1738,10 @@ static void ipad1_init(MachineState *machine)
     } else {
         ipod_touch_spi_create(S5L8930_SPI_BASE(2), NULL, 2, "none", false);
     }
+    /* iBoot's radio-present strap: high with a modem, low on the Wi-Fi model ("Radio not detected."). */
+    if (s->board->bb_uart) {
+        s5l8930_gpio_set_rest_level(s->gpio, S5L8930_GPIO_PIN(0x0607), s->bb_modem != NULL);
+    }
 
     /*
      * M2 scaler/CSC: the iPod's (same scaler,s5l8720x driver). Absent, its
@@ -1823,6 +1839,17 @@ static void ipad1_init(MachineState *machine)
      */
     for (i = 0; i < 6; i++) {
         if (i == s->board->bt_uart || i == s->board->gauge_uart) {
+            continue;
+        }
+        if (s->bb_modem && i == s->board->bb_uart) {
+            /*
+             * The modem's UART, which iBoot talks AT on before the kernel (docs/ipad1/3g.md). Its FIFO is
+             * the silicon's 16 bytes: iBoot reads the Rx count as UFSTAT[3:0] | full(bit 8) << 4, so at
+             * 256 a reply over 15 bytes read as nothing and the radio nvram's 1 KiB line timed out
+             * ("Radio Failed to read block 0"), as the gauge's HDQ did below.
+             */
+            exynos4210_uart_create(S5L8930_UART_BASE(i), 16, i, ios_baseband_chardev(s->bb_modem),
+                                   ipad1_irq(s, S5L8930_IRQ_UART(i)), true);
             continue;
         }
         exynos4210_uart_create(S5L8930_UART_BASE(i), 256, i, serial_hd(i),

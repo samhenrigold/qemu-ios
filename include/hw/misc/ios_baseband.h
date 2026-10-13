@@ -34,6 +34,7 @@ struct IosBasebandState {
     bool srdy_level;
     bool mrdy_level;              /* in: the AP wants a transfer */
     bool frame_wanted;            /* the AP set RUN on a frame without MRDY */
+    bool boot_uart;               /* the last AT came over the UART (iBoot, before the kernel's SPI) */
     void (*spi_ready)(void *opaque);  /* SRDY rose: the controller may move the frame */
     void *spi_ready_opaque;
 
