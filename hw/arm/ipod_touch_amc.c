@@ -144,6 +144,13 @@ static bool amc_trace(void)
 #define AMCT(fmt, ...) do { if (amc_trace()) { \
     TRACE_PRINTF(trace_ipod_touch_amc_log, "[AMC] " fmt, ##__VA_ARGS__); } } while (0)
 
+/* The engine's own memory, the aperture: AMC 2.1's DMA reads only this. */
+static bool amc_local(IPodTouchAMCState *s, uint32_t addr, size_t size)
+{
+    uint32_t limit = s->rev21 ? AMC_APERTURE_21 : AMC_BUF_SIZE;
+    return addr < limit && size <= limit - addr;
+}
+
 #ifdef IT_HAVE_AVCODEC
 /* ponytail: HLE of the 7E18 AAC-LC/HE-AAC, MP3 and ALAC decoder programs, and of any
  * other program whose stream parameters are AAC's (amc_aac_rate). Other DE programs
@@ -326,13 +333,6 @@ static bool amc_dram(IPodTouchAMCState *s, uint32_t addr, size_t size)
 {
     return addr >= s->dram_base && addr - s->dram_base < s->dram_size &&
            size <= s->dram_size - (addr - s->dram_base);
-}
-
-/* The engine's own memory, the aperture: AMC 2.1's DMA reads only this. */
-static bool amc_local(IPodTouchAMCState *s, uint32_t addr, size_t size)
-{
-    uint32_t limit = s->rev21 ? AMC_APERTURE_21 : AMC_BUF_SIZE;
-    return addr < limit && size <= limit - addr;
 }
 
 /*
@@ -1545,12 +1545,7 @@ static int amc_post_load(void *opaque, int version_id)
         s->state_handshake != (s->mode != AMC_MODE_REGISTERS)) {
         return -EINVAL;
     }
-#ifndef IT_HAVE_AVCODEC
-    if (s->codec_decode) {
-        return -EINVAL;
-    }
-#endif
-#ifdef IT_HAVE_AVCODEC
+#ifdef IT_HAVE_AVCODEC  /* without it a decode-mode AMC loads and stays silent */
     if (!amc_replay_restore(s->decoder)) return -EINVAL;
 #endif
     amc_update_irq(s);
@@ -1602,7 +1597,7 @@ static void ipod_touch_amc_realize(DeviceState *dev, Error **errp)
     }
 #ifndef IT_HAVE_AVCODEC
     if (s->mode == AMC_MODE_DECODE) {
-        error_setg(errp, "AMC decoding requires a build with libavcodec support");
+        warn_report("AMC decoding needs libavcodec: decoded audio is silent in this build");
     }
 #endif
 }

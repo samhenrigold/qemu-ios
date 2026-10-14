@@ -28,6 +28,7 @@
 #include "ui/clipboard.h"
 #include "trace.h"
 #include "hw/trace-printf.h"
+#include "hw/arm/spike-probe.h"
 
 // The D1759 PMU raises this GPIO IRQ when a wake button (hold/menu) is pressed.
 // It lands in the same GPIO interrupt group the button code already drives.
@@ -3694,6 +3695,7 @@ static void ipod_touch_machine_init(MachineState *machine)
                                      ipod_touch_powerdown_tick, nms);
     nms->pwroff_phase = PWROFF_IDLE;
     qemu_register_powerdown_notifier(&ipod_touch_powerdown_notifier);
+    spike_probe_init();
 }
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, const void *data)

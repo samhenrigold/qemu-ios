@@ -1245,6 +1245,11 @@ host_gles = dependency('appleframeworks',
                        modules: ['OpenGLES', 'Foundation', 'IOSurface',
                                  'CoreFoundation'],
                        required: false)
+# --disable-opengl leaves the GLES bridge out (gles-host-stub.c), as a host without GL does.
+if get_option('opengl').disabled()
+  host_opengl = not_found
+  host_gles = not_found
+endif
 
 vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
 if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',

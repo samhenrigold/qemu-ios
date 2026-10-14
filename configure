@@ -368,7 +368,7 @@ elif check_define __NetBSD__; then
   host_os=netbsd
 elif check_define __APPLE__; then
   host_os=darwin
-elif check_define EMSCRIPTEN ; then
+elif check_define __EMSCRIPTEN__ ; then
   host_os=emscripten
   cross_compile="yes"
 else
@@ -413,7 +413,7 @@ elif check_define __aarch64__ ; then
   cpu="aarch64"
 elif check_define __loongarch64 ; then
   cpu="loongarch64"
-elif check_define EMSCRIPTEN ; then
+elif check_define __EMSCRIPTEN__ ; then
   error_exit "wasm64 must be specified to the cpu flag"
 else
   # Using uname is really broken, but it is just a fallback for architectures

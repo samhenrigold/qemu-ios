@@ -27,6 +27,11 @@
 #ifndef QEMU_OSDEP_H
 #define QEMU_OSDEP_H
 
+/* Emscripten 6 no longer defines the unprefixed EMSCRIPTEN that QEMU tests. */
+#if defined(__EMSCRIPTEN__) && !defined(EMSCRIPTEN)
+#define EMSCRIPTEN 1
+#endif
+
 #if !defined _FORTIFY_SOURCE && defined __OPTIMIZE__ && __OPTIMIZE__ && defined __linux__
 # define _FORTIFY_SOURCE 2
 #endif
