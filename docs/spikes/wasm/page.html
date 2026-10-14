@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>n72 wasm spike</title>
+<canvas id="screen" width="320" height="480" style="background:#000"></canvas>
+<pre id="status"></pre>
+<script type="module">
+const log = (s) => { fetch('/log', { method: 'POST', body: s }); };
+const t0 = performance.now();
+const since = () => ((performance.now() - t0) / 1000).toFixed(2);
+const man = await (await fetch('/manifest.json')).json();
+window.onerror = (m) => log(`page error: ${m}`);
+window.onunhandledrejection = (e) => log(`page rejection: ${e.reason}`);
+const data = [];
+for (let i = 0; i < man.files.length; i += 64) {  // 16k parallel fetches exhaust Chrome's sockets
+  data.push(...await Promise.all(man.files.slice(i, i + 64).map((p) => fetch('/f' + p).then((r) => r.arrayBuffer()))));
+}
+log(`page: fetched ${man.files.length} files at ${since()} s; crossOriginIsolated=${crossOriginIsolated}`);
+const factory = (await import('/qemu/qemu-system-arm.js')).default;
+const M = await factory({
+  arguments: man.args,
+  locateFile: (p) => '/qemu/' + p,
+  preRun: [(M) => {
+    for (const d of man.dirs) M.FS.mkdirTree(d);
+    man.files.forEach((p, i) => { M.FS.mkdirTree(p.slice(0, p.lastIndexOf('/'))); M.FS.writeFile(p, new Uint8Array(data[i])); });
+    Object.assign(M.ENV, man.env);
+    log(`page: files in MEMFS at ${since()} s`);
+  }],
+  print: log,
+  printErr: log,
+});
+log(`page: module ready at ${since()} s`);
+const ctx = document.getElementById('screen').getContext('2d');
+setInterval(() => {
+  let ppm;
+  try { ppm = M.FS.readFile(man.env.SPIKE_SHOT); } catch { return; }
+  const head = new TextDecoder().decode(ppm.subarray(0, 20)).split(/\s+/);
+  const [w, h] = [+head[1], +head[2]];
+  const off = head.slice(0, 4).join(' ').length + 1;
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    img.data.set(ppm.subarray(off + i * 3, off + i * 3 + 3), i * 4);
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  fetch('/shot', { method: 'POST', body: ctx.canvas.toDataURL('image/png') });
+}, 1000);
+</script>
