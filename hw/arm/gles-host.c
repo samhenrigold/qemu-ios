@@ -4979,13 +4979,61 @@ static bool gles_es2_bind_attr(CPUState *cpu, unsigned i, uint32_t first,
     return true;
 }
 
+/*
+ * The vertices a glDrawElements index list needs, as `first` and `nverts`, and
+ * the index list to draw with. Indices are absolute, so only the vertices
+ * between the smallest and the largest one have to come across; fetching a
+ * fixed amount would either truncate the mesh or read guest memory the app
+ * never allocated. Games keep a whole level in one array and draw small pieces
+ * of it (Asphalt 5: ~70 vertices per draw out of ~15000), so the indices are
+ * rebased to the smallest and the arrays are fetched from there, the way
+ * glDrawArrays' `first` works. The copy is gh.ibuf -- in place when the indices
+ * are already there, never into a guest buffer object the guest may draw from
+ * again.
+ */
+static const uint8_t *gles_rebase_indices(const uint8_t *idx, uint32_t count,
+                                          uint32_t isz, uint32_t *first,
+                                          uint32_t *nverts)
+{
+    uint32_t i, lo = UINT32_MAX, hi = 0;
+    size_t need = (size_t)count * isz;
+
+    for (i = 0; i < count; i++) {
+        /* An index list inside a VBO starts at an arbitrary offset, so the
+         * 16-bit read cannot assume alignment the way a cast would. */
+        uint32_t v = (isz == 1) ? idx[i] : lduw_le_p(idx + i * 2);
+        lo = MIN(lo, v);
+        hi = MAX(hi, v);
+    }
+    if (!count) {
+        lo = 0;
+    }
+    *first = lo;
+    *nverts = hi - lo + 1;
+    if (!lo) {
+        return idx;
+    }
+    if (idx != gh.ibuf && need > gh.ibuf_size) {
+        gh.ibuf = g_realloc(gh.ibuf, need);
+        gh.ibuf_size = need;
+    }
+    for (i = 0; i < count; i++) {
+        if (isz == 1) {
+            gh.ibuf[i] = idx[i] - lo;
+        } else {
+            stw_he_p(gh.ibuf + i * 2, lduw_le_p(idx + i * 2) - lo);
+        }
+    }
+    return gh.ibuf;
+}
+
 static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
 {
     uint32_t mode = a[0], count, nverts, first = 0, isz = 0, i, bound = 0;
     const uint8_t *idx = NULL;
 
     if (elements) {
-        uint32_t itype = a[2], iptr = a[3], maxidx = 0;
+        uint32_t itype = a[2], iptr = a[3];
         size_t need;
 
         count = a[1];
@@ -5017,11 +5065,7 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
             }
             idx = gh.ibuf;
         }
-        for (i = 0; i < count; i++) {
-            uint32_t v = isz == 1 ? idx[i] : lduw_le_p(idx + i * 2);
-            maxidx = MAX(maxidx, v);
-        }
-        nverts = maxidx + 1;
+        idx = gles_rebase_indices(idx, count, isz, &first, &nverts);
     } else {
         first = a[1];
         count = nverts = a[2];
@@ -5647,7 +5691,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_DRAW_ELEMENTS: {             /* mode, count, type, indices */
         uint32_t mode = a[0], count = a[1], itype = a[2], iptr = a[3];
         uint32_t isz = gles_type_size(itype);
-        uint32_t bound, i, maxidx = 0;
+        uint32_t bound, minidx, nverts;
         const uint8_t *idx;
         size_t need;
 
@@ -5696,25 +5740,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             idx = gh.ibuf;
         }
 
-        /*
-         * Indices are absolute, so the vertex data that has to come across is
-         * everything up to the largest one -- there is no `first` to lean on
-         * the way glDrawArrays has. Scanning for the maximum costs one pass
-         * over the indices and is the only way to know how much of the guest's
-         * array is actually referenced; fetching a fixed amount would either
-         * truncate the mesh or read guest memory the app never allocated.
-         */
-        for (i = 0; i < count; i++) {
-            /* An index list inside a VBO starts at an arbitrary offset, so the
-             * 16-bit read cannot assume alignment the way a cast would. */
-            uint32_t v = (isz == 1) ? idx[i] : lduw_le_p(idx + i * 2);
-            if (v > maxidx) {
-                maxidx = v;
-            }
-        }
+        idx = gles_rebase_indices(idx, count, isz, &minidx, &nverts);
 
         if (!gles_refresh_surfaces(cpu)) return -1;
-        bound = gles_bind_all_arrays(cpu, 0, maxidx + 1);
+        bound = gles_bind_all_arrays(cpu, minidx, nverts);
         if (!(bound & 1u)) {
             gles_unbind_arrays(bound);           /* see glDrawArrays above */
             return -1;
