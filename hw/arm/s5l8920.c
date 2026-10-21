@@ -1726,6 +1726,7 @@ static void s5l8920_class_init(ObjectClass *klass, const void *data)
     object_class_property_add_str(klass, "wifi-country", s5l8920_get_wifi_country, s5l8920_set_wifi_country);
     object_class_property_set_description(klass, "wifi-country",
         "The access point's 802.11d country, two letters (unset: US)");
+    gles_host_class_init(klass);
     object_class_property_add_bool(klass, "gles-debug", s5l8920_get_gles_debug, s5l8920_set_gles_debug);
     object_class_property_add_bool(klass, "baseband", s5l8920_get_baseband, s5l8920_set_baseband);
     object_class_property_add_bool(klass, "ring-switch", s5l8920_get_ring_switch, s5l8920_set_ring_switch);

@@ -3420,6 +3420,7 @@ static void ipod_touch_machine_init(MachineState *machine)
 
 static void ipod_touch_machine_class_init(ObjectClass *klass, const void *data)
 {
+    gles_host_class_init(klass);
     object_class_property_add(klass, "bt", "bool", ipod_touch_get_bt,
                               ipod_touch_set_bt, NULL, NULL);
     object_class_property_set_description(klass, "bt", "Emulated Bluetooth HCI controller (default on)");

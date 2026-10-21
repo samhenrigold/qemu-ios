@@ -433,6 +433,10 @@ bool gles_host_debug(void);
  * VGA dirty bits of every surface page it checks (its own write-backs included), so a display
  * model that scans such pages out through the dirty log compares this too, or misses frames. */
 uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len);
+/* The machine's gl-renderer property: "cgl", or "angle" for the experimental ANGLE renderer, which a
+ * boot takes where the build has it and ANGLE opens (else it says so and stays on CGL). Set before the
+ * machine's first reset; every board's class adds it. */
+void gles_host_class_init(struct ObjectClass *oc);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

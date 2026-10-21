@@ -2543,6 +2543,7 @@ static void ipad1_class_init(ObjectClass *klass, const void *data)
     object_class_property_set_description(klass, "wifi",
         "Host bridge for the soldered BCM4329 (default on). Frames go to "
         "-netdev id=wifi0, or to user networking when none is given; off leaves the card present");
+    gles_host_class_init(klass);
     object_class_property_add_bool(klass, "gles-debug", ipad1_get_gles_debug, ipad1_set_gles_debug);
     object_class_property_set_description(klass, "gles-debug",
         "Paint what the GL bridge refuses magenta instead of black (default off; tests turn it on)");

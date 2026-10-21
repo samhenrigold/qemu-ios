@@ -5,6 +5,8 @@
  * ANGLE runs no fixed function in a programmable context, nor shaders in an ES1 one. */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <dlfcn.h>
+#include "gles-host-angle-gl.h"
 #define CGLContextObj GLESAngleContextRef
 #define CGLSetCurrentContext gles_angle_set_current
 #define CGLRetainContext gles_angle_retain
@@ -23,8 +25,41 @@ static EGLDisplay angle_display = EGL_NO_DISPLAY;
 static EGLConfig angle_config;
 static __thread CGLContextObj angle_current;
 
+/* libEGL and libGLESv2 beside the emulator (@rpath: the app's Frameworks), else in the ANGLE build it was
+ * configured with (GLES_ANGLE_DIR); false, and the bridge stays on CGL, where there is neither. */
+static bool gles_angle_load(void)
+{
+    static int loaded = -1;
+    if (loaded >= 0) return loaded;
+    void *egl = NULL, *gles = NULL;
+    const char *dirs[] = { "@rpath",
+#ifdef GLES_ANGLE_DIR
+        GLES_ANGLE_DIR,
+#endif
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(dirs) && !(egl && gles); i++) {
+        g_autofree char *e = g_strdup_printf("%s/libEGL.dylib", dirs[i]);
+        g_autofree char *g = g_strdup_printf("%s/libGLESv2.dylib", dirs[i]);
+        if (egl) dlclose(egl);
+        if (gles) dlclose(gles);
+        egl = dlopen(e, RTLD_NOW | RTLD_LOCAL);
+        gles = egl ? dlopen(g, RTLD_NOW | RTLD_LOCAL) : NULL;
+    }
+    loaded = egl && gles;
+#define GLES_ANGLE_LOAD(name) \
+    if (loaded && !(gles_angle_fn_##name = dlsym(#name[0] == 'e' ? egl : gles, #name))) { \
+        fprintf(stderr, "[gles-angle] no %s in ANGLE\n", #name); \
+        loaded = 0; \
+    }
+    GLES_ANGLE_FUNCTIONS(GLES_ANGLE_LOAD)
+#undef GLES_ANGLE_LOAD
+    if (!loaded) fprintf(stderr, "[gles-angle] ANGLE is not available: %s\n", egl && gles ? "entry points" : dlerror());
+    return loaded;
+}
+
 static bool gles_angle_create(CGLContextObj share, bool es2, CGLContextObj *out)
 {
+    if (!gles_angle_load()) return false;
     if (angle_display == EGL_NO_DISPLAY) {
         PFNEGLGETPLATFORMDISPLAYEXTPROC get = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
         EGLint attrs[] = {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE};
@@ -94,6 +129,7 @@ static void gles_angle_tex_image_2d(GLenum target, GLint level, GLint ifmt, GLsi
                             fmt == GL_LUMINANCE || fmt == GL_LUMINANCE_ALPHA)) ifmt = fmt;
     glTexImage2D(target, level, ifmt, w, h, border, fmt, type, pixels);
 }
+#undef glTexImage2D
 #define glTexImage2D gles_angle_tex_image_2d
 
 /* The framebuffer objects are OES_framebuffer_object in an ES1 context and core in an ES 2.0 one,
@@ -119,20 +155,35 @@ static void gles_angle_DeleteFramebuffers(GLsizei a, const GLuint *b) { if (gles
 static void gles_angle_DeleteRenderbuffers(GLsizei a, const GLuint *b) { if (gles_angle_es2()) glDeleteRenderbuffers(a, b); else glDeleteRenderbuffersOES(a, b); }
 static void gles_angle_GetRenderbufferParameteriv(GLenum a, GLenum b, GLint *c) { if (gles_angle_es2()) glGetRenderbufferParameteriv(a, b, c); else glGetRenderbufferParameterivOES(a, b, c); }
 static void gles_angle_GetFramebufferAttachmentParameteriv(GLenum a, GLenum b, GLenum c, GLint *d) { if (gles_angle_es2()) glGetFramebufferAttachmentParameteriv(a, b, c, d); else glGetFramebufferAttachmentParameterivOES(a, b, c, d); }
+#undef glIsFramebufferOES
 #define glIsFramebufferOES gles_angle_IsFramebuffer
+#undef glIsRenderbufferOES
 #define glIsRenderbufferOES gles_angle_IsRenderbuffer
+#undef glGenerateMipmapOES
 #define glGenerateMipmapOES gles_angle_GenerateMipmap
+#undef glGenFramebuffersOES
 #define glGenFramebuffersOES gles_angle_GenFramebuffers
+#undef glBindFramebufferOES
 #define glBindFramebufferOES gles_angle_BindFramebuffer
+#undef glFramebufferTexture2DOES
 #define glFramebufferTexture2DOES gles_angle_FramebufferTexture2D
+#undef glGenRenderbuffersOES
 #define glGenRenderbuffersOES gles_angle_GenRenderbuffers
+#undef glBindRenderbufferOES
 #define glBindRenderbufferOES gles_angle_BindRenderbuffer
+#undef glRenderbufferStorageOES
 #define glRenderbufferStorageOES gles_angle_RenderbufferStorage
+#undef glFramebufferRenderbufferOES
 #define glFramebufferRenderbufferOES gles_angle_FramebufferRenderbuffer
+#undef glCheckFramebufferStatusOES
 #define glCheckFramebufferStatusOES gles_angle_CheckFramebufferStatus
+#undef glDeleteFramebuffersOES
 #define glDeleteFramebuffersOES gles_angle_DeleteFramebuffers
+#undef glDeleteRenderbuffersOES
 #define glDeleteRenderbuffersOES gles_angle_DeleteRenderbuffers
+#undef glGetRenderbufferParameterivOES
 #define glGetRenderbufferParameterivOES gles_angle_GetRenderbufferParameteriv
+#undef glGetFramebufferAttachmentParameterivOES
 #define glGetFramebufferAttachmentParameterivOES gles_angle_GetFramebufferAttachmentParameteriv
 
 static void gles_angle_get_clip_plane(GLenum plane, double *value)
@@ -376,24 +427,43 @@ static void gles_angle_DrawElements(GLenum mode, GLsizei count, GLenum type, con
 {
     GLES_ANGLE_RECT_DRAW(glDrawElements(mode, count, type, indices));
 }
+#undef glBindTexture
 #define glBindTexture gles_angle_BindTexture
+#undef glDeleteTextures
 #define glDeleteTextures gles_angle_DeleteTextures
+#undef glEnable
 #define glEnable gles_angle_Enable
+#undef glDisable
 #define glDisable gles_angle_Disable
+#undef glIsEnabled
 #define glIsEnabled gles_angle_IsEnabled
+#undef glGetIntegerv
 #define glGetIntegerv gles_angle_GetIntegerv
+#undef glGetFloatv
 #define glGetFloatv gles_angle_GetFloatv
+#undef glGetBooleanv
 #define glGetBooleanv gles_angle_GetBooleanv
 #undef glTexImage2D
 #define glTexImage2D gles_angle_TexImage2D
+#undef glTexSubImage2D
 #define glTexSubImage2D gles_angle_TexSubImage2D
+#undef glCopyTexImage2D
 #define glCopyTexImage2D gles_angle_CopyTexImage2D
+#undef glCopyTexSubImage2D
 #define glCopyTexSubImage2D gles_angle_CopyTexSubImage2D
+#undef glTexParameteri
 #define glTexParameteri gles_angle_TexParameteri
+#undef glTexParameterf
 #define glTexParameterf gles_angle_TexParameterf
+#undef glTexParameteriv
 #define glTexParameteriv gles_angle_TexParameteriv
+#undef glTexParameterfv
 #define glTexParameterfv gles_angle_TexParameterfv
+#undef glGetTexParameteriv
 #define glGetTexParameteriv gles_angle_GetTexParameteriv
+#undef glGetTexParameterfv
 #define glGetTexParameterfv gles_angle_GetTexParameterfv
+#undef glDrawArrays
 #define glDrawArrays gles_angle_DrawArrays
+#undef glDrawElements
 #define glDrawElements gles_angle_DrawElements

@@ -633,6 +633,28 @@ typedef struct {
     GHashTable *uloc;
 } GLESHost;
 
+/* A boot on ANGLE (gl-renderer=angle, gles_host_class_init): this file's entry points forward to its
+ * second build, gles-host-angle.c, whose GL is ANGLE's. */
+#if defined(GLES_HOST_WITH_ANGLE) && !defined(GLES_HOST_ANGLE)
+static bool gles_on_angle;
+int64_t gles_angle_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx, uint32_t argc, const uint32_t *args);
+void gles_angle_host_stats(uint64_t *draws, uint64_t *presents);
+void gles_angle_host_set_allowed(bool allowed);
+void gles_angle_host_reset(void);
+int gles_angle_host_context_count(void);
+bool gles_angle_host_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
+char *gles_angle_host_rejects(void);
+void gles_angle_host_set_debug(bool on);
+bool gles_angle_host_debug(void);
+uint64_t gles_angle_host_ram_gen(uint64_t addr, uint64_t len);
+bool gles_angle_host_available(void);
+#define GLES_ON_ANGLE(call) do { if (gles_on_angle) return call; } while (0)
+#define GLES_ON_ANGLE_VOID(call) do { if (gles_on_angle) { call; return; } } while (0)
+#else
+#define GLES_ON_ANGLE(call) do { } while (0)
+#define GLES_ON_ANGLE_VOID(call) do { } while (0)
+#endif
+
 /* Old guest engines retain their legacy context. New engines pass opaque
  * host handles, so every GC gets independent native GL and client-array state. */
 static int gles_live_contexts;
@@ -665,12 +687,14 @@ static void gles_end_context(void)
 
 int gles_host_context_count(void)
 {
+    GLES_ON_ANGLE(gles_angle_host_context_count());
     return qatomic_read(&gles_live_contexts);
 }
 
 static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
 #define gh (*gh_current)
+
 
 /* ---------------------------------------------------------- GPU memory ----
  *
@@ -1979,6 +2003,7 @@ static bool gles_refuse(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(name, sizeof(name), fmt, ap);
     va_end(ap);
+    GLES_ON_ANGLE(gles_angle_host_refuse("%s", name));
     return gles_reject_note(name, 1, false);
 }
 
@@ -1990,6 +2015,7 @@ bool gles_host_refuse(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(name, sizeof(name), fmt, ap);
     va_end(ap);
+    GLES_ON_ANGLE(gles_angle_host_refuse("%s", name));
     return gles_reject_note(name, 1, false);
 }
 
@@ -2000,6 +2026,7 @@ static gint gles_strcmp_data(gconstpointer a, gconstpointer b, gpointer d)
 
 char *gles_host_rejects(void)
 {
+    GLES_ON_ANGLE(gles_angle_host_rejects());
     GString *out = g_string_new(NULL);
     GList *keys = gles_rejects ?
         g_list_sort_with_data(g_hash_table_get_keys(gles_rejects),
@@ -2015,11 +2042,13 @@ char *gles_host_rejects(void)
 
 void gles_host_set_debug(bool on)
 {
+    GLES_ON_ANGLE_VOID(gles_angle_host_set_debug(on));
     gles_debug = on;
 }
 
 bool gles_host_debug(void)
 {
+    GLES_ON_ANGLE(gles_angle_host_debug());
     return gles_debug;
 }
 
@@ -4570,6 +4599,7 @@ static int gles_surface_resolve(CPUState *cpu, uint32_t id, GLESSurface *s)
  * iPod LCD, which converts only dirty lines, showed a 1.x frame from the gesture before). */
 uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len)
 {
+    GLES_ON_ANGLE(gles_angle_host_ram_gen(addr, len));
     uint64_t gen = 0;
 
     for (size_t page = addr >> TARGET_PAGE_BITS;
@@ -7880,6 +7910,7 @@ static bool gles_allowed = true;
 
 void gles_host_set_allowed(bool allowed)
 {
+    GLES_ON_ANGLE_VOID(gles_angle_host_set_allowed(allowed));
     gles_allowed = allowed;
 }
 
@@ -8041,6 +8072,7 @@ static void gles_drop_all(void)
 
 void gles_host_reset(void)
 {
+    GLES_ON_ANGLE_VOID(gles_angle_host_reset());
 #if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     gles_snapshot_register();
     gles_drop_all();
@@ -8050,6 +8082,7 @@ void gles_host_reset(void)
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *a)
 {
+    GLES_ON_ANGLE(gles_angle_host_call(cpu, slot, ctx, argc, a));
     uint64_t t0;
     int64_t r;
 
@@ -8179,6 +8212,38 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
 void gles_host_stats(uint64_t *draws, uint64_t *presents)
 {
+    GLES_ON_ANGLE_VOID(gles_angle_host_stats(draws, presents));
     *draws = gh.draws;
     *presents = gh.presents;
 }
+
+#ifndef GLES_HOST_ANGLE
+static char *gles_get_renderer(Object *obj, Error **errp)
+{
+#ifdef GLES_HOST_WITH_ANGLE
+    if (gles_on_angle) return g_strdup("angle");
+#endif
+    return g_strdup("cgl");
+}
+
+static void gles_set_renderer(Object *obj, const char *value, Error **errp)
+{
+    bool angle = !strcmp(value, "angle");
+    if (!angle && strcmp(value, "cgl")) {
+        error_setg(errp, "gl-renderer is cgl or angle, not '%s'", value);
+        return;
+    }
+#ifdef GLES_HOST_WITH_ANGLE
+    gles_on_angle = angle && gles_angle_host_available();
+    if (gles_on_angle == angle) return;
+#endif
+    if (angle) fprintf(stderr, "[gles] gl-renderer=angle: ANGLE is not available here; the GL bridge stays on CGL\n");
+}
+
+void gles_host_class_init(ObjectClass *oc)
+{
+    object_class_property_add_str(oc, "gl-renderer", gles_get_renderer, gles_set_renderer);
+    object_class_property_set_description(oc, "gl-renderer",
+        "The GL bridge's host renderer: cgl, or angle (experimental; no snapshots)");
+}
+#endif

@@ -1356,6 +1356,7 @@ static void n45_set_wifi(Object *obj, bool value, Error **errp)
 
 static void n45_machine_class_init(ObjectClass *klass, const void *data)
 {
+    gles_host_class_init(klass);
     MachineClass *mc = MACHINE_CLASS(klass);
 
     object_class_property_add_str(klass, "bootrom", n45_get_bootrom_path, n45_set_bootrom_path);

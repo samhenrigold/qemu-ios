@@ -134,6 +134,9 @@ if host_opengl.found() or host_gles.found()
 endif
 if host_opengl.found()
   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host.c'), host_opengl, pvrtc_dep])
+  if angle_prefix != ''
+    arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: [files('gles-host-angle.c'), host_angle])
+  endif
 elif host_gles.found()
   # gles-host-eagl.c is C, not Objective-C, and explains at length why: an
   # Objective-C source anywhere in qemu-system-arm makes meson link the target

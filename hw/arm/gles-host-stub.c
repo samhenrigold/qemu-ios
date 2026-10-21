@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "qom/object.h"
 #include "hw/arm/guest-services/gles.h"
 
 void gles_host_set_allowed(bool allowed);
@@ -43,3 +44,10 @@ char *gles_host_rejects(void) { return g_strdup(""); }
 void gles_host_set_debug(bool on) { }
 bool gles_host_debug(void) { return false; }
 uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len) { return 0; }
+
+static char *gles_get_renderer(Object *obj, Error **errp) { return g_strdup("cgl"); }
+static void gles_set_renderer(Object *obj, const char *value, Error **errp) { }
+void gles_host_class_init(ObjectClass *oc)
+{
+    object_class_property_add_str(oc, "gl-renderer", gles_get_renderer, gles_set_renderer);
+}
