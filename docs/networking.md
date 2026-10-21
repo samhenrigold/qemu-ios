@@ -6,7 +6,7 @@ The prepared image auto-associates with the emulated BCM4325 network and uses
 slirp for DHCP, DNS and TCP. Native guest HTTP and HTTPS proxy checks now pass;
 the app's web proxy supplies host TLS and optional archived replay: it lives in LightTouchMac
 (`LightTouchDevice/WebProxy.swift`, on URLSession, reached through the 10.0.2.100:3128 guestfwd's
-`nc -U`; its checks are `tests/offline/check-web-proxy*.py` there). See the
+`unix-connect:` to its socket; its checks are `tests/offline/check-web-proxy*.py` there). See the
 [current capabilities](capabilities.md).
 Settings-driven Wi-Fi joining and two-instance LAN remain explicitly deferred.
 

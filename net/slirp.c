@@ -1378,6 +1378,23 @@ static int slirp_guestfwd(SlirpState *s, const char *config_str, Error **errp)
                        "forwarding rule '%s'", config_str);
             return -1;
         }
+#if !defined(WIN32) && SLIRP_CHECK_VERSION(4, 7, 0)
+    } else if (g_str_has_prefix(p, "unix-connect:")) {
+        /* Each guest connection connects to the socket from this process:
+         * no program per connection, as cmd: runs. */
+        const char *path = p + strlen("unix-connect:");
+
+        if (!*path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+            error_setg(errp, "Invalid Unix socket path in guest forwarding "
+                       "rule '%s'", config_str);
+            return -1;
+        }
+        if (slirp_add_unix(s->slirp, path, &server, port) < 0) {
+            error_setg(errp, "Conflicting/invalid host:port in guest "
+                       "forwarding rule '%s'", config_str);
+            return -1;
+        }
+#endif
     } else {
         Error *err = NULL;
         /*

@@ -5,6 +5,9 @@
  * SLICE:types hw/arm/gles-host.c range } GLESSurface; | typedef struct {\n#if
  * SLICE hw/arm/gles-host.c range #define PVRTC_RGB_4BPP | /*\n * The paletted formats:
  * SLICE hw/arm/gles-host.c define GLES_PRIVATE_NAME
+ * SLICE hw/arm/gles-host.c define GLES_MAX_GPU_BYTES
+ * SLICE hw/arm/gles-host.c range /* Bytes held by every buffer object | /*\n * Grow-and-keep
+ * SLICE hw/arm/gles-host.c range /* ---------------------------------------------------------- GPU memory | /*\n * Profiling and strictness
  * SLICE hw/arm/gles-host.c fn gles_unpack_tight gles_guest_name_ok gles_guest_names
  * SLICE hw/arm/gles-host.c range static GLESPVRTC *gles_pvrtc_texture( | /* IOSurface-backed textures
  * SLICE:cases hw/arm/gles-host.c range case GLES_SLOT_COMPRESSED_TEX_SUB_IMAGE_2D: | case GLES_SLOT_ALPHA_FUNC:
@@ -20,6 +23,7 @@
 #include "powervr/pvrtc.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,7 +36,7 @@ static uint32_t ldl_le_p(const uint8_t*p) {return p[0]|p[1]<<8|p[2]<<16|(uint32_
 #define QEMU_BUILD_BUG_ON(x)
 typedef struct { int unused;
 #include "types.h"
-typedef struct {GHashTable *pvrtc,*surfaces; GLESPVRTC default_pvrtc; GLenum error;} State;
+typedef struct {GHashTable *pvrtc,*surfaces,*charged,*own_charged; GLESPVRTC default_pvrtc; GLenum error;} State;
 static State first, second, *current=&first;
 #define gh (*current)
 static uint8_t *guest, *decoded;

@@ -3506,6 +3506,16 @@ SRST
             # and connect the TCP stream to its stdin/stdout
             |qemu_system| -nic  'user,id=n1,guestfwd=tcp:10.0.2.100:1234-cmd:netcat 10.10.1.1 4321'
 
+    ``guestfwd=[tcp]:server:port-unix-connect:path``
+        Connect each guest TCP connection to the IP address server on
+        port port to the Unix socket path, from QEMU itself: the same
+        per-connection stream as ``cmd:`` with a program that relays to
+        the socket, without a process per connection.
+
+        .. parsed-literal::
+
+            |qemu_system| -nic user,guestfwd=tcp:10.0.2.100:3128-unix-connect:/tmp/proxy.sock
+
 ``-netdev tap,id=id[,fd=h][,ifname=name][,script=file][,downscript=dfile][,br=bridge][,helper=helper]``
     Configure a host TAP network backend with ID id.
 

@@ -6,6 +6,7 @@
  * SLICE:gles-prelude hw/arm/gles-host.c range #include <TargetConditionals.h> | /* Old guest engines retain
  * SLICE:gles-refusals hw/arm/gles-host.c range /* ---------------------------------------------------------------- refusals | /* Only expose formats our decoder accepts
  * SLICE:policy hw/arm/gles-host.c range static int gles_live_contexts; | static GLESHost gh_legacy;
+ * SLICE:ops hw/arm/gles-host.c range /* ---------------------------------------------------------- GPU memory | /*\n * Profiling and strictness
  * SLICE:ops hw/arm/gles-host.c fn gles_buffer_destroy gles_buffer_bind gles_buffer_intern gles_buffer_forget
  * SLICE:ops hw/arm/gles-host.c range static GHashTable *gles_contexts, *gles_groups; | #ifdef GLES_HOST_ANGLE\nstatic void gles_snapshot_register
  * SLICE:ops2 hw/arm/gles-host.c range /* A guest reboot cannot send destruction calls | #endif\n\nvoid gles_host_reset

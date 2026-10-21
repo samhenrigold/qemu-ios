@@ -476,7 +476,7 @@ static void snap_get_buffers(SnapR *r, GHashTable *t)
         uint32_t name = sr32(r), len;
         const uint8_t *p = srbytes(r, &len);
         GLESBuffer *b;
-        if (!p || len > GLES_MAX_BUFFER_BYTES || gles_buffer_bytes + len > GLES_MAX_BUFFER_TOTAL) {
+        if (!p || len > GLES_MAX_BUFFER_BYTES || !gles_budget_ok(0, len)) {
             r->bad = true;
             break;
         }
@@ -594,7 +594,9 @@ static void snap_get_textures(SnapR *r)
             uint32_t len;
             const uint8_t *px = srbytes(r, &len);
             /* The host reads wd * ht * 4 bytes: exactly the run the blob holds. */
-            if (px && wd > 0 && ht > 0 && (uint64_t)wd * ht * 4 == len) {
+            if (px && wd > 0 && ht > 0 && (uint64_t)wd * ht * 4 == len &&
+                gles_charge_texture(target, lvl - 1, len)) {
+                gles_tex_charge.table = NULL;
                 glTexImage2D(target, lvl - 1, snap_texture_ifmt(ifmt), wd, ht, 0,
                              GL_RGBA, GL_UNSIGNED_BYTE, px);
             }
@@ -641,7 +643,9 @@ static void snap_get_renderbuffers(SnapR *r)
         GLuint name = sr32(r);
         GLint wd = sr32(r), ht = sr32(r), ifmt = sr32(r);
         glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, name);
-        if (wd > 0 && ht > 0) {
+        if (wd > 0 && ht > 0 &&
+            gles_charge(gles_charge_table(false), gles_charge_key(GLES_CHARGE_RENDERBUFFER, name, 0, 0),
+                        (uint64_t)wd * ht * 4, NULL)) {
             glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, ifmt, wd, ht);
         }
     }
@@ -1178,6 +1182,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
         g->surfaces = snap_new_owned();
         g->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
         g->pvrtc = snap_new_owned();
+        g->charged = g_hash_table_new(g_direct_hash, g_direct_equal);
         g->next_buffer_name = snap_get_tables(&r, g->buffers, g->surfaces, g->rb_sized, g->pvrtc);
         g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), g);
     }
@@ -1204,6 +1209,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
             h->surfaces = h->group->surfaces;
             h->rb_sized = h->group->rb_sized;
             h->pvrtc = h->group->pvrtc;
+            h->charged = h->group->charged;
         } else {
             h->buffers = snap_new_buffers();
             h->surfaces = snap_new_owned();
@@ -1236,6 +1242,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
          * texture, not an IOSurface. */
         h->readback_size = (size_t)h->drawable_width * h->drawable_height * 4;
         h->readback = g_malloc0(h->readback_size);
+        gles_charge_drawable(h->drawable_width, h->drawable_height, NULL);
         h->iosurface = false;
         if (!handle) qatomic_inc(&gles_live_contexts);
         if (objects) snap_get_objects(&r);

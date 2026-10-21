@@ -208,12 +208,20 @@ static unsigned gles_fb_w = 320, gles_fb_h = 480;   /* the iPod panel: lcd->pw/p
  * both far above anything this device does. */
 #define GLES_MAX_TEX_BYTES ((size_t)4096 * 4096 * 4)
 #define GLES_MAX_NAMES     65536u
-/* Every grow-and-keep scratch buffer (client arrays, indices, texels), every
- * buffer object's bytes taken together, and the native contexts and share
- * groups a guest may hold: a guest can only make the host allocate this much. */
+/* Every grow-and-keep scratch buffer (client arrays, indices, texels) and the
+ * native contexts and share groups a guest may hold: a guest can only make the
+ * host allocate this much. */
 #define GLES_MAX_SCRATCH      GLES_MAX_TEX_BYTES
-#define GLES_MAX_BUFFER_TOTAL ((size_t)512 * 1024 * 1024)
 #define GLES_MAX_CONTEXTS     256u
+/* What the GL objects of every context may hold together, as the host stores
+ * them: texture levels (PVRTC and palettes decoded to RGBA), renderbuffers,
+ * each context's drawable and its readback, and buffer objects' bytes. The
+ * GPUs of the devices emulated drew on the device's RAM, 128 MB (the iPhone and
+ * the iPod touch 1G and 2G) to 512 MB (the iPhone 4), and an app had a fraction
+ * of it; past this an allocation fails with GL_OUT_OF_MEMORY, as their drivers'
+ * did. Decoded PVRTC is 8-16x its size on the device, so the cap is the largest
+ * RAM rather than a device's texture budget. */
+#define GLES_MAX_GPU_BYTES    ((uint64_t)512 << 20)
 
 /* [off, off + len) lies inside a `size`-byte buffer. Every buffer-object, index
  * and client-array range check goes through here, so none of them can wrap. */
@@ -259,14 +267,25 @@ static inline bool gles_array_range(uint64_t ptr, uint64_t stride, uint64_t esz,
 #ifndef GL_TEXTURE_CROP_RECT_OES
 #define GL_TEXTURE_CROP_RECT_OES      0x8B9D
 #endif
+#ifndef GL_TEXTURE_BINDING_CUBE_MAP
+#define GL_TEXTURE_BINDING_CUBE_MAP   0x8514
+#endif
 static float gles_f(uint32_t bits);
 static float gles_x(uint32_t value);
 static bool gles_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
 static void gles_debug_mark(void);
 static void gles_debug_texture(GLenum target);
 
-/* Bytes held by every buffer object of every context, against GLES_MAX_BUFFER_TOTAL. */
+/* Bytes held by every buffer object of every context, and by every texture
+ * level, renderbuffer and drawable (gles_charge), against GLES_MAX_GPU_BYTES. */
 static size_t gles_buffer_bytes;
+static uint64_t gles_held_bytes;
+
+/* Whether an object going from `old` to `new` bytes stays within GLES_MAX_GPU_BYTES. */
+static inline bool gles_budget_ok(uint64_t old, uint64_t new)
+{
+    return new <= old || gles_buffer_bytes + gles_held_bytes + (new - old) <= GLES_MAX_GPU_BYTES;
+}
 
 /*
  * Grow-and-keep scratch of at least n bytes in *buf, or NULL past
@@ -381,6 +400,7 @@ typedef struct {
 #endif
     unsigned refs;
     GHashTable *buffers, *surfaces, *rb_sized, *pvrtc;
+    GHashTable *charged;        /* gles_charge_key -> bytes, the group's named objects */
     uint32_t next_buffer_name;
     GHashTable *glsl;           /* guest shader/program id -> host id */
     uint32_t glsl_next;
@@ -390,6 +410,9 @@ typedef struct {
 typedef struct {
     GLESGroup *group;
     GHashTable *surfaces, *pvrtc;
+    /* gles_charge_key -> bytes: named objects (the group's table, when there is
+     * one), and this context's own texture 0 and drawable. */
+    GHashTable *charged, *own_charged;
     GLESPVRTC default_pvrtc;
     bool inited;
     bool failed;
@@ -648,6 +671,136 @@ int gles_host_context_count(void)
 static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
 #define gh (*gh_current)
+
+/* ---------------------------------------------------------- GPU memory ----
+ *
+ * Each image the host stores for the guest (a texture level of one face, a
+ * renderbuffer's storage, a context's drawable) is charged in a table, so that
+ * replacing it charges the difference and deleting it gives its bytes back.
+ * The chain glGenerateMipmap or GL_GENERATE_MIPMAP adds is not charged (a third
+ * of level 0 at most). */
+enum { GLES_CHARGE_TEXTURE = 1, GLES_CHARGE_RENDERBUFFER, GLES_CHARGE_DRAWABLE };
+QEMU_BUILD_BUG_ON(sizeof(gpointer) < sizeof(uint64_t));
+
+/* An image's key: its object's kind and name, a cube face (1-6, else 0) and a level. */
+static gpointer gles_charge_key(unsigned kind, uint32_t name, unsigned face, uint32_t level)
+{
+    return (gpointer)(uintptr_t)((uint64_t)name << 16 | kind << 8 | (face & 15) << 4 | MIN(level, 15u));
+}
+
+/* Where an image is charged: the share group's table for a named object, the
+ * context's own for its texture 0 and its drawable. */
+static GHashTable *gles_charge_table(bool own)
+{
+    GHashTable **table = own ? &gh.own_charged : &gh.charged;
+
+    if (!*table) *table = g_hash_table_new(g_direct_hash, g_direct_equal);
+    return *table;
+}
+
+/* The image at `key` holds `bytes` from now on, in place of what it held (0
+ * forgets it); *old, if given, gets what that was. False, with nothing
+ * changed, when the total would pass GLES_MAX_GPU_BYTES: the caller fails the
+ * call with GL_OUT_OF_MEMORY instead of allocating. */
+static bool gles_charge(GHashTable *table, gpointer key, uint64_t bytes, uint64_t *old)
+{
+    static uint64_t reported;   /* the largest total logged, in 64 MiB steps */
+    uint64_t held = (uintptr_t)g_hash_table_lookup(table, key);
+
+    if (old) *old = held;
+    if (!gles_budget_ok(held, bytes)) {
+        if (gles_refuse("cap:gpu-memory")) {
+            fprintf(stderr, "[gles] GL objects hold %" PRIu64 " MiB; %" PRIu64 " bytes more would pass the "
+                    "%" PRIu64 " MiB cap: GL_OUT_OF_MEMORY\n", (gles_held_bytes + gles_buffer_bytes) >> 20,
+                    bytes - held, GLES_MAX_GPU_BYTES >> 20);
+        }
+        return false;
+    }
+    gles_held_bytes = gles_held_bytes - held + bytes;
+    if (bytes) g_hash_table_insert(table, key, (gpointer)(uintptr_t)bytes);
+    else g_hash_table_remove(table, key);
+    if ((gles_held_bytes + gles_buffer_bytes) >> 26 > reported) {
+        reported = (gles_held_bytes + gles_buffer_bytes) >> 26;
+        fprintf(stderr, "[gles] GL objects hold %" PRIu64 " MiB (cap %" PRIu64 " MiB)\n",
+                (gles_held_bytes + gles_buffer_bytes) >> 20, GLES_MAX_GPU_BYTES >> 20);
+    }
+    return true;
+}
+
+/* Gives back every image a table holds and frees it. */
+static void gles_charge_free(GHashTable *table)
+{
+    GHashTableIter it;
+    gpointer value;
+
+    if (!table) return;
+    g_hash_table_iter_init(&it, table);
+    while (g_hash_table_iter_next(&it, NULL, &value)) gles_held_bytes -= (uintptr_t)value;
+    g_hash_table_destroy(table);
+}
+
+/* Gives back the images of the textures `ids` names (every face and level). */
+static void gles_charge_forget_textures(const uint32_t *ids, uint32_t n)
+{
+    g_autoptr(GHashTable) names = g_hash_table_new(g_direct_hash, g_direct_equal);
+    GHashTableIter it;
+    gpointer key, value;
+
+    if (!gh.charged) return;
+    for (uint32_t i = 0; i < n; i++) {
+        if (ids[i]) g_hash_table_add(names, GUINT_TO_POINTER(ids[i]));
+    }
+    g_hash_table_iter_init(&it, gh.charged);
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+        uint64_t k = (uintptr_t)key;
+        if ((k >> 8 & 0xff) == GLES_CHARGE_TEXTURE &&
+            g_hash_table_contains(names, GUINT_TO_POINTER((uint32_t)(k >> 16)))) {
+            gles_held_bytes -= (uintptr_t)value;
+            g_hash_table_iter_remove(&it);
+        }
+    }
+}
+
+/* A context's drawable: its color and depth-stencil storage and its readback. */
+static bool gles_charge_drawable(uint32_t width, uint32_t height, uint64_t *old)
+{
+    return gles_charge(gles_charge_table(true), gles_charge_key(GLES_CHARGE_DRAWABLE, 0, 0, 0),
+                       (uint64_t)width * height * 12, old);
+}
+
+/* The last gles_charge_texture, which gles_texture_end takes back if the host refuses the upload. */
+static struct {
+    GHashTable *table;
+    gpointer key;
+    uint64_t old;
+} gles_tex_charge;
+
+/* Charges a glTexImage2D-like upload of `bytes` into `level` of the texture bound
+ * on `target`. False past the budget: fail the call with GL_OUT_OF_MEMORY. */
+static bool gles_charge_texture(uint32_t target, uint32_t level, uint64_t bytes)
+{
+    GLint name = 0;
+    unsigned face = 0;
+
+    if (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+        face = target - GL_TEXTURE_CUBE_MAP_POSITIVE_X + 1;
+        glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &name);
+#ifndef GLES_HOST_EAGL
+    } else if (target == GL_TEXTURE_RECTANGLE_ARB) {
+        face = 7;
+        glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &name);
+#endif
+    } else {
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &name);
+    }
+    gles_tex_charge.table = gles_charge_table(!name);
+    gles_tex_charge.key = gles_charge_key(GLES_CHARGE_TEXTURE, name, face, level);
+    if (!gles_charge(gles_tex_charge.table, gles_tex_charge.key, bytes, &gles_tex_charge.old)) {
+        gles_tex_charge.table = NULL;
+        return false;
+    }
+    return true;
+}
 
 /*
  * Profiling and strictness switches, read once.
@@ -979,6 +1132,9 @@ static bool gles_host_init(void)
     if (ipod && ipod->lcd_state) {
         gles_fb_w = ipod->lcd_state->pw;
         gles_fb_h = ipod->lcd_state->ph;
+    }
+    if (!gles_charge_drawable(GLES_FB_WIDTH, GLES_FB_HEIGHT, NULL)) {
+        return false;       /* not failed: a later call may find the memory given back */
     }
 
     bool legacy = gh_current == &gh_legacy;
@@ -3997,6 +4153,10 @@ static int64_t gles_texture_end(uint32_t target, uint32_t level,
 {
     GLenum error = glGetError();
     gles_surface_forget(target);        /* a detached surface's pixels are no longer the texture's */
+    if (error && gles_tex_charge.table) {
+        gles_charge(gles_tex_charge.table, gles_tex_charge.key, gles_tex_charge.old, NULL);
+    }
+    gles_tex_charge.table = NULL;
     if (error) {
         gles_refuse("upload-error:0x%x:0x%x", target, error);
         return gles_reject(error);
@@ -4091,6 +4251,9 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
         memset(dst, 0, (size_t)w * h * 4);
     }
     gles_report_decode(format, w, h, dst);
+    if (!replace && !gles_charge_texture(target, level, (uint64_t)w * h * 4)) {
+        return gles_reject(GL_OUT_OF_MEMORY);
+    }
     gles_texture_begin();
     gles_unpack_tight();
     if (replace) {
@@ -4114,6 +4277,7 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     GLuint color = 0, depth = 0, fbo = 0;
     GLenum error, status;
     uint8_t *readback;
+    uint64_t charged;
 
     if (!width || !height || width > 2048 || height > 2048) {
         gles_refuse("drawable:size:%ux%u", width, height);
@@ -4121,8 +4285,12 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     }
     gh.drawable_announced = true;
     if (width == gh.drawable_width && height == gh.drawable_height) return 0;
+    if (!gles_charge_drawable(width, height, &charged)) {
+        return gles_reject(GL_OUT_OF_MEMORY);
+    }
     readback = g_try_malloc0_n((size_t)width * height, 4);
     if (!readback) {
+        gles_charge(gles_charge_table(true), gles_charge_key(GLES_CHARGE_DRAWABLE, 0, 0, 0), charged, NULL);
         gles_refuse("drawable:memory");
         return gles_reject(GL_OUT_OF_MEMORY);
     }
@@ -4175,6 +4343,7 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
         glDeleteRenderbuffersEXT(1, &depth);
         glDeleteFramebuffersEXT(1, &fbo);
         g_free(readback);
+        gles_charge(gles_charge_table(true), gles_charge_key(GLES_CHARGE_DRAWABLE, 0, 0, 0), charged, NULL);
     }
     glBindTexture(GL_TEXTURE_2D, texture);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, renderbuffer);
@@ -4532,6 +4701,10 @@ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
     default:                    break;                  /* 'BGRA', and NV12 already converted to it */
     }
     gles_unpack_tight();
+    if (!gles_charge_texture(target, 0, (uint64_t)w * h * 4)) {
+        gles_debug_texture(target);
+        return gles_reject(GL_OUT_OF_MEMORY);
+    }
     gles_texture_begin();
     glTexImage2D(target, 0, GL_RGBA, w, h, 0, glfmt, type, pixels);
     if (gles_texture_end(target, 0, (GLESPVRTCLevel){0})) {
@@ -4653,6 +4826,8 @@ static bool gles_surface_copy(GLuint from, const GLESSurface *src, GLuint to, GL
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &read_fb);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT, &draw_fb);
     glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+    if (!gles_charge_texture(target, 0, (uint64_t)src->width * src->height * 4)) return false;
+    gles_tex_charge.table = NULL;   /* kept whatever the copy does: the storage is made */
     gles_texture_begin();
     glTexImage2D(target, 0, GL_RGBA, src->width, src->height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
     /* the writeback's scratch framebuffer reads, a second one draws (bound first, so it is in use) */
@@ -6115,6 +6290,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 return -1;
             }
         }
+        if (!gles_charge_texture(target, level, (uint64_t)w * h * bpp)) {
+            gles_debug_texture(target);
+            return gles_reject(GL_OUT_OF_MEMORY);
+        }
         /* The staging buffer, guest texels or zeros, reproduces the guest's
          * row layout verbatim, so the host unpacks it with that layout. */
         gles_unpack_apply(&unpack);
@@ -6308,6 +6487,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 gles_palette_level(src, ptype, src + consumed, idx_bits,
                                    entry_bytes, lw, lh, dst);
                 gles_report_decode(ifmt, lw, lh, dst);
+                if (!gles_charge_texture(target, lv, (uint64_t)lw * lh * 4)) {
+                    if (!lv) gles_debug_texture(target);
+                    return gles_reject(GL_OUT_OF_MEMORY);
+                }
                 gles_texture_begin();
                 glTexImage2D(target, lv, GL_RGBA, lw, lh, 0, GL_RGBA,
                              GL_UNSIGNED_BYTE, dst);
@@ -6372,6 +6555,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 g_hash_table_remove(gh.pvrtc, GUINT_TO_POINTER(ids[i]));
             }
         }
+        gles_charge_forget_textures(ids, n);
         glDeleteTextures(n, ids);
         return 0;
     }
@@ -6449,8 +6633,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gles_refuse("buffer:unbound:0x%x", a[0]);
             return -1;
         }
-        if (n > GLES_MAX_BUFFER_BYTES ||
-            gles_buffer_bytes - b->size + n > GLES_MAX_BUFFER_TOTAL) {
+        if (n > GLES_MAX_BUFFER_BYTES || !gles_budget_ok(b->size, n)) {
             gles_refuse("cap:glBufferData");
             return gles_reject(GL_OUT_OF_MEMORY);
         }
@@ -7112,6 +7295,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          * This is how an app builds a texture out of what it just drew, and
          * dropping it left the texture with no storage at all -- which an FBO
          * it is attached to then reports as INCOMPLETE. */
+        if ((uint64_t)a[5] * a[6] * 4 > GLES_MAX_TEX_BYTES) {
+            gles_refuse("cap:glCopyTexImage2D");
+            return gles_reject(GL_INVALID_VALUE);
+        }
+        if (!gles_charge_texture(a[0], a[1], (uint64_t)a[5] * a[6] * 4)) {
+            return gles_reject(GL_OUT_OF_MEMORY);
+        }
         gles_texture_begin();
         glCopyTexImage2D(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
         return gles_texture_end(a[0], a[1], (GLESPVRTCLevel){0});
@@ -7467,14 +7657,33 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(a[1]));
         return 0;
 
-    case GLES_SLOT_RENDERBUFFER_STORAGE: /* target, internalformat, w, h */
+    case GLES_SLOT_RENDERBUFFER_STORAGE: { /* target, internalformat, w, h */
+        GHashTable *table = gles_charge_table(false);
+        gpointer key = gles_charge_key(GLES_CHARGE_RENDERBUFFER, gh.bound_renderbuffer, 0, 0);
+        uint64_t old, bytes = (uint64_t)a[2] * a[3] * 4;
+        GLenum error;
+
+        if (bytes > GLES_MAX_TEX_BYTES) {
+            gles_refuse("cap:glRenderbufferStorage");
+            return gles_reject(GL_INVALID_VALUE);
+        }
+        if (!gles_charge(table, key, bytes, &old)) {
+            return gles_reject(GL_OUT_OF_MEMORY);
+        }
         /* Storage through GL means this is NOT the drawable; the drawable gets
          * its own from -renderbufferStorage:fromDrawable:, outside GL. */
         g_hash_table_add(gh.rb_sized,
                          GUINT_TO_POINTER(gh.bound_renderbuffer));
+        gles_texture_begin();
         glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT,
                                  gles_rb_format(a[1]), a[2], a[3]);
+        error = glGetError();
+        if (error) {
+            gles_charge(table, key, old, NULL);
+            return gles_reject(error);
+        }
         return 0;
+    }
 
     case GLES_SLOT_FB_RENDERBUFFER: {    /* target, attach, rbtarget, rb */
         uint32_t attach = a[1], rb = a[3];
@@ -7554,6 +7763,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (slot == GLES_SLOT_DELETE_RENDERBUFFERS) {
             for (i = 0; i < n; i++) {
                 g_hash_table_remove(gh.rb_sized, GUINT_TO_POINTER(ids[i]));
+                if (ids[i]) {
+                    gles_charge(gles_charge_table(false),
+                                gles_charge_key(GLES_CHARGE_RENDERBUFFER, ids[i], 0, 0), 0, NULL);
+                }
             }
             glDeleteRenderbuffersEXT(n, ids);
         } else {
@@ -7682,6 +7895,7 @@ static void gles_group_unref(GLESGroup *group)
     g_hash_table_destroy(group->surfaces);
     g_hash_table_destroy(group->rb_sized);
     g_hash_table_destroy(group->pvrtc);
+    gles_charge_free(group->charged);
     if (group->glsl) g_hash_table_destroy(group->glsl);
     if (group->uloc) g_hash_table_destroy(group->uloc);
     g_free(group);
@@ -7725,7 +7939,9 @@ static void gles_context_free(GLESHost *state)
         if (state->surfaces) g_hash_table_destroy(state->surfaces);
         if (state->rb_sized) g_hash_table_destroy(state->rb_sized);
         if (state->pvrtc) g_hash_table_destroy(state->pvrtc);
+        gles_charge_free(state->charged);
     }
+    gles_charge_free(state->own_charged);
     if (gh_current == state) gh_current = &gh_legacy;
     if (state == &gh_legacy) memset(state, 0, sizeof(*state));
     else g_free(state);
@@ -7747,6 +7963,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         group->surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
         group->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
         group->pvrtc = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        group->charged = g_hash_table_new(g_direct_hash, g_direct_equal);
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), group);
         return handle;
@@ -7765,6 +7982,7 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         state->surfaces = group->surfaces;
         state->rb_sized = group->rb_sized;
         state->pvrtc = group->pvrtc;
+        state->charged = group->charged;
         uint32_t handle = ++gles_handle;
         g_hash_table_insert(gles_contexts, GUINT_TO_POINTER(handle), state);
         if (trace_event_get_state_backends(TRACE_GLES_CONTEXT_LOG)) TRACE_PRINTF(trace_gles_context_log, "[gles-context] created %08x %p api=%u\n", handle, (void *)state, state->api_version);
