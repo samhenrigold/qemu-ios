@@ -198,3 +198,30 @@ submission without desktop rewriting, API-specific FBO/state handling, then
 successful compositor, surface, snapshot and app-corpus comparisons. The
 observed failures do not justify a shipping backend switch or a code reduction
 claim.
+
+## ES 2.0 execution, 2026-10-21
+
+ANGLE moves to `3d5feae4378fee3404431223d908446041348761` (main on 2026-10-21) with depot_tools
+`9cb87e7cca51147a3b8f39033e561736f8460652`; the probes above pass on it unchanged.
+
+A guest context created with API 2 now gets its own ANGLE context created for ES 2.0 (ANGLE gives
+ES 3.0), and API 0 or 1 an ES 1.1 one: ANGLE runs no fixed function in a programmable context and
+no shaders in an ES1 one, which CGL's legacy context does in one. The ES 2.0 slots are the same
+executor code as on CGL; what differs is in `gles-host-angle.c.inc` and a few guards:
+
+- Framebuffer objects are core in an ES 2.0 context and `OES_framebuffer_object` in an ES1 one,
+  and ANGLE takes each name only in its own API, so the executor's OES names pick by the current
+  context (without this the drawable was incomplete and the context failed).
+- Guest GLSL goes to ANGLE as the guest wrote it, not through the desktop 1.20 rewrite.
+- `glTexImage2D` with the executor's RGBA storage for BGRA, RGB, alpha or luminance texels stores
+  them in their own format, as ES requires; each samples as from RGBA storage.
+- APPLE_fence is NV_fence (set to all completed); `glTestObjectAPPLE` on anything but a fence is
+  true, since the executor copies guest texels and arrays at each call.
+- The bridge's own ES1 checks of a draw, and its count of texture units to refresh, use ES 2.0's
+  names in a programmable context (`gles_fixed_host()`).
+
+`tests/ipad1/angle-executor-context.sh` and `tests/ipad1/angle-slice.sh ANGLE-CHECKOUT` (slices of
+gles-host.c built for ANGLE, as tests/slice builds them for CGL) check these. With the ES 2.0
+context, CoreAnimation composites through ANGLE on k48ap 7B500, n81ap 10B500 and n90ap 11D257 with
+no refusals (LightTouchMac `sessions single --gl`); the CGL build's gles-host.c object is
+byte-identical to before.

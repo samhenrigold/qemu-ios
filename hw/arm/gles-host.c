@@ -77,8 +77,8 @@
 #define GL_GLEXT_PROTOTYPES 1
 #include <GLES/gl.h>
 #include <GLES/glext.h>
-/* Shared wire validation also names ES2/3 and desktop pixel enums; this
- * does not enable programmable draws on the experimental ES1 executor. */
+/* The ES 2.0 slots run in a guest ES 2.0 context's own ANGLE context, and shared
+ * wire validation also names ES3 and desktop pixel enums. */
 #include <GLES3/gl3.h>
 #define GL_UNSIGNED_SHORT_4_4_4_4_REV 0x8365
 #define GL_UNSIGNED_SHORT_1_5_5_5_REV 0x8366
@@ -186,6 +186,13 @@ void gles_eagl_iosurface_unlock(void);
 
 #define GLES_BGRA_READ_TYPE           GL_UNSIGNED_INT_8_8_8_8_REV
 
+#endif
+
+/* Whether the current host context has ES 1.1's fixed-function state. CGL's legacy context has both
+ * pipelines in one; an ANGLE context has one or the other (gles-host-angle.c.inc), and the ES1
+ * queries and switches the bridge's own checks use are errors in a programmable one. */
+#ifndef gles_fixed_host
+#define gles_fixed_host() true
 #endif
 
 /* The physical LCD remains portrait. Individual CA drawables can be landscape
@@ -725,10 +732,10 @@ static inline uint64_t gles_t(void)
 
 static bool gles_platform_context_create(void)
 {
-    if (!gles_angle_create(gh.group ? gh.group->root : NULL, &gh.cgl)) return false;
+    if (!gles_angle_create(gh.group ? gh.group->root : NULL, gh.api_version == 2, &gh.cgl)) return false;
     if (gh.group && !gh.group->root) gh.group->root = CGLRetainContext(gh.cgl);
     if (CGLSetCurrentContext(gh.cgl) != 0) return false;
-    fprintf(stderr, "[gles-angle] prototype ES1 context api=%u renderer=%s version=%s\n",
+    fprintf(stderr, "[gles-angle] context api=%u renderer=%s version=%s\n",
             gh.api_version, glGetString(GL_RENDERER), glGetString(GL_VERSION));
     return true;
 }
@@ -2392,7 +2399,7 @@ static void gles_check_texcoords(void)
 {
     static bool warned;
 
-    if (warned || !glIsEnabled(GL_TEXTURE_2D) || gles_texcoord_mask()) {
+    if (warned || !gles_fixed_host() || !glIsEnabled(GL_TEXTURE_2D) || gles_texcoord_mask()) {
         return;
     }
     warned = true;
@@ -2517,7 +2524,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
          * multiplying itself away (color or blend), and only the per-draw
          * state says which.
          */
-        if (gh.draws_offscreen <= 16) {
+        if (gh.draws_offscreen <= 16 && gles_fixed_host()) {
             GLint tex = 0, sb = 0, db = 0;
             GLfloat col[4] = { 0, 0, 0, 0 };
 
@@ -2533,7 +2540,7 @@ static void gles_check_draw(const char *what, uint32_t mode, uint32_t count)
                     sb, db, glIsEnabled(GL_LIGHTING), gles_texcoord_mask());
         }
     }
-    if (!gh.vis_captured) {
+    if (!gh.vis_captured && gles_fixed_host()) {
         gh.vis_captured = true;
         glGetFloatv(GL_PROJECTION_MATRIX, gh.vis_proj);
         glGetFloatv(GL_MODELVIEW_MATRIX, gh.vis_mv);
@@ -4976,7 +4983,7 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
 #endif
     };
     glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-    glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
+    glGetIntegerv(gles_fixed_host() ? GL_MAX_TEXTURE_UNITS : GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &units);
     glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
         GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
     if (kind == GL_TEXTURE) glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
@@ -5550,7 +5557,11 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
             g_autofree char *part = gles_es2_string(cpu, strs[i], lens ? lens[i] : -1);
             g_string_append_len(src, part, MIN(strlen(part), GLES_MAX_STRING - src->len));
         }
+#ifdef GLES_HOST_ANGLE
+        glsl = g_strdup(src->str);              /* an ES host compiles ES GLSL as it is */
+#else
         glsl = gles_es2_glsl(src->str);
+#endif
         g_string_free(src, true);
         p = glsl;
         glShaderSource(a[0], 1, &p, NULL);
@@ -7017,7 +7028,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         else glGetTexParameterfv(a[0], a[1], p);
         return gles_write_xparams(cpu, a[2], a[1], n, p);
     }
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     case 774: case 775: {                       /* glGetClipPlanef/x(plane, equation[4]) */
         double d[4] = { 0 };
         float p[4];
@@ -7744,12 +7755,6 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
         if ((argc != 1 && argc != 2) || gles_handle == UINT32_MAX ||
             g_hash_table_size(gles_contexts) >= GLES_MAX_CONTEXTS) return -1;
         if (argc == 2 && args[1] != 1 && args[1] != 2) return -1;
-#ifdef GLES_HOST_ANGLE
-        if (argc == 2 && args[1] != 1) {
-            gles_refuse("angle:es2-not-implemented");
-            return -2;
-        }
-#endif
         GLESGroup *group = g_hash_table_lookup(gles_groups, GUINT_TO_POINTER(args[0]));
         if (!group) return -1;
         if (!gles_begin_context()) return -1;

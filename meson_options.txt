@@ -393,4 +393,4 @@ option('rust', type: 'feature', value: 'disabled',
 option('strict_rust_lints', type: 'boolean', value: false,
        description: 'Enable stricter set of Rust warnings')
 
-option('ltm_angle_prefix', type: 'string', value: '', description: 'Experimental ES1 ANGLE build prefix (same guest executor, no snapshots)')
+option('ltm_angle_prefix', type: 'string', value: '', description: 'Experimental ANGLE build prefix (same guest executor, no snapshots)')

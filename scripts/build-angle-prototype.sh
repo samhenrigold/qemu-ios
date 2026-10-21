@@ -15,8 +15,8 @@ fetch() {
     git -C "$1" fetch --depth 1 origin "$3"
     git -C "$1" checkout --detach FETCH_HEAD
 }
-fetch "$DEST/angle" https://github.com/google/angle.git 8cd050f07ebd65cce269fc92e36699fc03b20ac3
-fetch "$DEST/depot_tools" https://chromium.googlesource.com/chromium/tools/depot_tools.git 9b264039190fa270f3fc44779b4e26b43008ba41
+fetch "$DEST/angle" https://github.com/google/angle.git 3d5feae4378fee3404431223d908446041348761
+fetch "$DEST/depot_tools" https://chromium.googlesource.com/chromium/tools/depot_tools.git 9cb87e7cca51147a3b8f39033e561736f8460652
 export PATH="$DEST/depot_tools:$PATH" DEPOT_TOOLS_UPDATE=0
 cat > "$DEST/.gclient" <<'EOF'
 solutions=[{"name":"angle","url":"https://github.com/google/angle.git","managed":False,"custom_deps":{},"custom_vars":{"checkout_angle_cl_deps":False,"checkout_angle_dawn_deps":False,"checkout_angle_internal":False,"checkout_angle_restricted_traces":False,"checkout_angle_mesa":False,"download_remoteexec_cfg":False}}]

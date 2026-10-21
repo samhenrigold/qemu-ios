@@ -10,7 +10,8 @@
 #   SLICE[:GROUP] PATH define ERE          every `#define` line whose name matches ^(ERE)
 #   SLICE[:GROUP] PATH range START | END   the text from START up to (not including) END; \n is a newline
 #   SLICE[:GROUP] PATH file                the whole file
-#   CFLAGS ...                             extra compiler flags; PKG NAME... adds pkg-config --cflags --libs ($ROOT is the tree in both)
+#   CFLAGS ...                             extra compiler flags; PKG NAME... adds pkg-config --cflags --libs ($ROOT is the tree in both,
+#                                          $ANGLE in CFLAGS the ANGLE checkout tests/ipad1/angle-slice.sh names)
 #   VARIANT ...                            build and run once per VARIANT line, with these flags added
 # The slices go, in directive order, into GROUP.h (default slice.h) for the test to #include. PATH is relative to
 # the tree. The check passes when it builds and every run exits 0 (UBSan halts on the first report).
@@ -66,7 +67,7 @@ while IFS= read -r line; do
             read -r head path kind rest <<<"$line"
             group="${head#SLICE}"; group="${group#:}"
             { echo "// $path $kind $rest"; cut "$path" "$kind" $rest; echo; } >> "$TMP/${group:-slice}.h" ;;
-        CFLAGS\ *) read -r -a more <<<"${line#CFLAGS }"; flags+=("${more[@]//\$ROOT/$ROOT}") ;;
+        CFLAGS\ *) read -r -a more <<<"${line#CFLAGS }"; more=("${more[@]//\$ROOT/$ROOT}"); flags+=("${more[@]//\$ANGLE/${ANGLE:-}}") ;;
         PKG\ *) line="${line#PKG }"; read -r -a more <<<"$(pkg-config --cflags --libs ${line//\$ROOT/$ROOT})"; flags+=("${more[@]}") ;;
         VARIANT\ *|VARIANT) variants+=("${line#VARIANT}") ;;
     esac
