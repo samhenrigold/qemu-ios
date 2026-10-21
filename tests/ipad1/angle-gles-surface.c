@@ -1,5 +1,6 @@
 /* The GL bridge built for ANGLE, against real ANGLE Metal contexts: a sampled surface refreshes from guest memory
- * in an ES 2.0 context as in an ES1 one, and the bridge's own checks of a draw raise no GL error in either.
+ * in an ES 2.0 context as in an ES1 one, the bridge's own checks of a draw raise no GL error in either, and a
+ * surface bound at GL_TEXTURE_RECTANGLE (2.x and 3.x CoreAnimation's) samples by texel and takes rendering.
  * Run by tests/ipad1/angle-slice.sh.
  *
  * SLICE:gles-prelude hw/arm/gles-host.c range #include <TargetConditionals.h> | /* Old guest engines retain
@@ -11,6 +12,7 @@
  * SLICE:helpers hw/arm/gles-host.c range static bool gles_surface_range( | /* ------------------------------------------------------------ ES 2.0
  * SLICE:draw hw/arm/gles-host.c fn gles_is_drawable gles_host_fbo gles_texcoord_mask gles_check_texcoords
  * SLICE:draw hw/arm/gles-host.c fn gles_check_fb_complete gles_check_draw
+ * SLICE:draw hw/arm/gles-host.c range static const GLint gles_compressed_formats[] = { | static bool gles_is_pvrtc(
  * CFLAGS -DGLES_HOST_ANGLE=1 -I$ANGLE/include -L$ANGLE/out/ltm-metal -Wl,-rpath,$ANGLE/out/ltm-metal -lEGL -lGLESv2
  * CFLAGS -I$ROOT/include -I$ROOT/hw/arm -Wno-pointer-to-int-cast -Wno-pointer-bool-conversion
  * PKG glib-2.0
@@ -138,8 +140,88 @@ static void check_draw(bool es2)
     CGLReleaseContext(c);
 }
 
+/* A 4x2 surface at the rectangle target, drawn texel for texel by coordinates in texels through a guest texture
+ * matrix (a half-texel shift), and the 2D state the draw borrowed put back. */
+static void rectangle(void)
+{
+    GLESAngleContextRef c;
+    GLuint dst, fb, src, plain;
+    GLint v = 0;
+    GLfloat m[16];
+    uint8_t got[32];
+    uint32_t a[] = { GL_TEXTURE_RECTANGLE_ARB, 0x10000000, 16, 4, 2, GLES_SURFACE_BGRA32, 0, 0 };
+    static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+    static const GLfloat texels[] = { -0.5, -0.5, 3.5, -0.5, -0.5, 1.5, 3.5, 1.5 };
+
+    memset(&gh, 0, sizeof(gh));
+    assert(gles_angle_create(NULL, false, &c) && !CGLSetCurrentContext(c));
+    gh.cgl = c;
+    gh.surfaces = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    memset(ram, 0, sizeof(ram));
+    for (int i = 0; i < 8; i++) {
+        uint8_t px[4] = { 30 * i, 255 - 30 * i, 17 * i, 255 };
+        memcpy(ram + i * 4, px, 4);
+    }
+    glGenTextures(1, &dst);
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffersOES(1, &fb);
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES, fb);
+    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES, GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_2D, dst, 0);
+    glViewport(0, 0, 4, 2);
+    glGenTextures(1, &plain);
+    glBindTexture(GL_TEXTURE_2D, plain);        /* the unit's 2D binding, which the draw leaves alone */
+    glGenTextures(1, &src);
+    glBindTexture(GL_TEXTURE_RECTANGLE_ARB, src);
+    assert(!gles_bind_surface(NULL, a, 0));
+    glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGetTexParameteriv(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, &v);
+    assert(v == GL_CLAMP_TO_EDGE);
+    glEnable(GL_TEXTURE_RECTANGLE_ARB);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glMatrixMode(GL_TEXTURE);
+    glTranslatef(0.5, 0.5, 0);
+    glMatrixMode(GL_MODELVIEW);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, quad);
+    glTexCoordPointer(2, GL_FLOAT, 0, texels);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(0, 0, 4, 2, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    for (int i = 0; i < 8; i++) {
+        assert(got[i * 4] == 17 * i && got[i * 4 + 1] == 255 - 30 * i && got[i * 4 + 2] == 30 * i);
+    }
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &v);
+    assert(v == (GLint)plain && !glIsEnabled(GL_TEXTURE_2D) && glIsEnabled(GL_TEXTURE_RECTANGLE_ARB));
+    glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &v);
+    assert(v == (GLint)src);
+    glMatrixMode(GL_TEXTURE);
+    glGetFloatv(GL_TEXTURE_MATRIX, m);
+    assert(m[0] == 1 && m[5] == 1 && m[12] == 0.5f && m[13] == 0.5f);
+    /* The guest's DMA into it, at a draw's refresh; the guest may ask for the rectangle's binding and limit. */
+    for (int i = 0; i < 8; i++) memcpy(ram + i * 4, "\x40\x50\x60\xff", 4);
+    glMatrixMode(GL_MODELVIEW);
+    assert(gles_refresh_surfaces(NULL));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glReadPixels(0, 0, 4, 2, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    for (int i = 0; i < 8; i++) assert(!memcmp(got + i * 4, "\x60\x50\x40\xff", 4));
+    assert(gles_query_count(GL_TEXTURE_BINDING_RECTANGLE_ARB) == 1 && gles_query_count(GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB) == 1);
+    /* A detached copy at the rectangle is forgotten when the guest uploads into it. */
+    ((GLESSurface *)g_hash_table_lookup(gh.surfaces, GUINT_TO_POINTER(src)))->detached = true;
+    gles_surface_forget(GL_TEXTURE_RECTANGLE_ARB);
+    assert(!g_hash_table_size(gh.surfaces));
+    /* Rendering into the rectangle texture: CoreAnimation's offscreen layers. */
+    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES, GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_RECTANGLE_ARB, src, 0);
+    assert(glCheckFramebufferStatusOES(GL_FRAMEBUFFER_OES) == GL_FRAMEBUFFER_COMPLETE_OES);
+    assert(glGetError() == GL_NO_ERROR && !gles_rejects);
+    g_hash_table_destroy(gh.surfaces);
+    CGLSetCurrentContext(NULL);
+    CGLReleaseContext(c);
+}
+
 int main(void)
 {
+    rectangle();
     refresh(false);
     refresh(true);
     check_draw(true);           /* first: gles_check_texcoords warns once */

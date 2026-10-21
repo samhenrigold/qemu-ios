@@ -2034,7 +2034,7 @@ static unsigned gles_query_count(uint32_t pname)
     case GL_MAX_MODELVIEW_STACK_DEPTH:
     case GL_MAX_PROJECTION_STACK_DEPTH:
     case GL_MAX_TEXTURE_SIZE:
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     case GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB:
     case GL_TEXTURE_BINDING_RECTANGLE_ARB:
 #endif
@@ -4629,7 +4629,7 @@ static void gles_surface_forget(GLenum target)
     GLESSurface *s;
 
     if (!gh.surfaces) return;
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
     if (target == GL_TEXTURE_RECTANGLE_ARB) {
         glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &name);
     } else
@@ -4692,7 +4692,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
     GLenum binding = GL_TEXTURE_BINDING_2D;
     g_autofree uint8_t *pixels = NULL;
     if (target != GL_TEXTURE_2D) {
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
         if (target != GL_TEXTURE_RECTANGLE_ARB) {
             gles_refuse("surface:target:0x%x", target);
             return -1;
@@ -4973,12 +4973,12 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
     if (!gh.surfaces || !g_hash_table_size(gh.surfaces)) return true;
     GLint active, units = 0, kind = 0, attachment = 0;
     GLenum targets[] = { GL_TEXTURE_2D,
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
         GL_TEXTURE_RECTANGLE_ARB,
 #endif
     };
     GLenum bindings[] = { GL_TEXTURE_BINDING_2D,
-#ifndef GLES_HOST_EAGL
+#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
         GL_TEXTURE_BINDING_RECTANGLE_ARB,
 #endif
     };

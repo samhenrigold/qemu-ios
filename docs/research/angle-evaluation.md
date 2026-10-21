@@ -225,3 +225,16 @@ gles-host.c built for ANGLE, as tests/slice builds them for CGL) check these. Wi
 context, CoreAnimation composites through ANGLE on k48ap 7B500, n81ap 10B500 and n90ap 11D257 with
 no refusals (LightTouchMac `sessions single --gl`); the CGL build's gles-host.c object is
 byte-identical to before.
+
+### Rectangle textures and the other desktop-only paths
+
+2.x and 3.x CoreAnimation composites with `GL_TEXTURE_RECTANGLE` (APPLE_texture_rectangle, which
+the guest front end offers), which ES has no target for, so n72ap 7E18 did not boot on ANGLE. A
+rectangle texture is now a 2D one in `gles-host-angle.c.inc`: the rectangle binding and enable are
+the context's own per unit, an operation on the target runs on that texture bound at 2D for the
+call, a new one takes a rectangle's defaults, and a draw (ES1) samples each unit's rectangle where
+it is on with the texture matrix scaled by 1/width and 1/height, putting the matrix and the unit's
+2D state back after. gles-host.c's rectangle paths (surface binds, refresh, the queries) are open
+to ANGLE. The other desktop-only paths need nothing more: immediate mode and attribute stacks are
+only in CGL's own `gles_draw_tex` and the debug mark (ANGLE takes the ES host's native
+`glDrawTexfOES`), and fences are NV_fence (above).
