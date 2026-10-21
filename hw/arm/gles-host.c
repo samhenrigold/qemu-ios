@@ -65,9 +65,6 @@
  * Nothing here is a reimplementation; each shim below is a rename.
  */
 #include <TargetConditionals.h>
-#if !TARGET_OS_IPHONE
-#include <VideoToolbox/VideoToolbox.h>
-#endif
 
 #if TARGET_OS_IPHONE || defined(GLES_HOST_ANGLE)
 #define GLES_HOST_EAGL 1
@@ -4199,32 +4196,37 @@ static bool gles_surface_read(CPUState *cpu, uint32_t base, uint32_t stride,
 }
 
 #ifndef GLES_HOST_EAGL
-static bool gles_surface_nv12(unsigned w, unsigned h, OSType format,
-                              uint8_t *input, uint8_t *bgra)
+/* NV12 to BGRA, ITU-R BT.601 in 16.16 fixed point, each chroma sample covering its 2x2 block: what
+ * VTPixelTransferSession made of '420v' (video range) and '420f' (full range), within 1 per channel
+ * (0.55% and 0.49% of all Y, Cb, Cr combinations differ by 1). Its full range scales chroma by 256/255,
+ * and both round a little high (the biases). */
+static bool gles_surface_nv12(unsigned w, unsigned h, uint32_t format,
+                              const uint8_t *input, uint8_t *bgra)
 {
-    CVPixelBufferRef source = NULL, dest = NULL;
-    VTPixelTransferSessionRef transfer = NULL;
-    void *planes[] = { input, input + (size_t)w * h };
-    size_t widths[] = { w, w / 2 }, heights[] = { h, h / 2 };
-    size_t strides[] = { w, w };
-    bool ok = false;
-    if (CVPixelBufferCreateWithPlanarBytes(NULL, w, h, format, NULL, 0, 2,
-            planes, widths, heights, strides, NULL, NULL, NULL, &source) ||
-        CVPixelBufferCreateWithBytes(NULL, w, h, kCVPixelFormatType_32BGRA,
-            bgra, (size_t)w * 4, NULL, NULL, NULL, &dest) ||
-        VTPixelTransferSessionCreate(NULL, &transfer)) goto done;
-    CVBufferSetAttachment(source, kCVImageBufferYCbCrMatrixKey,
-                         kCVImageBufferYCbCrMatrix_ITU_R_601_4,
-                         kCVAttachmentMode_ShouldPropagate);
-    ok = VTPixelTransferSessionTransferImage(transfer, source, dest) == noErr;
-done:
-    if (transfer) {
-        VTPixelTransferSessionInvalidate(transfer);
-        CFRelease(transfer);
+    static const struct NV12Matrix { int y0, y, bias, bu, gu, gv, rv; } m[2] = {
+        { 16, 76313, 896, 132201, 25675, 53279, 104597 },   /* '420v' */
+        { 0, 65536, 1088, 116585, 22642, 46985, 92242 },    /* '420f' */
+    };
+    const struct NV12Matrix c = m[format == 0x34323066];
+    for (unsigned row = 0; row < h; row++) {
+        const uint8_t *y = input + (size_t)row * w;
+        const uint8_t *uv = input + (size_t)w * h + (size_t)(row / 2) * w;
+        uint32_t *out = (uint32_t *)(bgra + (size_t)row * w * 4);
+        /* One chroma pair, then its two pixels: this shape vectorizes (16 wide). */
+        for (unsigned x = 0; x < w; x += 2) {
+            int u = uv[x] - 128, v = uv[x + 1] - 128;
+            int cb = c.bu * u, cg = -c.gu * u - c.gv * v, cr = c.rv * v;
+            for (unsigned k = 0; k < 2; k++) {
+                int l = (y[x + k] - c.y0) * c.y + 32768 + c.bias;
+                int b = (l + cb) >> 16, g = (l + cg) >> 16, r = (l + cr) >> 16;
+                b = b < 0 ? 0 : b > 255 ? 255 : b;
+                g = g < 0 ? 0 : g > 255 ? 255 : g;
+                r = r < 0 ? 0 : r > 255 ? 255 : r;
+                out[x + k] = (uint32_t)b | (uint32_t)g << 8 | (uint32_t)r << 16 | 0xff000000u;
+            }
+        }
     }
-    if (dest) CVPixelBufferRelease(dest);
-    if (source) CVPixelBufferRelease(source);
-    return ok;
+    return true;
 }
 #endif
 

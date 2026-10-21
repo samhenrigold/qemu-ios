@@ -1,7 +1,6 @@
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
-#include "hw/arm/ipod_video.h"
 #include "system/address-spaces.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file-types.h"
@@ -38,9 +37,6 @@ typedef struct IPodH264State {
     GPtrArray *partial_slices;
     size_t partial_bytes;
 #endif
-#ifdef __APPLE__
-    IPodVideoDecoder *video;
-#endif
 } IPodH264State;
 
 #ifdef IT_HAVE_AVCODEC
@@ -70,10 +66,6 @@ static void h264_host_decoder_close(IPodH264State *s)
 #ifdef IT_HAVE_AVCODEC
     avcodec_free_context(&s->codec);
     av_frame_free(&s->frame);
-#endif
-#ifdef __APPLE__
-    ipod_video_close(s->video);
-    s->video = NULL;
 #endif
 }
 
@@ -457,80 +449,9 @@ static GByteArray *h264_reference_pixels(IPodH264State *s, uint32_t y,
     return h264_escape(picture, bit);
 }
 
-static GByteArray *h264_reference(IPodH264State *s, unsigned index, unsigned frame)
-{
-    uint32_t y, uv;
-    unsigned bytes = s->regs[0x1030 / 4] * s->regs[0x1034 / 4] * 256;
-    if (!h264_planes(s, s->regs[0x100 / 4 + index], bytes, &y, &uv)) return NULL;
-    return h264_reference_pixels(s, y, uv, frame);
-}
-
-static bool h264_decode_native(IPodH264State *s)
-{
-#ifdef __APPLE__
-    g_autoptr(GByteArray) sps = NULL, pps = NULL, slice = NULL;
-    uint32_t y, uv;
-    if (!h264_slice_nals(s, &sps, &pps, &slice, NULL, NULL) ||
-        !h264_planes(s, s->regs[0x106c / 4],
-            s->regs[0x1030 / 4] * s->regs[0x1034 / 4] * 256, &y, &uv)) {
-        return false;
-    }
-    g_autoptr(GByteArray) seed_pps = h264_pps(0, false, false, false, 1);
-    const uint8_t *sets[] = {sps->data, pps->data, seed_pps->data};
-    size_t sizes[] = {sps->len, pps->len, seed_pps->len};
-    CMVideoFormatDescriptionRef format = NULL;
-    OSStatus err = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-        NULL, s->regs[0x1020 / 4] ? 3 : 2, sets, sizes, 4, &format);
-    if (err) {
-        return false;
-    }
-    /* The synthetic SPS has no VUI; matching its nominal limited range keeps
-     * coded samples unchanged. The guest's compositor owns range conversion. */
-    /* Reuse the native session across parameter-set changes it accepts (the
-     * frame_num width varies per picture). Each job still starts with an IDR
-     * (real I picture or first lossless seed), so guest DMA remains the sole
-     * authority for reference pixels. */
-    if (s->video && !ipod_video_set_format(s->video, format)) {
-        h264_decoder_close(s);
-    }
-    if (!s->video) {
-        s->video = ipod_video_create(format,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
-    }
-    CFRelease(format);
-    if (!s->video) {
-        return false;
-    }
-    if (s->regs[0x102c / 4] == 0) {
-        H264References refs;
-        if (!h264_references(s, &refs)) return false;
-        for (unsigned i = 0; i < refs.count; i++) {
-            g_autoptr(GByteArray) ref = h264_reference(s, refs.indices[refs.count - 1 - i], i);
-            if (!ref) {
-                h264_decoder_close(s);
-                return false;
-            }
-            uint8_t size[4]; stl_be_p(size, ref->len);
-            g_byte_array_prepend(ref, size, 4);
-            if (!ipod_video_frame(s->video, ref->data, ref->len, 0, 0)) {
-                h264_decoder_close(s);
-                return false;
-            }
-        }
-    }
-    uint8_t prefix[4]; stl_be_p(prefix, slice->len);
-    g_byte_array_prepend(slice, prefix, 4);
-    bool ok = ipod_video_frame(s->video, slice->data, slice->len, y, uv);
-    if (!ok) h264_decoder_close(s);
-    return ok;
-#else
-    return false;
-#endif
-}
-
 #ifdef IT_HAVE_AVCODEC
-/* One hardware job is one slice, while VideoToolbox requires a complete
- * picture. libavcodec's chunk mode retains a partial picture between jobs.
+/* One hardware job is one slice. libavcodec's chunk mode retains a partial
+ * picture between jobs; a single-slice picture completes in its own job.
  * ponytail: commit DMA on picture completion. Replay only when a later slice
  * adds a reference; retain at most 64 MiB of slice data per picture. An external
  * reference-buffer backend would remove replay and allow per-slice DMA. */
@@ -658,7 +579,7 @@ static bool h264_decode_software(IPodH264State *s)
             g_autoptr(GByteArray) seed_pps = h264_pps(0, false, false, false, 1);
             if (h264_software_packet(s, seed_pps, 0) != 0) goto fail;
         }
-        /* As in the native path, guest DMA owns every reference. Start each
+        /* Guest DMA owns every reference. Start each
          * picture with an IDR and seed the active L0 list from its real planes. */
         for (unsigned i = 0; i < references.count; i++) {
             unsigned index = references.count - 1 - i;
@@ -715,12 +636,6 @@ fail:
 
 static bool h264_decode(IPodH264State *s)
 {
-#ifdef IT_HAVE_AVCODEC
-    /* A picture spanning several slice jobs needs libavcodec's chunk mode;
-     * VideoToolbox only takes complete access units. */
-    if (s->partial || s->codec) return h264_decode_software(s);
-#endif
-    if (h264_decode_native(s)) return true;
 #ifdef IT_HAVE_AVCODEC
     return h264_decode_software(s);
 #else
