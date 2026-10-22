@@ -211,7 +211,7 @@ static void expect_startup_failure(const char *machine, const char *error_text)
     g_autofree char *err = NULL;
     int status;
     g_assert_true(g_spawn_sync(NULL, (char **)argv, NULL, G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL, NULL, &err, &status, NULL));
-    g_assert_false(g_spawn_check_wait_status(status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
     if (!strstr(err, error_text)) {
         g_test_message("Unexpected QEMU startup error: %s", err);
     }

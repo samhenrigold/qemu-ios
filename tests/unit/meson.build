@@ -128,8 +128,6 @@ endif
 if have_system
   tests += {
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
-    'test-ios-baseband': [meson.project_source_root() / 'hw/misc/ios_baseband_core.c',
-                          meson.project_source_root() / 'hw/misc/ios_baseband_gps.c'],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],
@@ -143,6 +141,12 @@ if have_system
     'test-vmstate': [migration, io],
     'test-yank': ['socket-helpers.c', qom, io, chardev]
   }
+  if host_os != 'windows'
+    tests += {
+      'test-ios-baseband': [meson.project_source_root() / 'hw/misc/ios_baseband_core.c',
+                            meson.project_source_root() / 'hw/misc/ios_baseband_gps.c'],
+    }
+  endif
   if config_host_data.get('CONFIG_INOTIFY1')
     tests += {'test-util-filemonitor': []}
   endif

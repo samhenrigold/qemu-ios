@@ -2615,7 +2615,6 @@ static const char osk_alpha_row2[] = "asdfghjkl";
 static const char osk_alpha_row3[] = "zxcvbnm";
 static const char osk_num_row1[]   = "1234567890";
 static const char osk_num_row2[]   = "-/:;()$&@\"";
-static const char osk_num_row3[]   = ".,?!'";
 
 /*
  * Measured key centers. The three letter rows are each evenly spaced at a 32px
@@ -3273,7 +3272,7 @@ static void ipod_touch_machine_init(MachineState *machine)
                           qdev_get_gpio_in(DEVICE(nms->sysic), GPIO_LIGHTSENSOR_IRQ));
 
     // init the Mikey
-    I2CSlave *cd327mikey = i2c_slave_create_simple(i2c_state->bus, "cd3272mikey", 0x39);
+    i2c_slave_create_simple(i2c_state->bus, "cd3272mikey", 0x39);
 
     /* AMC (audio media codec) -- see ipod_touch_audio_hw_enabled(). */
     if (ipod_touch_audio_hw_enabled(nms)) {

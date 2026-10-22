@@ -56,4 +56,7 @@ typedef struct IPodTouchMIPIDSIState
     uint32_t intsrc;
 } IPodTouchMIPIDSIState;
 
+/* The guest turned the panel off (ApplePinotLCD's sleep): the app bridge reads it as "sleeping". */
+bool ipod_touch_mipi_dsi_panel_off(void);
+
 #endif

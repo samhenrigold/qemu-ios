@@ -7,6 +7,8 @@
 #include "qemu/error-report.h"
 #include "trace.h"
 #include "hw/trace-printf.h"
+#include "crypto/aes.h"
+#include <openssl/evp.h>
 
 /* Bound host scratch storage, not the hardware transfer length. Stock iBSS
  * decrypts restore ramdisks larger than 16 MiB in one contiguous request. */
@@ -469,6 +471,57 @@ static void aes_update_irq(IPodTouchAESState *s)
     qemu_set_irq(s->irq, (s->status & s->unkreg1 & 7) != 0);
 }
 
+static void aes_set_key(IPodTouchAESState *s, const uint8_t *key, unsigned bits, bool encrypts)
+{
+    memcpy(s->key, key, bits / 8);
+    s->key_bits = bits;
+    s->key_encrypts = encrypts;
+}
+
+/*
+ * CBC over n bytes (a multiple of 16), in place or not, leaving iv at the last ciphertext block as OpenSSL's
+ * AES_cbc_encrypt did. A key expanded for decryption run forward (s5l8900-compat's "encrypt") is not AES
+ * encryption and EVP has no such mode, so that case runs QEMU's own block cipher on the decryption schedule,
+ * which is what the legacy AES_encrypt computed with it.
+ */
+static void aes_cbc(IPodTouchAESState *s, const uint8_t *in, uint8_t *out, size_t n, uint8_t *iv, bool enc)
+{
+    if (!n) {
+        return;
+    }
+    if (enc && !s->key_encrypts) {
+        AES_KEY schedule;
+        AES_set_decrypt_key(s->key, s->key_bits, &schedule);
+        for (size_t i = 0; i < n; i += 16) {
+            uint8_t block[16];
+            for (unsigned j = 0; j < 16; j++) {
+                block[j] = in[i + j] ^ iv[j];
+            }
+            AES_encrypt(block, out + i, &schedule);
+            memcpy(iv, out + i, 16);
+        }
+        return;
+    }
+    g_assert(enc == s->key_encrypts);
+
+    const EVP_CIPHER *cipher = s->key_bits == 256 ? EVP_aes_256_cbc() :
+                               s->key_bits == 192 ? EVP_aes_192_cbc() : EVP_aes_128_cbc();
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    uint8_t next_iv[16];
+    int len;
+
+    if (!enc) {
+        memcpy(next_iv, in + n - 16, 16);       /* before an in-place decrypt overwrites it */
+    }
+    if (!ctx || !EVP_CipherInit_ex(ctx, cipher, NULL, s->key, iv, enc) ||
+        !EVP_CIPHER_CTX_set_padding(ctx, 0) || !EVP_CipherUpdate(ctx, out, &len, in, n)) {
+        error_report("ipodtouch.aes: OpenSSL could not run AES-%u-CBC", s->key_bits);
+        abort();
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    memcpy(iv, enc ? out + n - 16 : next_iv, 16);
+}
+
 /* Custom-key key schedule and chaining IV from the registers. The kernel
  * places a 128/192/256-bit key at the END of the 8-word key bank. */
 static void aes_custom_load(IPodTouchAESState *s)
@@ -477,11 +530,7 @@ static void aes_custom_load(IPodTouchAESState *s)
     unsigned kb = bits[(s->operation >> 4) & 3];
     const uint8_t *key = (const uint8_t *)s->custkey + 32 - kb / 8;
 
-    if (s->operation & 1) {
-        AES_set_encrypt_key(key, kb, &s->decryptKey);
-    } else {
-        AES_set_decrypt_key(key, kb, &s->decryptKey);
-    }
+    aes_set_key(s, key, kb, s->operation & 1);
 }
 
 /*
@@ -553,8 +602,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
                              MIN(s->remaining, MIN(in_len, out_len))) & ~15u;
             uint8_t *buf = g_malloc(n);
             cpu_physical_memory_read(in_addr, buf, n);
-            AES_cbc_encrypt(buf, buf, n, &s->decryptKey, s->chain_iv,
-                            enc ? AES_ENCRYPT : AES_DECRYPT);
+            aes_cbc(s, buf, buf, n, s->chain_iv, enc);
             if (!preserve) {
                 cpu_physical_memory_write(out_addr, buf, n);
             }
@@ -573,8 +621,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
             in_addr += n; in_len -= n; s->in_fill += n;
             continue;
         }
-        AES_cbc_encrypt(s->in_blk, s->out_blk, 16, &s->decryptKey, s->chain_iv,
-                        enc ? AES_ENCRYPT : AES_DECRYPT);
+        aes_cbc(s, s->in_blk, s->out_blk, 16, s->chain_iv, enc);
         s->in_fill = 0;
         s->out_left = 16;
         s->remaining -= 16;
@@ -597,7 +644,7 @@ static void aes_custom_go(IPodTouchAESState *s, uint32_t go)
 }
 
 /* CBC keeps its IV between chunks; a partial final block passes through. */
-static void aes_legacy_dma(IPodTouchAESState *s, int direction)
+static void aes_legacy_dma(IPodTouchAESState *s, bool enc)
 {
     uint8_t *buf = g_malloc(IT_AES_DMA_CHUNK);
     uint32_t left = s->insize;
@@ -606,8 +653,7 @@ static void aes_legacy_dma(IPodTouchAESState *s, int direction)
     while (left) {
         uint32_t n = MIN(left, IT_AES_DMA_CHUNK);
         cpu_physical_memory_read(in, buf, n);
-        AES_cbc_encrypt(buf, buf, n & ~15u, &s->decryptKey,
-                        (uint8_t *)s->ivec, direction);
+        aes_cbc(s, buf, buf, n & ~15u, (uint8_t *)s->ivec, enc);
         cpu_physical_memory_write(out, buf, n);
         in += n;
         out += n;
@@ -633,11 +679,11 @@ static void aes_s5l8900_compat_go(IPodTouchAESState *aesop)
         return;
     }
     if (aesop->keytype == AESUID) {
-        AES_set_decrypt_key(key_uid, 128, &aesop->decryptKey);
+        aes_set_key(aesop, key_uid, 128, false);
     } else {
-        AES_set_decrypt_key((uint8_t *)aesop->custkey, 256, &aesop->decryptKey);
+        aes_set_key(aesop, (uint8_t *)aesop->custkey, 256, false);
     }
-    aes_legacy_dma(aesop, aesop->compat_op ? AES_ENCRYPT : AES_DECRYPT);
+    aes_legacy_dma(aesop, aesop->compat_op != 0);
     memset(aesop->custkey, 0, sizeof(aesop->custkey));
     memset(aesop->ivec, 0, sizeof(aesop->ivec));
     aesop->outsize = aesop->insize;
@@ -715,10 +761,10 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                     case AESGID:
                         break;         
                     case AESUID:
-                        AES_set_decrypt_key(key_uid, sizeof(key_uid) * 8, &aesop->decryptKey);
+                        aes_set_key(aesop, key_uid, sizeof(key_uid) * 8, false);
                         break;
                     case AESCustom:
-                        AES_set_decrypt_key((uint8_t *)(&aesop->custkey[4]), 0x10 * 8, &aesop->decryptKey);
+                        aes_set_key(aesop, (uint8_t *)(&aesop->custkey[4]), 0x10 * 8, false);
                         break;
             }
 
@@ -765,7 +811,7 @@ static void ipod_touch_aes_write(void *opaque, hwaddr offset, uint64_t value, un
                 }
             }
             else {
-                aes_legacy_dma(aesop, AES_DECRYPT);
+                aes_legacy_dma(aesop, false);
             }
 
             /* The retained 5F138 trace identifies exactly these three custom-key,
@@ -879,12 +925,12 @@ static void ipod_touch_aes_init(Object *obj)
 }
 
 /* Key material, IV and the DMA descriptor are all loaded per operation. The
- * expanded decryptKey is derived state and is rebuilt on the next key load. */
+ * loaded key is derived state and is replaced on the next key load. */
 static void ipod_touch_aes_reset(DeviceState *dev)
 {
     IPodTouchAESState *s = IPOD_TOUCH_AES(dev);
 
-    memset(&s->decryptKey, 0, sizeof(s->decryptKey));
+    memset(s->key, 0, sizeof(s->key));
     memset(s->ivec, 0, sizeof(s->ivec));
     memset(s->custkey, 0, sizeof(s->custkey));
     s->insize = 0;
@@ -941,8 +987,8 @@ static const VMStateDescription vmstate_aes_stream = {
     }
 };
 
-/* decryptKey is an expanded key schedule derived from custkey/keytype and is
- * rebuilt on the next key load, so only the guest-visible registers travel. */
+/* The loaded key is derived from custkey/keytype and is
+ * replaced on the next key load, so only the guest-visible registers travel. */
 static const VMStateDescription vmstate_ipod_touch_aes = {
     .name = "ipod_touch_aes",
     .version_id = 1,

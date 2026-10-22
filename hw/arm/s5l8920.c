@@ -33,6 +33,7 @@
 #include "hw/arm/ipod_touch_lcd.h"
 #include "hw/arm/ipod_touch_tvout.h"
 #include "hw/arm/ipod_touch_mipi_dsi.h"
+#include "hw/arm/s5l8920_dart.h"
 #include "hw/arm/ipod_touch_buttons.h"
 #include "hw/arm/ipod_touch_usb_otg.h"
 #include "hw/arm/ipod_touch_usb_phys.h"
@@ -317,9 +318,6 @@ struct S5L8920MachineState {
     QEMUTimer *ap_off_timer;             /* the PMU's hibernate cut, a moment after the command */
     int pwroff_phase, pwroff_step, pwroff_tries;
 };
-
-/* hw/arm/s5l8920_dart.c: IOVA -> PA through a DART (its device as opaque). */
-hwaddr s5l8920_dart_xlate(void *opaque, uint32_t va, unsigned sid);
 
 #define KBOOT_MAGIC "K48KBOOT"
 #define KBOOT_TRAILER_LEN 24
@@ -754,7 +752,7 @@ static void s5l8920_init(MachineState *machine)
     memory_region_add_subregion(sysmem, S5L8920_CPU_DEBUG_BASE, &s->cpu_debug);
 
     /* Three PL192s, daisy-chained VIC2 -> VIC1 -> VIC0 -> CPU. */
-    s->vic[0] = pl192_manual_init((char *)"vic0",
+    s->vic[0] = pl192_manual_init("vic0",
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ),
                                   NULL);
@@ -1248,8 +1246,6 @@ void s5l8920_press_button(IPodTouchButton button, bool down)
     case IPOD_TOUCH_BUTTON_VOLDOWN: s5l8920_set_button(s, b->voldown, down); break;
     }
 }
-
-bool ipod_touch_mipi_dsi_panel_off(void);   /* hw/arm/ipod_touch_mipi_dsi.c */
 
 /* The guest's power-off command reached the PMU: 5.x's halt then restarts through it, so this, not a
  * QEMU SHUTDOWN event, is the evidence (as ipad1's D1815). */

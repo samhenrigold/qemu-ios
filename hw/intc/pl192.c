@@ -521,7 +521,7 @@ static const MemoryRegionOps pl192_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-DeviceState *pl192_manual_init(char *mem_name, ...)
+DeviceState *pl192_manual_init(const char *mem_name, ...)
 {
     DeviceState *dev = qdev_new(TYPE_PL192);
     PL192State *s = PL192(dev);
@@ -550,19 +550,6 @@ DeviceState *pl192_manual_init(char *mem_name, ...)
     return dev;
 }
 
-static void pl192_init(Object *obj)
-{
-    DeviceState *dev = DEVICE(obj);
-    PL192State *s = PL192(obj);
-    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
-
-    //memory_region_init_io(&s->iomem, obj, &pl192_ops, s, "pl192", 0x1000);
-    //sysbus_init_mmio(sbd, &s->iomem);
-    //qdev_init_gpio_in(dev, pl192_irq_handler, PL192_INT_SOURCES);
-    //sysbus_init_irq(sbd, s->irq);
-    //sysbus_init_irq(sbd, s->fiq);
-}
-
 static void pl192_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -575,7 +562,6 @@ static const TypeInfo pl192_info = {
     .name          = TYPE_PL192,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PL192State),
-    .instance_init = pl192_init,
     .class_init    = pl192_class_init,
 };
 

@@ -22,6 +22,7 @@
 #include "hw/core/irq.h"
 #include "system/address-spaces.h"
 #include "migration/vmstate.h"
+#include "hw/arm/s5l8920_dart.h"
 
 #define TYPE_S5L8920_DART "s5l8920.dart"
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8920DartState, S5L8920_DART)

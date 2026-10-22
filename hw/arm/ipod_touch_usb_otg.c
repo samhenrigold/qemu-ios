@@ -829,7 +829,7 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 	case 0x00:
         _state->out_eps[_ep].control = _val;
 		if (synopsys_usb_trace_enabled()) {
-			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPCTL[%d] = 0x%08x (dma 0x%08x tsiz 0x%08x)\n",
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPCTL[%d] = 0x%08x (dma 0x%08" HWADDR_PRIx " tsiz 0x%08x)\n",
 			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address,
 			        _state->out_eps[_ep].tx_size);
 		}
@@ -847,7 +847,7 @@ static void synopsys_usb_out_ep_write(synopsys_usb_state *_state, int _ep, hwadd
 
     case 0x14:
 		if (synopsys_usb_trace_enabled()) {
-			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPDMA[%d] = 0x%08x (was 0x%08x)\n",
+			TRACE_PRINTF(trace_ipod_touch_usb_otg_log, "[USBDMA] guest DOEPDMA[%d] = 0x%08x (was 0x%08" HWADDR_PRIx ")\n",
 			        _ep, (uint32_t)_val, _state->out_eps[_ep].dma_address);
 		}
         _state->out_eps[_ep].dma_address = _val;

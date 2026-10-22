@@ -1785,6 +1785,16 @@ static void ipod_touch_fmss_finalize(Object *obj)
     }
 }
 
+/*
+ * g_tree_remove_all, which is newer (2.70) than QEMU's GLib floor: hold a reference so g_tree_destroy only
+ * removes the nodes, as hw/misc/xlnx-versal-cframe-reg.c does.
+ */
+static void fmss_tree_clear(GTree *tree)
+{
+    g_tree_ref(tree);
+    g_tree_destroy(tree);
+}
+
 /* Generated images persist writes at their logical home, while phys_pages
  * serves the running FTL's temporary physical mapping. A new boot rebuilds
  * the FTL from that generated layout, so retaining the previous mapping can
@@ -1796,7 +1806,7 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
 
     if (!fmss_physical() && s->phys_pages) {
-        g_tree_remove_all(s->phys_pages);
+        fmss_tree_clear(s->phys_pages);
     }
     s->reg_cs_irq_bit = 0;
     s->reg_cs_ctrl = 0;
@@ -1862,8 +1872,8 @@ static const VMStateDescription vmstate_fmss_marker = {
 static int fmss_pre_load(void *opaque)
 {
     IPodTouchFMSSState *s = opaque;
-    g_tree_remove_all(s->phys_pages);
-    g_tree_remove_all(s->erased_blocks);
+    fmss_tree_clear(s->phys_pages);
+    fmss_tree_clear(s->erased_blocks);
     if (s->overlay_pages) {
         g_hash_table_remove_all(s->overlay_pages);
     }

@@ -45,16 +45,17 @@ static void mpvd_history_clear(IPodTouchMPVDState *s)
     s->history_unavailable = false;
 }
 
-static void mpvd_history_lost(IPodTouchMPVDState *s)
-{
-    mpvd_history_clear(s);
-    s->history_unavailable = true;
-}
-
 static int mpvd_packet_type(const uint8_t *data, size_t length)
 {
     return length >= 5 && length <= MPVD_PACKET_BYTES &&
            !memcmp(data, "\0\0\1\xb6", 4) ? data[4] >> 6 : -1;
+}
+
+#ifdef __APPLE__
+static void mpvd_history_lost(IPodTouchMPVDState *s)
+{
+    mpvd_history_clear(s);
+    s->history_unavailable = true;
 }
 
 static void mpvd_history_append(IPodTouchMPVDState *s, const uint8_t *data,
@@ -79,7 +80,6 @@ static void mpvd_history_append(IPodTouchMPVDState *s, const uint8_t *data,
     s->packet_bytes += length;
 }
 
-#ifdef __APPLE__
 typedef struct MPVDDecoder {
     IPodVideoDecoder *video;
     unsigned width, height, time_bits;

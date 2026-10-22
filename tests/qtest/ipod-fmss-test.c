@@ -54,12 +54,12 @@ static bool migrate(QTestState *qts, char **saved)
     return false;
 }
 
-static void expect_startup_failure(char **argv, const char *error_text)
+static void expect_startup_failure(const char **argv, const char *error_text)
 {
     GPid pid;
     int status, errfd;
     bool exited = false;
-    g_assert_true(g_spawn_async_with_pipes(NULL, argv, NULL, G_SPAWN_DO_NOT_REAP_CHILD,
+    g_assert_true(g_spawn_async_with_pipes(NULL, (char **)argv, NULL, G_SPAWN_DO_NOT_REAP_CHILD,
                  NULL, NULL, &pid, NULL, NULL, &errfd, NULL));
     for (unsigned i = 0; i < 2000; i++) {
         if (waitpid(pid, &status, WNOHANG) == pid) {
@@ -99,7 +99,7 @@ static void snapshot_mode_mismatch(void)
         "iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s",
         rom_path, nor_path, nand_path, overlay);
     g_autofree char *uri = g_strdup_printf("file:%s", state);
-    char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine,
+    const char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine,
         "-accel", "qtest", "-incoming", uri, "-S", "-display", "none",
         "-audio", "driver=none", "-nic", "none", "-monitor", "none",
         "-serial", "none", NULL };
@@ -1806,7 +1806,7 @@ static void image_store_refuses_overlay(void)
     g_autofree char *overlay = g_dir_make_tmp("fmss-overlay-XXXXXX", NULL);
     g_autofree char *machine = g_strdup_printf("iPod-Touch,bootrom=%s,nor=%s,nand=%s,nandrw=%s",
                                                rom_path, nor_path, dir, overlay);
-    char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-display", "none", "-audio", "driver=none",
+    const char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-display", "none", "-audio", "driver=none",
                      "-nic", "none", "-monitor", "none", "-serial", "none", "-S", NULL };
     expect_startup_failure(argv, "takes no nandrw overlay");
     rmdir(overlay);

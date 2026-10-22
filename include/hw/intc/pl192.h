@@ -75,6 +75,6 @@ struct PL192State {
     PL192State *daisy;
 };
 
-DeviceState *pl192_manual_init(char *mem_name, ...);
+DeviceState *pl192_manual_init(const char *mem_name, ...);
 
 #endif

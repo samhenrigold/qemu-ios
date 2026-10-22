@@ -317,12 +317,12 @@ static void ownership_crash_reopen(void)
     rmdir(overlay);
 }
 
-static void expect_startup_failure(char **argv, const char *error_text)
+static void expect_startup_failure(const char **argv, const char *error_text)
 {
     GPid pid;
     int status, errfd;
     bool exited = false;
-    g_assert_true(g_spawn_async_with_pipes(NULL, argv, NULL, G_SPAWN_DO_NOT_REAP_CHILD,
+    g_assert_true(g_spawn_async_with_pipes(NULL, (char **)argv, NULL, G_SPAWN_DO_NOT_REAP_CHILD,
                  NULL, NULL, &pid, NULL, NULL, &errfd, NULL));
     for (unsigned i = 0; i < 2000; i++) {
         if (waitpid(pid, &status, WNOHANG) == pid) {
@@ -353,7 +353,7 @@ static void second_writer_refused(void)
     QTestState *qts = qtest_initf("-machine ipad1,bootrom=%s,nand=%s -display none -audio driver=none -nic none",
                                 rom_path, nand_path);
     g_autofree char *machine = g_strdup_printf("ipad1,bootrom=%s,nand=%s", rom_path, nand_path);
-    char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-S",
+    const char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-S",
                     "-display", "none", "-audio", "driver=none", "-monitor", "none", "-serial", "none", NULL };
     expect_startup_failure(argv, "lock");
     qtest_quit(qts);
@@ -396,7 +396,7 @@ static void snapshot_format_mismatch(void)
                         (int)(format - saved), saved, format + strlen("nand-xor-ff-v2"));
     g_assert_true(g_file_set_contents(geometry, legacy, -1, NULL));
     g_autofree char *machine = g_strdup_printf("ipad1,bootrom=%s,nand=%s", rom_path, nand_path);
-    char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-accel", "qtest",
+    const char *argv[] = { getenv("QTEST_QEMU_BINARY"), "-machine", machine, "-accel", "qtest",
                     "-incoming", uri, "-S", "-display", "none", "-audio", "driver=none",
                     "-monitor", "none", "-serial", "none", NULL };
     expect_startup_failure(argv, "snapshot NAND storage format mismatch");

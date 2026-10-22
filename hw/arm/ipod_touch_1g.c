@@ -751,7 +751,7 @@ static void n45_machine_init(MachineState *machine)
     clock_set_hz(s->sysclk, 12000000ULL);
 
     /* VICs */
-    dev = pl192_manual_init((char *)"vic0", qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
+    dev = pl192_manual_init("vic0", qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
                             qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ), NULL);
     s->vic0 = PL192(dev);
     memory_region_add_subregion(sysmem, N45_VIC0_BASE, &s->vic0->iomem);
@@ -759,7 +759,7 @@ static void n45_machine_init(MachineState *machine)
     for (int i = 0; i < 32; i++) {
         s->irq[0][i] = qdev_get_gpio_in(dev, i);
     }
-    dev = pl192_manual_init((char *)"vic1", NULL);
+    dev = pl192_manual_init("vic1", NULL);
     s->vic1 = PL192(dev);
     memory_region_add_subregion(sysmem, N45_VIC1_BASE, &s->vic1->iomem);
     s->irq[1] = g_malloc0(sizeof(qemu_irq) * 32);

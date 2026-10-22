@@ -232,10 +232,16 @@ qtests_stm32l4x5 = \
    'stm32l4x5_usart-test']
 
 qtests_arm = \
-  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-fmss-test', 'ipod-lcd-test', 'ipod-clock-test', 'ipod-usb-phy-test', 'ipod-boot-args-test', 'ipod-bt-test', 'ipod-sdio-test', 'ipod-chipid-test', 'ipod-dsim-test', 'ipod-mbx-test', 'ipod-i2s-dma-test', 'ipod-spi-test', 'ipod-button-reset-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-touch-irq-test', 'ipod-fmc-test', 'ipod-als-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-pmgr-test', 'ipad1-h2fmi-test', 'ipad1-sdio-test', 's5l8920-sdio-test', 's5l8920-accel-test', 's5l8920-bt-test', 's5l8920-pwm-test', 's5l8920-audio-complex-test', 's5l8920-hibernate-test', 's5l8920-vxd-test', 's5l8920-bounds-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-lcd-test', 'ipod-clock-test', 'ipod-boot-args-test', 'ipod-bt-test', 'ipod-sdio-test', 'ipod-chipid-test', 'ipod-dsim-test', 'ipod-mbx-test', 'ipod-i2s-dma-test', 'ipod-spi-test', 'ipod-button-reset-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-touch-irq-test', 'ipod-als-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-pmgr-test', 'ipad1-sdio-test', 's5l8920-sdio-test', 's5l8920-accel-test', 's5l8920-bt-test', 's5l8920-pwm-test', 's5l8920-audio-complex-test', 's5l8920-hibernate-test', 's5l8920-vxd-test', 's5l8920-bounds-test'] : []) + \
   (config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-cdma-test'] : []) + \
+  (host_os != 'windows' and                                                                \
+   config_all_devices.has_key('CONFIG_IPOD_TOUCH_2G') ? ['ipod-fmss-test', 'ipod-usb-phy-test'] : []) + \
+  (host_os != 'windows' and                                                                \
+   config_all_devices.has_key('CONFIG_IPOD_TOUCH_1G') ? ['ipod-fmc-test'] : []) + \
+  (host_os != 'windows' and                                                                \
+   config_all_devices.has_key('CONFIG_IPAD1') ? ['ipad1-h2fmi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MPS2') ? ['sse-timer-test'] : []) + \
   (config_all_devices.has_key('CONFIG_CMSDK_APB_DUALTIMER') ? ['cmsdk-apb-dualtimer-test'] : []) + \
   (config_all_devices.has_key('CONFIG_CMSDK_APB_TIMER') ? ['cmsdk-apb-timer-test'] : []) + \

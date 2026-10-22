@@ -242,7 +242,6 @@ static const MemoryRegionOps ipod_touch_tvout_mixer2_ops = {
 
 static void ipod_touch_tvout_init(Object *obj)
 {
-    DeviceState *dev = DEVICE(obj);
     IPodTouchTVOutState *s = IPOD_TOUCH_TVOUT(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 

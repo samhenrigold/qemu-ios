@@ -282,7 +282,7 @@ static void s5l8930_iop_core_realize(DeviceState *dev, Error **errp)
 
     /* The IOP's VICs live on the shared bus: the AP rings the doorbell through
      * VIC0's SOFTINT, the firmware programs enables and vector addresses. */
-    s->vic[0] = pl192_manual_init((char *)"iop-vic0",
+    s->vic[0] = pl192_manual_init("iop-vic0",
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ),
                                   NULL);

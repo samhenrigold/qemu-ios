@@ -6,7 +6,6 @@
 #include "hw/core/hw-error.h"
 #include "exec/hwaddr.h"
 #include "system/memory.h"
-#include <openssl/aes.h>
 
 #define TYPE_IPOD_TOUCH_AES                "ipodtouch.aes"
 OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAESState, IPOD_TOUCH_AES)
@@ -64,7 +63,10 @@ typedef struct IPodTouchAESState
     SysBusDevice busdev;
     MemoryRegion iomem;
     qemu_irq irq;
-    AES_KEY decryptKey;
+    /* The loaded key, and whether it was expanded for encryption (s5l8900-compat expands every key for decryption). */
+    uint8_t key[32];
+    unsigned key_bits;
+    bool key_encrypts;
 	uint32_t ivec[4];
 	uint32_t insize;
 	uint32_t inaddr;

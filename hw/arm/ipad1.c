@@ -1362,7 +1362,7 @@ static void ipad1_init(MachineState *machine)
      * Four PL192s, daisy-chained VIC3 -> VIC2 -> VIC1 -> VIC0 -> CPU. The kernel
      * reads VIC0's VECTADDR and expects the chained vectors to come through it.
      */
-    s->vic[0] = pl192_manual_init((char *)"vic0",
+    s->vic[0] = pl192_manual_init("vic0",
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
                                   qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ),
                                   NULL);
