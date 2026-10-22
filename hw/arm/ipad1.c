@@ -1087,6 +1087,11 @@ static void ipad1_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
     switch (q) {
     case Q_KEY_CODE_META_L:
     case Q_KEY_CODE_META_R:
+#ifndef __APPLE__
+    /* Elsewhere than macOS the host's Command key (the Windows key there) is the system's own, so Ctrl stands in for it. */
+    case Q_KEY_CODE_CTRL:
+    case Q_KEY_CODE_CTRL_R:
+#endif
         s->kbd_cmd = down;
         return;
     case Q_KEY_CODE_SHIFT:
