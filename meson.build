@@ -1310,7 +1310,7 @@ endif
 slirp = not_found
 if not get_option('slirp').auto() or have_system
   slirp = dependency('slirp', required: get_option('slirp'),
-                     method: 'pkg-config')
+                     method: 'pkg-config', default_options: ['default_library=static'])
   # slirp < 4.7 is incompatible with CFI support in QEMU.  This is because
   # it passes function pointers within libslirp as callbacks for timers.
   # When using a system-wide shared libslirp, the type information for the
@@ -1335,11 +1335,18 @@ if not get_option('slirp').auto() or have_system
   # with both patches (the app's static native root) is used as found; one without them
   # (Homebrew's, or one from older patches) gives way to the patched subproject, static so
   # the binaries gain no runtime dylib.
-  if slirp.found() and not (cc.has_function('slirp_destination_class', dependencies: slirp,
+  # With no libslirp installed at all, dependency() has already fallen back to the patched
+  # subproject through the wrap's [provide], and has_function() refuses an internal dependency.
+  if slirp.found() and slirp.type_name() != 'internal' and not (cc.has_function('slirp_destination_class', dependencies: slirp,
                                             prefix: '#include <libslirp.h>') and
                             cc.has_function('slirp_add_guestfwd_connector', dependencies: slirp,
                                             prefix: '#include <libslirp.h>'))
     slirp = subproject('slirp', default_options: ['default_library=static']).get_variable('libslirp_libdep')
+  endif
+  # libslirp.h marks its API dllimport on Windows unless LIBSLIRP_STATIC is defined, and the
+  # subproject's dependency doesn't define it for its static library.
+  if host_os == 'windows' and slirp.found() and slirp.type_name() == 'internal'
+    slirp = declare_dependency(dependencies: slirp, compile_args: ['-DLIBSLIRP_STATIC'])
   endif
 endif
 

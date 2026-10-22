@@ -111,6 +111,32 @@ static void initialize_nor(IPodTouchNORSPIState *s)
     }
 }
 
+/* Whether two existing paths name the same file. Windows' stat reports no inode
+ * (st_ino 0 for every file), so there it compares the volume and file index. */
+static bool nor_same_file(const char *a, const struct stat *sa, const char *b, const struct stat *sb)
+{
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION ia, ib;
+    HANDLE ha = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    HANDLE hb = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    bool same = ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE &&
+                GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib) &&
+                ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
+                ia.nFileIndexHigh == ib.nFileIndexHigh && ia.nFileIndexLow == ib.nFileIndexLow;
+    if (ha != INVALID_HANDLE_VALUE) {
+        CloseHandle(ha);
+    }
+    if (hb != INVALID_HANDLE_VALUE) {
+        CloseHandle(hb);
+    }
+    return same;
+#else
+    return sa->st_dev == sb->st_dev && sa->st_ino == sb->st_ino;
+#endif
+}
+
 void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, Error **errp)
 {
     struct stat base, writable;
@@ -125,7 +151,7 @@ void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, 
             error_setg_errno(errp, errno, "base NOR image must exist");
             return;
         }
-        if (base.st_dev == writable.st_dev && base.st_ino == writable.st_ino) {
+        if (nor_same_file(s->nor_path, &base, path, &writable)) {
             error_setg(errp, "nor-rw must be a private copy, not the base NOR image");
             return;
         }
