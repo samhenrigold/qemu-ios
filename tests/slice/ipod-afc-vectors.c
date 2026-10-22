@@ -32,10 +32,11 @@
 #define trace_ipod_touch_tcp_usb_log(msg) ((void)(msg))
 #define g_malloc0(n) calloc(1,n)
 static void qemu_set_fd_handler(int fd,void (*r)(void *),void (*w)(void *),void *arg) {}
-static ssize_t fragmented_read(int fd,void *p,size_t n) { return read(fd,p,n<=5?(n>2?2:n):(n>127?127:n)); }
-static ssize_t fragmented_write(int fd,const void *p,size_t n) { return write(fd,p,n<=5?(n>2?2:n):(n>251?251:n)); }
-#define read fragmented_read
-#define write fragmented_write
+static bool qemu_set_blocking(int fd,bool block,void *errp) {int f=fcntl(fd,F_GETFL);return fcntl(fd,F_SETFL,block?f&~O_NONBLOCK:f|O_NONBLOCK)==0;}
+static ssize_t fragmented_recv(int fd,void *p,size_t n,int flags) { return recv(fd,p,n<=5?(n>2?2:n):(n>127?127:n),flags); }
+static ssize_t fragmented_send(int fd,const void *p,size_t n,int flags) { return send(fd,p,n<=5?(n>2?2:n):(n>251?251:n),flags); }
+#define recv fragmented_recv
+#define send fragmented_send
 #include "slice.h"
 #undef read
 #undef write

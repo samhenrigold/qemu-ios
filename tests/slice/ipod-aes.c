@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/aes.h>
+#include <openssl/evp.h>
 typedef int SysBusDevice, MemoryRegion;
 typedef uint64_t hwaddr;
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))

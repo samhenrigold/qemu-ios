@@ -1,7 +1,7 @@
 /* Compile the real FMSS write path with host-I/O fault injection; no guest needed.
  *
  * SLICE:limit hw/arm/ipod_touch_fmss.c define FMSS_MAX_WRITE_ENTRIES[[:space:]]
- * SLICE hw/arm/ipod_touch_fmss.c fn find_bit_index fmss_block_key fmss_key_compare fmss_remember_erased fmss_block_marker_path fmss_block_is_erased ipod_touch_fmss_io_failed fmss_io_error fmss_erase_block fmss_remember_physical fmss_store_page fmss_write_dma_read write_nand_pages ipod_touch_fmss_reset
+ * SLICE hw/arm/ipod_touch_fmss.c fn find_bit_index fmss_block_key fmss_key_compare fmss_remember_erased fmss_block_marker_path fmss_block_is_erased ipod_touch_fmss_io_failed fmss_io_error fmss_erase_block fmss_remember_physical fmss_store_page fmss_write_dma_read write_nand_pages fmss_tree_clear ipod_touch_fmss_reset
  * PKG glib-2.0
  * CFLAGS -Wall -Werror -Wno-unused-function
  */

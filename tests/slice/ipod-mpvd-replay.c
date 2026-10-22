@@ -5,8 +5,8 @@
  *
  * SLICE hw/arm/ipod_video.c range struct IPodVideoDecoder | #endif
  * SLICE include/hw/arm/ipod_touch_mpvd.h typedef IPodTouchMPVDState
- * SLICE hw/arm/ipod_touch_mpvd.c range /* Bound retained | #ifdef __APPLE__\ntypedef
- * SLICE hw/arm/ipod_touch_mpvd.c range typedef struct MPVDDecoder | \n#else\nstatic void mpvd_decoder_close
+ * SLICE hw/arm/ipod_touch_mpvd.c range /* Bound retained | #ifdef __APPLE__\nstatic void mpvd_history_lost
+ * SLICE hw/arm/ipod_touch_mpvd.c range static void mpvd_history_lost | \n#else\nstatic void mpvd_decoder_close
  * SLICE:vm hw/arm/ipod_touch_mpvd.c range static int mpvd_put_packets | static const VMStateDescription vmstate_ipod_touch_mpvd
  * PKG glib-2.0
  * CFLAGS -x objective-c -fobjc-arc -Wno-deprecated-declarations -framework AVFoundation -framework VideoToolbox

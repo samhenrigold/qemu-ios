@@ -2,7 +2,7 @@
  *
  * SLICE include/hw/arm/ipod_touch_fmss.h define FMSS|NAND_PAGES_PER_BLOCK
  * SLICE hw/arm/ipod_touch_fmss.c define NAND_MAX_TOTAL_BLOCKS
- * SLICE hw/arm/ipod_touch_fmss.c fn ipod_touch_fmss_read fmss_update_irq fmss_complete ipod_touch_fmss_write fmss_pre_load fmss_invalid_page fmss_invalid_marker fmss_post_load ipod_touch_fmss_reset
+ * SLICE hw/arm/ipod_touch_fmss.c fn fmss_tree_clear ipod_touch_fmss_read fmss_update_irq fmss_complete ipod_touch_fmss_write fmss_pre_load fmss_invalid_page fmss_invalid_marker fmss_post_load ipod_touch_fmss_reset
  * PKG glib-2.0
  */
 #include <assert.h>
