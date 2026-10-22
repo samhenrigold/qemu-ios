@@ -5,7 +5,23 @@
  * ANGLE runs no fixed function in a programmable context, nor shaders in an ES1 one. */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#ifdef _WIN32
+/* libEGL.dll and libGLESv2.dll: the exe's own directory is the first place LoadLibrary looks. */
+#define angle_dlopen(path) ((void *)LoadLibraryA(path))
+#define angle_dlsym(lib, name) ((void *)GetProcAddress((HMODULE)(lib), name))
+#define angle_dlclose(lib) FreeLibrary((HMODULE)(lib))
+#define ANGLE_LIB_DIR ""
+#define ANGLE_LIB_SUFFIX ".dll"
+#define ANGLE_PLATFORM EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE
+#else
 #include <dlfcn.h>
+#define angle_dlopen(path) dlopen(path, RTLD_NOW | RTLD_LOCAL)
+#define angle_dlsym dlsym
+#define angle_dlclose dlclose
+#define ANGLE_LIB_DIR "@rpath/"
+#define ANGLE_LIB_SUFFIX ".dylib"
+#define ANGLE_PLATFORM EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE
+#endif
 #include "gles-host-angle-gl.h"
 #define CGLContextObj GLESAngleContextRef
 #define CGLSetCurrentContext gles_angle_set_current
@@ -33,28 +49,32 @@ static bool gles_angle_load(void)
     static int loaded = -1;
     if (loaded >= 0) return loaded;
     void *egl = NULL, *gles = NULL;
-    const char *dirs[] = { "@rpath",
+    const char *dirs[] = { ANGLE_LIB_DIR,
 #ifdef GLES_ANGLE_DIR
-        GLES_ANGLE_DIR,
+        GLES_ANGLE_DIR "/",
 #endif
     };
     for (unsigned i = 0; i < G_N_ELEMENTS(dirs) && !(egl && gles); i++) {
-        g_autofree char *e = g_strdup_printf("%s/libEGL.dylib", dirs[i]);
-        g_autofree char *g = g_strdup_printf("%s/libGLESv2.dylib", dirs[i]);
-        if (egl) dlclose(egl);
-        if (gles) dlclose(gles);
-        egl = dlopen(e, RTLD_NOW | RTLD_LOCAL);
-        gles = egl ? dlopen(g, RTLD_NOW | RTLD_LOCAL) : NULL;
+        g_autofree char *e = g_strdup_printf("%slibEGL" ANGLE_LIB_SUFFIX, dirs[i]);
+        g_autofree char *g = g_strdup_printf("%slibGLESv2" ANGLE_LIB_SUFFIX, dirs[i]);
+        if (egl) angle_dlclose(egl);
+        if (gles) angle_dlclose(gles);
+        egl = angle_dlopen(e);
+        gles = egl ? angle_dlopen(g) : NULL;
     }
     loaded = egl && gles;
 #define GLES_ANGLE_LOAD(name) \
-    if (loaded && !(gles_angle_fn_##name = dlsym(#name[0] == 'e' ? egl : gles, #name))) { \
+    if (loaded && !(gles_angle_fn_##name = angle_dlsym(#name[0] == 'e' ? egl : gles, #name))) { \
         fprintf(stderr, "[gles-angle] no %s in ANGLE\n", #name); \
         loaded = 0; \
     }
     GLES_ANGLE_FUNCTIONS(GLES_ANGLE_LOAD)
 #undef GLES_ANGLE_LOAD
+#ifdef _WIN32
+    if (!loaded) fprintf(stderr, "[gles-angle] ANGLE is not available: %s\n", egl && gles ? "entry points" : "libEGL.dll or libGLESv2.dll did not load");
+#else
     if (!loaded) fprintf(stderr, "[gles-angle] ANGLE is not available: %s\n", egl && gles ? "entry points" : dlerror());
+#endif
     return loaded;
 }
 
@@ -63,7 +83,7 @@ static bool gles_angle_create(CGLContextObj share, bool es2, CGLContextObj *out)
     if (!gles_angle_load()) return false;
     if (angle_display == EGL_NO_DISPLAY) {
         PFNEGLGETPLATFORMDISPLAYEXTPROC get = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
-        EGLint attrs[] = {EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE, EGL_NONE};
+        EGLint attrs[] = {EGL_PLATFORM_ANGLE_TYPE_ANGLE, ANGLE_PLATFORM, EGL_NONE};
         EGLint ca[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
                        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE};
         EGLint count;

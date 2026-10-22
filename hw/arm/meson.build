@@ -124,7 +124,7 @@ arm_common_ss.add(files('boot.c'))
 # (gles-host-eagl.m). It picks between them on TARGET_OS_IPHONE, so the choice
 # here is only which framework and which extra file to add. A host with neither
 # framework gets a stub and the guest's GLES HLE probe fails cleanly.
-if host_opengl.found() or host_gles.found()
+if host_opengl.found() or host_gles.found() or (host_os == 'windows' and angle_prefix != '')
   # Do not put the QEMU source root on the C++ angle-bracket include path:
   # its VERSION file shadows libc++'s <version> on case-insensitive macOS.
   pvrtc_lib = static_library('ltm-pvrtc', 'powervr/pvrtc.cpp',
@@ -144,6 +144,10 @@ elif host_gles.found()
   # sysroot's --extra-ldflags vanish from the link.
   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G',
              if_true: [files('gles-host.c', 'gles-host-eagl.c'), host_gles, pvrtc_dep])
+elif host_os == 'windows' and angle_prefix != ''
+  # Windows has no CGL: ANGLE's build of gles-host.c is the bridge, behind gles-host-angle-only.c's entry points.
+  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G',
+             if_true: [files('gles-host-angle-only.c', 'gles-host-angle.c'), host_angle, pvrtc_dep])
 else
   arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('gles-host-stub.c'))
 endif

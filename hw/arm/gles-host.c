@@ -64,7 +64,9 @@
  * glOrtho/glFrustum/glClearDepth take doubles on the desktop and floats in ES.
  * Nothing here is a reimplementation; each shim below is a rename.
  */
+#ifdef __APPLE__
 #include <TargetConditionals.h>
+#endif
 
 #if TARGET_OS_IPHONE || defined(GLES_HOST_ANGLE)
 #define GLES_HOST_EAGL 1

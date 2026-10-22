@@ -1236,14 +1236,18 @@ host_opengl = dependency('appleframeworks', modules: 'OpenGL',
 # The experimental ANGLE renderer (gles-host-angle.c) beside CGL, chosen per boot (-M ...,gl-renderer=angle): it
 # needs ANGLE's headers to build and opens libEGL and libGLESv2 at run time, through @rpath (the app's Frameworks;
 # a development build's rpath names the prefix's out/ltm-metal), so a build without them still runs on CGL.
+# On Windows, which has no CGL, ANGLE (on D3D11) is the only renderer, its DLLs beside the exe.
 angle_prefix = get_option('ltm_angle_prefix')
 host_angle = declare_dependency()
 if angle_prefix != ''
-  if not host_opengl.found()
-    error('The experimental ANGLE renderer is built beside the CGL one, on macOS')
+  if host_os == 'windows'
+    host_angle = declare_dependency(compile_args: ['-I' + angle_prefix / 'include'])
+  elif not host_opengl.found()
+    error('The experimental ANGLE renderer is built beside the CGL one, on macOS, or alone, on Windows')
+  else
+    host_angle = declare_dependency(compile_args: ['-DGLES_HOST_WITH_ANGLE=1', '-I' + angle_prefix / 'include'],
+      link_args: ['-Wl,-rpath,' + angle_prefix / 'out/ltm-metal'])
   endif
-  host_angle = declare_dependency(compile_args: ['-DGLES_HOST_WITH_ANGLE=1', '-I' + angle_prefix / 'include'],
-    link_args: ['-Wl,-rpath,' + angle_prefix / 'out/ltm-metal'])
 endif
 # IOSurface (and the CoreFoundation dictionary that configures one) is not
 # optional garnish here: it is the render target the iOS present path reads,
