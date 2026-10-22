@@ -1053,15 +1053,15 @@ static void scts_from_ms(int64_t now_ms, uint8_t out[7])
 static void nitz_report(IosBbCore *bb)
 {
     time_t secs = (bb->now_ms + bb->wall_offset_ms) / 1000;
-    struct tm utc, local;
+    struct tm utc;
+    g_autoptr(GDateTime) local = g_date_time_new_from_unix_local(secs);
 
     if (!bb->nitz || !bb->ctzr_on || !bb->ch[bb->ctzr_ch].open) {
         return;
     }
     gmtime_r(&secs, &utc);
-    localtime_r(&secs, &local);
     chan_printf(bb, bb->ctzr_ch, "\r\n+CTZV: %ld,\"%02d/%02d/%02d,%02d:%02d:%02d\"\r\n",
-                (long)(local.tm_gmtoff / 900), utc.tm_year % 100, utc.tm_mon + 1, utc.tm_mday,
+                (long)(g_date_time_get_utc_offset(local) / G_USEC_PER_SEC / 900), utc.tm_year % 100, utc.tm_mon + 1, utc.tm_mday,
                 utc.tm_hour, utc.tm_min, utc.tm_sec);
 }
 

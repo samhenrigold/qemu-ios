@@ -150,6 +150,23 @@ static inline char *realpath(const char *path, char *resolved_path)
     return resolved_path;
 }
 
+/* The C runtime has no memmem. */
+static inline void *memmem(const void *haystack, size_t haystacklen,
+                           const void *needle, size_t needlelen)
+{
+    const char *h = haystack;
+
+    if (needlelen == 0) {
+        return (void *)haystack;
+    }
+    for (; haystacklen >= needlelen; h++, haystacklen--) {
+        if (memcmp(h, needle, needlelen) == 0) {
+            return (void *)h;
+        }
+    }
+    return NULL;
+}
+
 /*
  * Older versions of MinGW do not import _lock_file and _unlock_file properly.
  * This was fixed for v6.0.0 with commit b48e3ac8969d.

@@ -31,8 +31,10 @@
 
 #include "qemu-main.h"
 
+#ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach-o/loader.h>
+#endif
 
 #include "qemu-macos-extras.h"
 #include "hw/misc/ios_vibrator.h"
@@ -770,6 +772,7 @@ const char *qemu_ios_build_id(void)
     static char identity[33];
     static gsize ready;
     if (g_once_init_enter(&ready)) {
+#ifdef __APPLE__  /* elsewhere there is no build id yet (a PE image's would be its CodeView GUID) */
         Dl_info info;
         if (dladdr((void *)qemu_ios_build_id, &info) && info.dli_fbase) {
             const struct mach_header_64 *header = info.dli_fbase;
@@ -789,6 +792,7 @@ const char *qemu_ios_build_id(void)
                 }
             }
         }
+#endif
         g_once_init_leave(&ready, 1);
     }
     return identity[0] ? identity : NULL;

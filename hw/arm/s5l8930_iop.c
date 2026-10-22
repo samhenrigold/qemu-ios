@@ -1656,7 +1656,9 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         }
     }
     /* Make the fixed filenames/format marker durable before any ownership
-     * can reference them. Operations never create new entries afterward. */
+     * can reference them. Operations never create new entries afterward.
+     * Windows has no directory fsync: NTFS commits directory entries itself. */
+#ifndef _WIN32
     const char *write_dir = s->overlay_dir ? s->overlay_dir : s->nand_dir;
     int dirfd = open(write_dir, O_RDONLY | O_DIRECTORY);
     if (dirfd < 0 || fsync(dirfd) < 0) {
@@ -1667,6 +1669,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
         return;
     }
     close(dirfd);
+#endif
     s->vm_state_entry = qemu_add_vm_change_state_handler(iop_vm_state, s);
 }
 

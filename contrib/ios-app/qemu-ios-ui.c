@@ -46,7 +46,9 @@ static void ios_sequence_reset(void *opaque)
 #include "hw/arm/ipod_touch_pcf50633_pmu.h"
 #include "hw/arm/ipod_touch_lcd.h"
 
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 #include "qapi/qapi-commands-migration.h"
 #include "qapi/qapi-commands-misc.h"
@@ -146,7 +148,6 @@ static void ios_report_first_lit_frame(const uint8_t *bgra, int w, int h)
 
     /* A handful of stray pixels is noise; a drawn screen is nothing like it. */
     if (lit * 64 > pixels / 100) {
-        struct rusage ru;
         double cpu = 0;
 
         reported = true;
@@ -158,10 +159,13 @@ static void ios_report_first_lit_frame(const uint8_t *bgra, int w, int h)
          * same moment. CPU seconds for identical guest work is the honest
          * measure of interpreter throughput.
          */
+#ifndef _WIN32
+        struct rusage ru;
         if (getrusage(RUSAGE_SELF, &ru) == 0) {
             cpu = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6
                 + ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
         }
+#endif
 
         fprintf(stderr, "[boot] first lit frame after %.1f s wall, %.1f s cpu\n",
                 (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - first_capture_ns)
