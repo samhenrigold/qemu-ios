@@ -480,29 +480,42 @@ static void aes_set_key(IPodTouchAESState *s, const uint8_t *key, unsigned bits,
 
 /*
  * CBC over n bytes (a multiple of 16), in place or not, leaving iv at the last ciphertext block as OpenSSL's
- * AES_cbc_encrypt did. A key expanded for decryption run forward (s5l8900-compat's "encrypt") is not AES
- * encryption and EVP has no such mode, so that case runs QEMU's own block cipher on the decryption schedule,
- * which is what the legacy AES_encrypt computed with it.
+ * AES_cbc_encrypt did. A key run against the direction it was expanded for (s5l8900-compat's "encrypt" runs a
+ * decryption key forward; a guest that flips KEYLEN's direction mid-stream runs an encryption key backward) is
+ * not AES and EVP has no such mode, so those cases run QEMU's own block cipher on that schedule, which is what
+ * the legacy AES_encrypt and AES_decrypt computed with it.
  */
 static void aes_cbc(IPodTouchAESState *s, const uint8_t *in, uint8_t *out, size_t n, uint8_t *iv, bool enc)
 {
     if (!n) {
         return;
     }
-    if (enc && !s->key_encrypts) {
+    if (enc != s->key_encrypts) {
         AES_KEY schedule;
-        AES_set_decrypt_key(s->key, s->key_bits, &schedule);
+        if (s->key_encrypts) {
+            AES_set_encrypt_key(s->key, s->key_bits, &schedule);
+        } else {
+            AES_set_decrypt_key(s->key, s->key_bits, &schedule);
+        }
         for (size_t i = 0; i < n; i += 16) {
             uint8_t block[16];
-            for (unsigned j = 0; j < 16; j++) {
-                block[j] = in[i + j] ^ iv[j];
+            if (enc) {
+                for (unsigned j = 0; j < 16; j++) {
+                    block[j] = in[i + j] ^ iv[j];
+                }
+                AES_encrypt(block, out + i, &schedule);
+                memcpy(iv, out + i, 16);
+            } else {
+                memcpy(block, in + i, 16);          /* before an in-place decrypt overwrites it */
+                AES_decrypt(block, out + i, &schedule);
+                for (unsigned j = 0; j < 16; j++) {
+                    out[i + j] ^= iv[j];
+                }
+                memcpy(iv, block, 16);
             }
-            AES_encrypt(block, out + i, &schedule);
-            memcpy(iv, out + i, 16);
         }
         return;
     }
-    g_assert(enc == s->key_encrypts);
 
     const EVP_CIPHER *cipher = s->key_bits == 256 ? EVP_aes_256_cbc() :
                                s->key_bits == 192 ? EVP_aes_192_cbc() : EVP_aes_128_cbc();
