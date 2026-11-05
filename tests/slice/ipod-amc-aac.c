@@ -12,7 +12,7 @@
  * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_bank_cmd amc_engine0 ipod_touch_amc_write amc_decode_tick
  * SLICE:amc hw/arm/ipod_touch_amc.c fn ipod_touch_amc_port_avail amc_port_write
  * SLICE:amc hw/arm/ipod_touch_amc.c range static int amc_put_decoder( | static const VMStateInfo vmstate_amc_decoder
- * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_pre_save
+ * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_pre_save amc_post_load
  * PKG glib-2.0 libavcodec libavutil
  */
 #include "slice.h"
@@ -47,8 +47,9 @@ typedef struct {
     uint32_t xfers, xfer[AMC_XFER_QUEUE * 3], e0_resume; uint8_t port[AMC_PORT_BYTES];
     uint32_t port_len; void (*port_kick)(void *); void *port_opaque;
     void *encoder; uint32_t enc_out_head, enc_out_offset, enc_slot, enc_bytes;
-    GByteArray *enc_in; void (*port_sink)(void *); bool port_sunk;
+    GByteArray *enc_in; void (*port_sink)(void *); bool port_sunk; unsigned mode;
 } IPodTouchAMCState;
+enum { AMC_MODE_REGISTERS, AMC_MODE_DECODE };
 static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 #define IPOD_TOUCH_AMC(s) ((IPodTouchAMCState *)(s))
 #define AMC_REG(off) (s->regs[(off)/4])
@@ -629,6 +630,13 @@ int main(void) {
     av_packet_free(&pkt); av_frame_free(&pcm_frame); avcodec_free_context(&dec);
     amc_encoder_close(&e);
     assert(!e.encoder && !e.enc_out_head && !e.enc_in->len);
+    /* A snapshot's frame size is held to what the port can hold: amc_encode allocates and copies by it. */
+    e.codec_decode = false; e.state_handshake = false; e.mode = AMC_MODE_REGISTERS;
+    e.enc_bytes = AMC_PORT_BYTES;
+    assert(!amc_post_load(&e, 5));
+    e.enc_bytes = AMC_PORT_BYTES + 1;
+    assert(amc_post_load(&e, 5) == -EINVAL);
+    e.enc_bytes = 0;
     g_byte_array_unref(e.enc_in); g_byte_array_unref(aac); g_array_unref(packet_sizes);
     puts("PASS: the AAC encoder program: PCM in through the port, slot status, packets in bits into bank 5's buffer");
     puts("PASS: iOS 6's AAC program by its parameter block, 32-bit samples in slots of its jobs' size; 3.1's AMC 2.1 collection");
