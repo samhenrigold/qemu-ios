@@ -1,0 +1,83 @@
+--- a/src/udp.c
++++ b/src/udp.c
+@@ -60,6 +60,69 @@
+     }
+ }
+ 
++/*
++ * With egress restricted (guest networking off, or only forwards allowed), a
++ * query to the virtual nameserver gets an immediate "no such name" instead of
++ * silence, so guest apps fail at once rather than waiting out their resolver's
++ * timeout. The SOA's zero TTL keeps the answer out of negative caches, so names
++ * resolve again as soon as egress opens. `len` is the UDP length.
++ */
++static void udp_refuse_dns(Slirp *slirp, const struct ip *ip,
++                           const struct udphdr *uh, int len)
++{
++    /* Root SOA: type 6, class IN, TTL 0, empty names, every timer 0. */
++    static const uint8_t soa[] = { 0, 0, 6, 0, 1, 0, 0, 0, 0, 0, 22, 0, 0,
++                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++                                   0, 0, 0, 0, 0, 0, 0, 0 };
++    const uint8_t *q = (const uint8_t *)(uh + 1);
++    int qlen = len - (int)sizeof(struct udphdr);
++    int end = 12;
++    struct sockaddr_in saddr, daddr;
++    struct mbuf *m;
++    uint8_t *r;
++
++    /* One standard query (QR 0, opcode 0) with a plain, uncompressed name. */
++    if (qlen < 12 + 5 || (q[2] & 0xf8) != 0 || q[4] != 0 || q[5] != 1) {
++        return;
++    }
++    while (end < qlen && q[end] != 0) {
++        if (q[end] & 0xc0) {
++            return;
++        }
++        end += q[end] + 1;
++    }
++    end += 1 + 4; /* the root label, then QTYPE and QCLASS */
++    if (end > qlen) {
++        return;
++    }
++
++    m = m_get(slirp);
++    if (!m) {
++        return;
++    }
++    m->m_data += IF_MAXLINKHDR + sizeof(struct ip) + sizeof(struct udphdr);
++    if (end + (int)sizeof(soa) > M_FREEROOM(m)) {
++        m_free(m);
++        return;
++    }
++    r = (uint8_t *)m->m_data;
++    memcpy(r, q, end);
++    r[2] = 0x80 | (q[2] & 0x01); /* a response; RD as asked */
++    r[3] = 0x80 | 3; /* RA, NXDOMAIN */
++    r[6] = r[7] = 0; /* no answers */
++    r[8] = 0;
++    r[9] = 1; /* the SOA */
++    r[10] = r[11] = 0;
++    memcpy(r + end, soa, sizeof(soa));
++    m->m_len = end + sizeof(soa);
++
++    saddr.sin_addr = ip->ip_dst;
++    saddr.sin_port = uh->uh_dport;
++    daddr.sin_addr = ip->ip_src;
++    daddr.sin_port = uh->uh_sport;
++    udp_output(NULL, m, &saddr, &daddr, IPTOS_LOWDELAY);
++}
++
+ /* m->m_data  points at ip packet header
+  * m->m_len   length ip packet
+  * ip->ip_len length data (IPDU)
+@@ -164,6 +227,10 @@
+     }
+ 
+     if (slirp->restricted) {
++        if (ntohs(uh->uh_dport) == 53 && !slirp->disable_dns &&
++            ip->ip_dst.s_addr == slirp->vnameserver_addr.s_addr) {
++            udp_refuse_dns(slirp, ip, uh, len);
++        }
+         goto bad;
+     }
+ 
