@@ -169,10 +169,17 @@ static bool pmgr_modeled(hwaddr off)
            off == PMGR_CLOCK_CON1 || off == PMGR_POWER_ID;
 }
 
+/*
+ * 24 MHz is 3/125 ticks per ns. The kernel reads the timebase tens of
+ * thousands of times a second, and muldiv64's 128-bit divide was a visible
+ * share of each read; splitting off the remainder keeps the same floor.
+ */
+QEMU_BUILD_BUG_ON(PMGR_TIMEBASE_HZ != 24000000);
 static uint64_t pmgr_ticks(S5L8930PMGRState *s)
 {
-    return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->tick_base_ns,
-                    PMGR_TIMEBASE_HZ, NANOSECONDS_PER_SECOND);
+    uint64_t ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->tick_base_ns;
+
+    return ns / 125 * 3 + ns % 125 * 3 / 125;
 }
 
 static uint32_t evt_remaining(S5L8930PMGRState *s, S5L8930EventTimer *t)
