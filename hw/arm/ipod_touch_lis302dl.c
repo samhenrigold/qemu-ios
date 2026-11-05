@@ -33,8 +33,14 @@ static bool lis302dl_debug(void)
 /* The mounted sensor's reading of a device vector g (in g), in 1/64 g. */
 static void lis302dl_mounted(LIS302DLState *s, const double g[3], int out[3])
 {
-    if (s->dt_orientation && !s->axis[0] && !ios_dt_mount(s->dt_orientation, true, s->axis)) {
-        s->axis[0] = 0;
+    if (s->dt_orientation && !s->axis[0]) {
+        if (!ios_dt_mount(s->dt_orientation, true, s->axis)) {
+            s->axis[0] = 0;
+        } else if (s->flip_z) {
+            for (int i = 0; i < 3; i++) {
+                s->axis[i] = abs(s->axis[i]) == 3 ? -s->axis[i] : s->axis[i];
+            }
+        }
     }
     for (int i = 0; i < 3; i++) {
         double v = g[i];
@@ -506,6 +512,7 @@ static const VMStateDescription vmstate_lis302dl = {
 static const Property lis302dl_properties[] = {
     DEFINE_PROP_UINT8("whoami", LIS302DLState, whoami, ACCEL_WHOAMI_VALUE),
     DEFINE_PROP_STRING("dt-orientation", LIS302DLState, dt_orientation),
+    DEFINE_PROP_BOOL("flip-z", LIS302DLState, flip_z, false),
 };
 
 static void lis302dl_class_init(ObjectClass *klass, const void *data)

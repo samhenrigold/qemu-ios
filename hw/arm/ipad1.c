@@ -110,6 +110,7 @@ typedef struct A4Board {
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     const char *accel_dt;                /* the DT accelerometer's "orientation" (ios_dt_mount) */
+    bool accel_flip_z;                   /* its z the other way from the rule (the LIS model's flip-z) */
     uint8_t compass_orientation;         /* the AK8973 model's orientation (the DT compass node's encoding) */
     const char *gyro_dt;                 /* the DT gyro's "orientation" (ios_dt_mount) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
@@ -254,6 +255,12 @@ static const A4Board a4_n81 = {
         { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
     .accel_dt = "00ff0000ff00000000000100",
+    /*
+     * The rule gives z read as -z here, but 6.1.6's CoreMotion then reads face up as z +1 (Apple's
+     * face up is -1), and its fusion, the gyro being right, took every forward or back tilt the wrong
+     * way and kept re-levelling: "down" re-centred in gyro-steered Real Racing.
+     */
+    .accel_flip_z = true,
     .gyro_dt = "00ff0000ff0000000000ff00",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
@@ -1179,6 +1186,7 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
              */
             qdev_prop_set_uint8(dev, "whoami", 0x32);
             qdev_prop_set_string(dev, "dt-orientation", s->board->accel_dt);
+            qdev_prop_set_bit(dev, "flip-z", s->board->accel_flip_z);
         }
         if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
             qdev_prop_set_uint8(dev, "orientation", s->board->compass_orientation);

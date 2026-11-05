@@ -53,7 +53,8 @@ int main(void) {
  assert(sensor.pitch_mdeg==0 && sensor.roll_mdeg==90000 && !sensor.flat_pose);
  assert(sensor.out_x==-64 && sensor.shake_start_ns == -1 && sensor.last_sample_ns == -1);
  /* Each board's mount from its DT orientation: the mounts found on hardware-checked rotation (and the iPhone 4's
-  * z by its compass), the iPod touch 4G's z as the iPhone 4's, and a swap. Then the N81 reading through it. */
+  * z by its compass), the iPod touch 4G's rule mount, and a swap. Then the N81 reading through it with its board's
+  * flip-z (6.1.6's CoreMotion read face up as z +1 under the rule). */
  static const struct { const char *dt; bool accel; int8_t axis[3]; } boards[] = {
   { "04000000", true, { 1, 2, 3 } },                     /* N72, N18 */
   { "07000000", true, { -1, -2, 3 } },                   /* N88 */
@@ -74,11 +75,11 @@ int main(void) {
  int8_t bad[3];
  assert(!ios_dt_mount("0400",true,bad) && !ios_dt_mount("02000000000000000000000000",true,bad));
  assert(!ios_dt_mount("000000000000000000000000",true,bad));       /* not a mount: a zero row */
- LIS302DLState n81={0};n81.dt_orientation=(char *)"00ff0000ff00000000000100";
+ LIS302DLState n81={0};n81.dt_orientation=(char *)"00ff0000ff00000000000100";n81.flip_z=true;
  assert(lis302dl_apply_attitude(&n81,0,0,false));       /* portrait: x reads -y */
  assert(n81.base_x==64 && n81.base_y==0 && n81.base_z==0);
  assert(lis302dl_apply_attitude(&n81,0,90,false) && n81.base_x==0 && n81.base_y==64);
- assert(lis302dl_apply_attitude(&n81,0,0,true) && n81.base_z==64);   /* face up: z reads -z */
+ assert(lis302dl_apply_attitude(&n81,0,0,true) && n81.base_z==-64);  /* face up: z reads z */
 
  /* A board whose gyro sees the turn (motion): Home right to Home left is half a turn about the screen's axis over
   * 700 ms, gravity staying in the screen's plane, at -pi/0.7 rad/s about z; then a quarter turn back to portrait. */
