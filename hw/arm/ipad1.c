@@ -1813,6 +1813,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_uint8(dev, "port", i);
         if (i == 0 && s->codec) {
             qdev_connect_clock_in(dev, "lrclk", qdev_get_clock_out(s->codec, "lrclk"));
+            object_property_set_link(OBJECT(dev), "codec", OBJECT(s->codec), &error_fatal);
         }
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);

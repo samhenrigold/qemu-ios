@@ -38,6 +38,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/arm/s5l8930.h"
+#include "hw/arm/ipod_touch_cs42l58.h"
 #include "qemu/audio.h"
 #include "migration/vmstate.h"
 
@@ -98,6 +99,7 @@ struct S5L8930I2SState {
     bool ctrl_run;
     uint8_t port;                   /* property: i2s<port>, selects its NCO */
     Clock *lrclk;                   /* in: the codec's frame clock, followed while the port is the slave */
+    CS42L58State *codec;            /* link: the codec this port feeds, whose output volume the host hears */
     uint64_t nco_base;              /* property, S5L8920: the audio complex's NCO for MCLK */
     uint32_t nco_ref_hz;            /* property, S5L8920: that NCO's reference; 0 = the A4's PMGR NCO */
     unsigned rate;                  /* the voice's current frame rate */
@@ -265,14 +267,28 @@ static void i2s_push(S5L8930I2SState *s, uint64_t value, unsigned size)
     }
 }
 
+/* The voice wants more data. The codec's output volume applies on the way out, as the codec applies it after the port. */
 static void i2s_out_cb(void *opaque, int free_bytes)
 {
     S5L8930I2SState *s = opaque;
+    double gain = s->codec ? cs42l58_output_gain(s->codec) : 1.0;
+    uint8_t scaled[4096];
 
     while (free_bytes > 0 && s->level > 0) {
         uint32_t chunk = MIN(MIN((uint32_t)free_bytes, s->level),
                              I2S_RING - s->tail);
-        size_t done = audio_be_write(s->audio_be, s->voice, s->ring + s->tail, chunk);
+        const uint8_t *data = s->ring + s->tail;
+
+        if (gain != 1.0 && chunk >= 2) {
+            chunk = MIN(chunk, sizeof(scaled)) & ~1u;     /* whole S16 samples */
+            for (uint32_t i = 0; i < chunk; i += 2) {
+                long v = lrint((int16_t)lduw_le_p(data + i) * gain);
+
+                stw_le_p(scaled + i, CLAMP(v, INT16_MIN, INT16_MAX));
+            }
+            data = scaled;
+        }
+        size_t done = audio_be_write(s->audio_be, s->voice, (void *)data, chunk);
 
         if (!done) {
             break;
@@ -493,6 +509,7 @@ static const Property s5l8930_i2s_properties[] = {
     DEFINE_PROP_UINT64("nco-base", S5L8930I2SState, nco_base, 0),
     DEFINE_PROP_UINT32("nco-ref-hz", S5L8930I2SState, nco_ref_hz, 0),
     DEFINE_PROP_UINT32("tone-hz", S5L8930I2SState, tone_hz, 0),
+    DEFINE_PROP_LINK("codec", S5L8930I2SState, codec, TYPE_CS42L58, CS42L58State *),
 };
 
 static void s5l8930_i2s_class_init(ObjectClass *klass, const void *data)
