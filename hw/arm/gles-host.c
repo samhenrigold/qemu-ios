@@ -631,6 +631,10 @@ typedef struct {
     GLESArray attr[GLES_MAX_ATTRIBS];
     bool attr_normalized[GLES_MAX_ATTRIBS];
     GLuint program;             /* guest id; nonzero = ES 2.0 draws */
+    GLint fetch_sampler;        /* the program's framebuffer fetch (gles_es2_fetch_glsl); -1 for none */
+    GLint fetch_size;
+    GLuint fetch_tex;
+    GLint fetch_tex_size[2];
     GHashTable *glsl;           /* shader/program names, without a group */
     uint32_t glsl_next;
     GHashTable *uloc;
@@ -5320,6 +5324,58 @@ static char *gles_es2_glsl(const char *src)
     return g_string_free(out, false);
 }
 
+/* APPLE_shader_framebuffer_fetch, which 6.x's WebKit tiles use whatever GL_EXTENSIONS says (its text drew as solid
+ * boxes, with the program in use before): neither host GLSL has gl_LastFragData, so it reads a copy of the framebuffer
+ * (gles_es2_fetch_refresh), which is what it holds when the draw starts.
+ * shortcut: the declarations stand where the #extension stood, so an #extension after it fails the compile; none
+ * seen, move them below the last one if one comes. */
+static char *gles_es2_fetch_glsl(const char *src)
+{
+    static const char ext[] = "#extension GL_APPLE_shader_framebuffer_fetch";
+    GString *out = g_string_new(src);
+    const char *at = strstr(out->str, ext);
+
+    if (at) {
+        size_t start = at - out->str;
+        const char *eol = strchr(at, '\n');
+
+        g_string_erase(out, start, eol ? eol - at : -1);
+        g_string_insert(out, start, "uniform sampler2D gles_fetch; uniform highp vec2 gles_fetch_size;");
+        g_string_replace(out, "gl_LastFragData[0]", "texture2D(gles_fetch, gl_FragCoord.xy / gles_fetch_size)", 0);
+    }
+    return g_string_free(out, false);
+}
+
+/* The framebuffer as far as the viewport reaches, for the draw about to run, on a unit past the guest's 8. */
+static void gles_es2_fetch_refresh(GLint sampler, GLint size, GLuint *tex, GLint *tex_size)
+{
+    enum { unit = 15 };
+    GLint view[4], active;
+
+    glGetIntegerv(GL_VIEWPORT, view);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    glActiveTexture(GL_TEXTURE0 + unit);
+    if (!*tex) {
+        glGenTextures(1, tex);
+    }
+    glBindTexture(GL_TEXTURE_2D, *tex);
+    GLint w = view[0] + view[2], h = view[1] + view[3];
+    if (tex_size[0] == w && tex_size[1] == h) {
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, w, h, 0);
+        tex_size[0] = w;
+        tex_size[1] = h;
+    }
+    glActiveTexture(active);
+    glUniform1i(sampler, unit);
+    glUniform2f(size, w, h);
+}
+
 /* In ES 2.0 a vertex shader's gl_PointSize sizes a point and gl_PointCoord is defined for it; a legacy desktop context
  * does neither until VERTEX_PROGRAM_POINT_SIZE and POINT_SPRITE are on (it drew every point one pixel wide). An ES 2.0
  * context has no way to switch either off, so they go on with the program. (An ES host has neither switch.) */
@@ -5521,6 +5577,9 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
         if (gles_es2_bind_attr(cpu, i, first, nverts)) {
             bound |= 1u << i;
         }
+    }
+    if (gh.fetch_sampler >= 0 && !gles_guest_fault_pending()) {
+        gles_es2_fetch_refresh(gh.fetch_sampler, gh.fetch_size, &gh.fetch_tex, gh.fetch_tex_size);
     }
     if (gles_guest_fault_pending()) {
         /* an attribute page is being faulted in: the call is reissued */
@@ -5774,10 +5833,11 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
             g_autofree char *part = gles_es2_string(cpu, strs[i], lens ? lens[i] : -1);
             g_string_append_len(src, part, MIN(strlen(part), GLES_MAX_STRING - src->len));
         }
+        g_autofree char *fetched = gles_es2_fetch_glsl(src->str);
 #ifdef GLES_HOST_ANGLE
-        glsl = g_strdup(src->str);              /* an ES host compiles ES GLSL as it is */
+        glsl = g_strdup(fetched);               /* an ES host compiles ES GLSL as it is */
 #else
-        glsl = gles_es2_glsl(src->str);
+        glsl = gles_es2_glsl(fetched);
 #endif
         g_string_free(src, true);
         p = glsl;
@@ -5813,7 +5873,11 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
         }
         break;
     }
-    case 600: gles_es2_use_program(a[0]); break;   /* gh.program set above */
+    case 600:                                      /* gh.program set above */
+        gles_es2_use_program(a[0]);
+        gh.fetch_sampler = a[0] ? glGetUniformLocation(a[0], "gles_fetch") : -1;
+        gh.fetch_size = a[0] ? glGetUniformLocation(a[0], "gles_fetch_size") : -1;
+        break;
     case 601: glValidateProgram(a[0]); break;
 
     case 602: glUniform1f(a[0], gles_f(a[1])); break;
