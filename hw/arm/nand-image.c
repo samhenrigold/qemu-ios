@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/atomic.h"
 #include "qemu/bswap.h"
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
@@ -13,6 +14,17 @@
 #include "block/block.h"
 #include "system/runstate.h"
 #include "hw/arm/nand-image.h"
+
+/*
+ * A failed write, erase or flush latches: the helper must not report the stop as clean, which lets the device's old
+ * store be deleted (qemu_ios_ui_storage_failed).
+ */
+static bool nand_image_failed;
+
+bool nand_image_io_failed(void)
+{
+    return qatomic_read(&nand_image_failed);
+}
 
 struct NANDImage {
     BlockBackend *chip[NAND_IMAGE_MAX_CHIPS];
@@ -132,6 +144,7 @@ static void nand_image_vm_state(void *opaque, bool running, RunState state)
     for (unsigned i = 0; i < n->geo.chips; i++) {
         int result = blk_flush(n->chip[i]);
         if (result < 0) {
+            qatomic_set(&nand_image_failed, true);
             error_report("NAND image: flush of chip select %u: %s", i, strerror(-result));
         }
     }
@@ -235,7 +248,12 @@ int nand_image_write(NANDImage *n, unsigned chip, uint32_t page, const uint8_t *
     }
     nand_image_xor(n, n->buffer, record);
     /* bounded: nand_image_bad checked chip */
-    return blk_pwrite(n->chip[chip], (int64_t)page * n->stride, n->stride, n->buffer, 0);
+    int result = blk_pwrite(n->chip[chip], (int64_t)page * n->stride, n->stride, n->buffer, 0);
+
+    if (result < 0) {
+        qatomic_set(&nand_image_failed, true);
+    }
+    return result;
 }
 
 int nand_image_erase(NANDImage *n, unsigned chip, uint32_t block)
@@ -247,6 +265,11 @@ int nand_image_erase(NANDImage *n, unsigned chip, uint32_t block)
     }
     /* Zeros read as blank whether the host unmaps the range or writes them. */
     /* bounded: nand_image_bad checked chip */
-    return blk_pwrite_zeroes(n->chip[chip], (int64_t)first * n->stride,
-                             (int64_t)n->geo.pages_per_block * n->stride, BDRV_REQ_MAY_UNMAP);
+    int result = blk_pwrite_zeroes(n->chip[chip], (int64_t)first * n->stride,
+                                   (int64_t)n->geo.pages_per_block * n->stride, BDRV_REQ_MAY_UNMAP);
+
+    if (result < 0) {
+        qatomic_set(&nand_image_failed, true);
+    }
+    return result;
 }

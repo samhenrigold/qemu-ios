@@ -45,6 +45,7 @@ static int64_t g_get_monotonic_time(void) { return 0; }
 #define info_report(...) ((void)t0, ++successes)
 static bool ipod_touch_fmss_io_failed(void) { return false; }
 static bool ipod_touch_nor_io_failed(void) { return false; }
+static bool nand_image_io_failed(void) { return false; }
 #include <stdio.h>
 /* The production state is a named struct, used through a typedef in QOM. */
 typedef struct S5L8930IOPState S5L8930IOPState;
