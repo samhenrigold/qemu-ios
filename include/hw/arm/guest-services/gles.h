@@ -291,6 +291,10 @@ static inline const char *gles_id_name(uint32_t id)
 #define GLES_SLOT_GEN_BUFFERS                  GLES_ID_glGenBuffers  /* 0x0a20 */
 #define GLES_SLOT_BUFFER_DATA                  GLES_ID_glBufferData  /* 0x0a28 */
 #define GLES_SLOT_BUFFER_SUB_DATA              GLES_ID_glBufferSubData  /* 0x0a2c */
+/* OES_mapbuffer: the guest shim owns the mapping's memory and passes it as a third argument. */
+#define GLES_SLOT_MAP_BUFFER                   GLES_ID_glMapBuffer
+#define GLES_SLOT_UNMAP_BUFFER                 GLES_ID_glUnmapBuffer
+#define GLES_SLOT_GET_BUFFER_PARAMETERIV       GLES_ID_glGetBufferParameteriv
 
 /* OES framebuffer-object entry points. EAGL uses these itself inside
  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get

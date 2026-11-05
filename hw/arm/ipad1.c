@@ -110,6 +110,7 @@ typedef struct A4Board {
     /* I2C slaves in creation order (that order is the snapshot's). */
     A4I2CDevice i2c[10];
     const char *accel_dt;                /* the DT accelerometer's "orientation" (ios_dt_mount) */
+    bool accel_flip_z;                   /* its z the other way from the rule (the LIS model's flip-z) */
     uint8_t compass_orientation;         /* the AK8973 model's orientation (the DT compass node's encoding) */
     const char *gyro_dt;                 /* the DT gyro's "orientation" (ios_dt_mount) */
     uint32_t mt_tx_fifo;                 /* multitouch SPI TX FIFO bytes (its firmware is one burst); 0 = default */
@@ -254,6 +255,12 @@ static const A4Board a4_n81 = {
         { 2, 0x68, TYPE_S5L8930_L3G4200D, 0x21, 0x05 },   /* gyro,ap3gdl: INT1, INT2 */
     },
     .accel_dt = "00ff0000ff00000000000100",
+    /*
+     * The rule gives z read as -z here, but 6.1.6's CoreMotion then reads face up as z +1 (Apple's
+     * face up is -1), and its fusion, the gyro being right, took every forward or back tilt the wrong
+     * way and kept re-levelling: "down" re-centred in gyro-steered Real Racing.
+     */
+    .accel_flip_z = true,
     .gyro_dt = "00ff0000ff0000000000ff00",
     .bt_uart = 1,                            /* uart1/bluetooth,n88 */
     .gauge_uart = -1,
@@ -417,6 +424,11 @@ static uint32_t s5l8930_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 static void ipad1_amc_port_kick(void *cdma)
 {
     s5l8930_cdma_kick(cdma);
+}
+
+static void ipad1_amc_port_sink(void *cdma)
+{
+    s5l8930_cdma_sink_done(cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE);
 }
 
 static hwaddr ipad1_dart1_xlate(void *dart, unsigned sid, uint32_t va)
@@ -1179,6 +1191,7 @@ static void ipad1_i2c_create(IPad1MachineState *s, int n)
              */
             qdev_prop_set_uint8(dev, "whoami", 0x32);
             qdev_prop_set_string(dev, "dt-orientation", s->board->accel_dt);
+            qdev_prop_set_bit(dev, "flip-z", s->board->accel_flip_z);
         }
         if (!strcmp(d->type, TYPE_S5L8930_AK8973)) {
             qdev_prop_set_uint8(dev, "orientation", s->board->compass_orientation);
@@ -1800,6 +1813,7 @@ static void ipad1_init(MachineState *machine)
         qdev_prop_set_uint8(dev, "port", i);
         if (i == 0 && s->codec) {
             qdev_connect_clock_in(dev, "lrclk", qdev_get_clock_out(s->codec, "lrclk"));
+            object_property_set_link(OBJECT(dev), "codec", OBJECT(s->codec), &error_fatal);
         }
         sbd = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(sbd, &error_fatal);
@@ -1833,6 +1847,7 @@ static void ipad1_init(MachineState *machine)
     /* Its output port, which CDMA channel 0x17 drains (amc dma-channels). */
     sysbus_mmio_map(sbd, 1, S5L8930_AMC_PORT_BASE);
     IPOD_TOUCH_AMC(dev)->port_kick = ipad1_amc_port_kick;
+    IPOD_TOUCH_AMC(dev)->port_sink = ipad1_amc_port_sink;
     IPOD_TOUCH_AMC(dev)->port_opaque = s->cdma;
     s5l8930_cdma_set_source(s->cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE,
                             ipod_touch_amc_port_avail, dev);

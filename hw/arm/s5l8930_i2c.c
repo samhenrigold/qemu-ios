@@ -1325,7 +1325,12 @@ static uint8_t l3g_fifo_src(S5L8930L3GState *s)
 {
     uint8_t wtm = s->regs[L3G_FIFO_CTRL] & 0x1f;
 
-    return (s->level && s->level >= wtm ? 0x80 : 0) | (s->ovrn ? 0x40 : 0) |
+    /*
+     * WTM once the level passes the watermark. AppleAP3GDL programs WTM 2 (FIFO_CTRL 0x42) and pops only when FSS is
+     * above it, so a flag already up at the watermark held INT2 asserted with nothing to pop: an interrupt storm of
+     * FIFO_SRC reads, each an I2C transfer with its clock gates, whenever CoreMotion ran the gyro.
+     */
+    return (s->level && s->level > wtm ? 0x80 : 0) | (s->ovrn ? 0x40 : 0) |
            (s->level ? 0 : 0x20) | MIN(s->level, 0x1f);
 }
 

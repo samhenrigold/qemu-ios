@@ -46,5 +46,7 @@ int nand_image_read(NANDImage *n, unsigned chip, uint32_t page, uint8_t *record)
 int nand_image_write(NANDImage *n, unsigned chip, uint32_t page, const uint8_t *record);
 /* Every record of one erase block reads blank again. 0 or -errno. */
 int nand_image_erase(NANDImage *n, unsigned chip, uint32_t block);
+/* Whether a write, erase or flush of any image store failed; latched for the process. */
+bool nand_image_io_failed(void);
 
 #endif

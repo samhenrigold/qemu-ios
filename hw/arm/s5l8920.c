@@ -253,7 +253,7 @@ static const S5L8920Board s5l8920_n88 = {
     },
     .i2c = {
         { 0, 0x74, TYPE_PCF50633, 0x9d },
-        { 0, 0x4a, TYPE_CS42L58 },       /* cs42l61: a register file to its driver, as on the iPad */
+        { 0, 0x4a, TYPE_CS42L61 },       /* a register file to its driver, as on the iPad, and its volume */
         { 0, 0x39, TYPE_CD3272MIKEY },
         { 0, 0x1d, TYPE_LIS302DL },
         { 0, 0x1e, TYPE_S5L8930_AK8973 },
@@ -598,7 +598,7 @@ static void s5l8920_i2c_create(S5L8920MachineState *s, int n)
              * (listed first) */
             object_property_add_alias(OBJECT(s), "compass-heading", OBJECT(slave), "heading");
             s5l8930_ak8973_set_accel(DEVICE(slave), s->accel);
-        } else if (!strcmp(d->type, TYPE_CS42L58)) {
+        } else if (object_dynamic_cast(OBJECT(slave), TYPE_CS42L58)) {   /* or the 3GS's CS42L61 */
             s->codec = DEVICE(slave);
         }
     }
@@ -1119,6 +1119,7 @@ static void s5l8920_init(MachineState *machine)
     qdev_prop_set_uint32(dev, "nco-ref-hz", S5L8920_NCOREF_HZ);
     if (s->codec) {
         qdev_connect_clock_in(dev, "lrclk", qdev_get_clock_out(s->codec, "lrclk"));
+        object_property_set_link(OBJECT(dev), "codec", OBJECT(s->codec), &error_fatal);
     }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_I2S0_BASE);

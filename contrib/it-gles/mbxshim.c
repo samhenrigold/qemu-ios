@@ -105,12 +105,21 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 
 /* api and sg are glishim.c's (the GLEngine replacement, which #includes this
  * file); the MBX path leaves them zero. */
-typedef struct {
+typedef struct MapStorage MapStorage;
+typedef struct GuestGC {
     unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes;
     unsigned *batch, batch_len;   /* glishim's command buffer (GLES_BATCH); unused on the MBX path */
+    /* glMapBuffer: the buffers bound here (bindings are per context), and the sharegroup that owns the
+     * mapped buffers' memory (buffers are per sharegroup; see s_mapBuffer). */
+    unsigned array_buffer, element_buffer;
+    struct GuestGC *group;
+    MapStorage *maps;             /* on the sharegroup's GuestGC */
+    volatile int maps_lock;       /* OSSpinLock */
 } GuestGC;
 extern void *calloc(unsigned long, unsigned long);
 extern void free(void *);
+extern void OSSpinLockLock(volatile int *);
+extern void OSSpinLockUnlock(volatile int *);
 static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args);
 #define A(...) (const unsigned[]){ __VA_ARGS__ }
 static void w(const char *s)
@@ -643,7 +652,11 @@ static int s_texSubImage2D(void *gc, unsigned target, unsigned level,
       return (int)qc(307, gc, 9,
                      A(target, level, xoff, yoff, wd_, ht, fmt, type, pixels)); }
 static int s_bindBuffer(void *gc, unsigned target, unsigned buf)
-    { return (int)qc(642, gc, 2, A(target, buf)); }
+    {
+        if (gc && target == 0x8892) ((GuestGC *)gc)->array_buffer = buf;          /* ARRAY_BUFFER */
+        if (gc && target == 0x8893) ((GuestGC *)gc)->element_buffer = buf;        /* ELEMENT_ARRAY_BUFFER */
+        return (int)qc(642, gc, 2, A(target, buf));
+    }
 static int s_scalex(void *gc, unsigned x, unsigned y, unsigned z)
     { return (int)qc(796, gc, 3, A(x, y, z)); }
 
@@ -723,8 +736,63 @@ static int s_compressedTexSubImage2D(void *gc, unsigned target, unsigned level,
                      A(target, level, xoff, yoff, wd_, ht, fmt, imgsz, data)); }
 static int s_genBuffers(void *gc, unsigned n, unsigned ids)
     { return (int)qc(644, gc, 2, A(n, ids)); }
+/*
+ * glMapBuffer (OES_mapbuffer). A buffer's bytes live in the host, which cannot allocate guest memory, so this
+ * shim gives the mapping memory of its own: one block per mapped buffer, owned by the sharegroup (where buffer
+ * names live), kept for the buffer's next map and freed with the buffer. The host copies the buffer into it at
+ * glMapBuffer and back at glUnmapBuffer. The app's own glBufferData pointer is never used: an app may free that
+ * once the call returns.
+ */
+struct MapStorage { unsigned name, size; void *data; MapStorage *next; };
+static GuestGC *map_owner(void *gc)
+{
+    GuestGC *c = gc;
+    return c && c->group ? c->group : c;
+}
+static void map_free(GuestGC *owner, unsigned n, const unsigned *names)
+{
+    OSSpinLockLock(&owner->maps_lock);
+    for (MapStorage **link = &owner->maps; *link;) {
+        MapStorage *m = *link;
+        unsigned i = 0;
+        while (names && i < n && names[i] != m->name) i++;
+        if (!names || i < n) { *link = m->next; free(m->data); free(m); }
+        else link = &m->next;
+    }
+    OSSpinLockUnlock(&owner->maps_lock);
+}
 static int s_deleteBuffers(void *gc, unsigned n, unsigned ids)
-    { return (int)qc(643, gc, 2, A(n, ids)); }
+    {
+        if (gc && n && n < 0x10000 && guest_fault_read(ids, n * 4))
+            map_free(map_owner(gc), n, (const unsigned *)(unsigned long)ids);
+        return (int)qc(643, gc, 2, A(n, ids));
+    }
+static void *s_mapBuffer(void *gc, unsigned target, unsigned access)
+    {
+        GuestGC *c = gc, *owner = map_owner(gc);
+        unsigned name = !c ? 0 : target == 0x8893 ? c->element_buffer : target == 0x8892 ? c->array_buffer : 0;
+        volatile int size = 0;
+        void *data = 0;
+
+        /* No buffer bound, or an empty one: the host sets the error. */
+        if (name && qc(651, gc, 3, A(target, 0x8764, (unsigned)(unsigned long)&size)) >= 0 &&  /* BUFFER_SIZE */
+            size > 0 && size <= 64 * 1024 * 1024) {
+            OSSpinLockLock(&owner->maps_lock);
+            MapStorage *m = owner->maps;
+            while (m && m->name != name) m = m->next;
+            if (!m && (m = calloc(1, sizeof(*m)))) { m->name = name; m->next = owner->maps; owner->maps = m; }
+            if (m && m->size < (unsigned)size) { free(m->data); m->data = calloc(1, size); m->size = m->data ? size : 0; }
+            data = m ? m->data : 0;
+            OSSpinLockUnlock(&owner->maps_lock);
+            /* The host writes the buffer into it: touch the pages for writing first, as guest_fault_read does
+             * for reads, rather than have the host take a fault per page. */
+            if (data) for (int x = 0; x < size; x += 4096) ((volatile unsigned char *)data)[x] = 0;
+        }
+        long long mapped = qc(649, gc, 3, A(target, access, (unsigned)(unsigned long)data));
+        return mapped > 0 ? (void *)(unsigned long)mapped : 0;
+    }
+static int s_unmapBuffer(void *gc, unsigned target)
+    { return (int)qc(650, gc, 1, A(target)); }
 static int s_bufferData(void *gc, unsigned target, unsigned size,
                         unsigned data, unsigned usage)
     { guest_fault_read(data, size);
@@ -757,6 +825,7 @@ static int GLESCreateSharegroup(void **out)
 static int GLESDestroySharegroup(void *sg)
 {
     if (sg && ((GuestGC *)sg)->host) qc(GLES_OP_DELETE_SHAREGROUP, 0, 1, A(((GuestGC *)sg)->host));
+    if (sg) map_free(sg, 0, 0);
     free(sg);
     return 0;
 }
@@ -950,6 +1019,8 @@ static void gles_hand_table(void **table)
         table[643] = (void *)s_deleteBuffers;
         table[644] = (void *)s_genBuffers;
         table[646] = (void *)s_bufferData;
+        table[649] = (void *)s_mapBuffer;
+        table[650] = (void *)s_unmapBuffer;
         table[647] = (void *)s_bufferSubData;
 
         table[60]  = (void *)s_depthFunc;
@@ -982,6 +1053,7 @@ static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
         gc->host = (unsigned)host;
     }
     gc->api = api;
+    gc->group = sharegroup;
     w("[mbxshim] GLESCreateGC\n");
 
     if (fw_table) {
@@ -1077,6 +1149,7 @@ static int GLESDestroyGC(void *gc)
 {
     ca_detach_view(ca_view_for_gc(gc, 0));
     if (gc && ((GuestGC *)gc)->host) qc(GLES_OP_DELETE_CONTEXT, gc, 0, A(0));
+    if (gc && !((GuestGC *)gc)->group) map_free(gc, 0, 0);
     free(gc);
     return 0;
 }

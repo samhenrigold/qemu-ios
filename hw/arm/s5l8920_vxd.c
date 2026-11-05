@@ -81,6 +81,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8920VXDState, S5L8920_VXD)
 #define VXD_MB_NS           8000
 #define VXD_PENDING         16
 
+#define VXD_TARGETS         32
+
+typedef struct VXDTarget {
+    int64_t seq;
+    uint32_t ptd, luma, chroma, stride;
+} VXDTarget;
+
 struct S5L8920VXDState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
@@ -89,6 +96,15 @@ struct S5L8920VXDState {
     uint32_t comms[0x1000 / 4];
     uint32_t ram[2][MTX_RAM_WORDS];   /* code (MCMID 0x10..), data (0x18..) */
     VXDH264 *h264;
+    /*
+     * Where each picture goes, by its tag (the count of pictures given). The host decoder gives them in display
+     * order, a reference picture only once the next one is decoded; the hardware writes each to its own buffer as
+     * it decodes it, and the guest reorders. Written to the current render's buffer, a stream with B pictures had
+     * each P picture in the next P picture's buffer. ponytail: a stream's last held-back picture never comes (no
+     * end of stream reaches the host decoder); its buffer keeps what it held.
+     */
+    VXDTarget target[VXD_TARGETS];
+    int64_t seq;
     uint32_t ram_addr;                /* word address for MTX_RAM_DATA */
     QEMUTimer *done;                  /* the oldest pending render's end */
     uint32_t pending;                 /* renders decoded, not yet completed */
@@ -146,11 +162,15 @@ static bool vxd_rw(uint32_t ptd, uint32_t va, void *buf, size_t len, bool write)
     return true;
 }
 
+#define VXD_BS_SEGS          64
+
 /* What one render command buffer asks of the decoder (psb's DXVA command set). */
 typedef struct VXDRender {
     uint32_t fe[5];          /* VEC H264 FE SPS0, PPS0, CUR_PIC0, SLICE0, SLICE1 */
     uint32_t sr_offset;
-    uint32_t bs_va, bs_len;  /* the bitstream LLDMA, to the VEC shift register */
+    uint32_t bs_va, bs_len;  /* the bitstream LLDMA, to the VEC shift register: its start, its total length */
+    uint32_t seg_va[VXD_BS_SEGS], seg_len[VXD_BS_SEGS];   /* and its descriptors' pieces */
+    unsigned segs;
     uint32_t size, mode, luma, chroma;
 } VXDRender;
 
@@ -163,6 +183,7 @@ typedef struct VXDRender {
 #define CMD_SLLDMA           0xc
 #define VEC_H264_FE_SPS0     0x04800a00
 #define LLDMA_PERIPH_SHIFTREG 0x820
+#define LLDMA_LAST           0x80000000u
 #define CMDS_DISPLAY_PICTURE_SIZE 0x1000   /* MSVDX_CMDS registers, as RENDEC chunks address them */
 #define CMDS_OPERATING_MODE       0x1008
 #define CMDS_LUMA_RECONSTRUCTED   0x100c
@@ -223,9 +244,26 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
             break;
         case CMD_LLDMA:
         case CMD_SLLDMA:
-            if (vxd_rw(ptd, (c[i] & 0x0fffffff) << 4, d, sizeof(d), false) && d[2] == LLDMA_PERIPH_SHIFTREG) {
-                r->bs_va = d[6];
-                r->bs_len = d[1] & 0xffff;
+            /*
+             * A descriptor moves at most 0xffff bytes: a longer slice NAL (a 1024x768 movie's IDR, 290 KB) is a
+             * list, word 7 the next descriptor >> 4, word 1 bit 31 on the last. Only the first one read, every
+             * picture over 64 KiB failed.
+             */
+            for (uint32_t ll = (c[i] & 0x0fffffff) << 4, k = 0; k < VXD_BS_SEGS; ll = d[7] << 4, k++) {
+                if (!vxd_rw(ptd, ll, d, sizeof(d), false) || d[2] != LLDMA_PERIPH_SHIFTREG) {
+                    break;
+                }
+                if (!k) {
+                    r->bs_va = d[6];
+                    r->bs_len = 0;
+                }
+                r->seg_va[k] = d[6];
+                r->seg_len[k] = d[1] & 0xffff;
+                r->bs_len += d[1] & 0xffff;
+                r->segs = k + 1;
+                if ((d[1] & LLDMA_LAST) || !d[7]) {
+                    break;
+                }
             }
             i++;
             break;
@@ -287,11 +325,16 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
 {
     enum { BACK = 64 };
     static const unsigned strides[8] = { 384, 768, 1280, 1920, 512, 1024, 2048, 4096 };
-    uint32_t base = r->bs_va - BACK, end = r->bs_va + r->bs_len;
+    uint32_t end = r->segs ? r->seg_va[r->segs - 1] + r->seg_len[r->segs - 1] : 0;   /* no segs: refused below */
     g_autofree uint8_t *buf = g_malloc(BACK + r->bs_len);
 
-    if (r->bs_va < BACK || !r->bs_len || !vxd_rw(ptd, base, buf, BACK + r->bs_len, false)) {
+    if (r->bs_va < BACK || !r->bs_len || !vxd_rw(ptd, r->bs_va - BACK, buf, BACK, false)) {
         return -1;
+    }
+    for (unsigned i = 0, at = BACK; i < r->segs; at += r->seg_len[i++]) {
+        if (!vxd_rw(ptd, r->seg_va[i], buf + at, r->seg_len[i], false)) {
+            return -1;
+        }
     }
     bool annexb;
     int nal = vxd_nal_start(buf, BACK, r->bs_len, &annexb);
@@ -314,26 +357,35 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
         .sps0 = r->fe[0], .pps0 = r->fe[1], .pic0 = r->fe[2], .slice0 = r->fe[3], .slice1 = r->fe[4],
         .last = last,
     };
+    if (last) {
+        s->seq++;
+        s->target[s->seq % VXD_TARGETS] = (VXDTarget){ s->seq, ptd, r->luma, r->chroma, strides[(r->mode >> 24) & 7] };
+        sl.tag = s->seq;
+    }
     VXDPicture pic;
     int got = vxd_h264_decode(s->h264, &sl, &pic);
-    if (got <= 0) {
-        return got;
-    }
-    unsigned stride = strides[(r->mode >> 24) & 7];
-    unsigned w = MIN((unsigned)pic.width, stride), hgt = pic.height;
-    g_autofree uint8_t *row = g_malloc(w);
-    for (unsigned y = 0; y < hgt; y++) {
-        vxd_rw(ptd, r->luma + y * stride, (void *)(pic.plane[0] + y * pic.stride[0]), w, true);
-    }
-    for (unsigned y = 0; y < hgt / 2; y++) {
-        for (unsigned x = 0; x < w / 2; x++) {
-            row[2 * x] = pic.plane[1][y * pic.stride[1] + x];
-            row[2 * x + 1] = pic.plane[2][y * pic.stride[2] + x];
+    for (int more = got; more > 0; more = vxd_h264_next(s->h264, &pic)) {
+        const VXDTarget *t = &s->target[(uint64_t)pic.tag % VXD_TARGETS];
+        if (pic.tag < 0 || t->seq != pic.tag) {
+            VXD_LOG(s, "picture %" PRId64 " has no buffer\n", pic.tag);
+            continue;
         }
-        vxd_rw(ptd, r->chroma + y * stride, row, w, true);
+        unsigned w = MIN((unsigned)pic.width, t->stride), hgt = pic.height;
+        g_autofree uint8_t *row = g_malloc(w);
+        for (unsigned y = 0; y < hgt; y++) {
+            vxd_rw(t->ptd, t->luma + y * t->stride, (void *)(pic.plane[0] + y * pic.stride[0]), w, true);
+        }
+        for (unsigned y = 0; y < hgt / 2; y++) {
+            for (unsigned x = 0; x < w / 2; x++) {
+                row[2 * x] = pic.plane[1][y * pic.stride[1] + x];
+                row[2 * x + 1] = pic.plane[2][y * pic.stride[2] + x];
+            }
+            vxd_rw(t->ptd, t->chroma + y * t->stride, row, w, true);
+        }
+        VXD_LOG(s, "picture %" PRId64 " %ux%u to %08x/%08x stride %u\n", pic.tag, w, hgt, t->luma, t->chroma,
+                t->stride);
     }
-    VXD_LOG(s, "picture %ux%u to %08x/%08x stride %u\n", w, hgt, r->luma, r->chroma, stride);
-    return 1;
+    return got;
 }
 
 /* The firmware's start: its signature and where its rings are. */

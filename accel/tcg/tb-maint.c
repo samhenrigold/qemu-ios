@@ -1218,6 +1218,14 @@ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
 }
 
 /*
+ * A guest kernel zeroing or copying a page that once held code writes it word by word, and every word takes the slow
+ * path until the last TB on the page is gone: 1024 slow writes for a 4 KiB page. Once the writes have run sequentially
+ * for SMC_STREAM_RUN stores, invalidate on to that end of the page in one go (more than the writes need, which is
+ * always safe), so the page loses its write protection and the rest of the run is ordinary stores.
+ */
+#define SMC_STREAM_RUN 8
+
+/*
  * len must be <= 8 and start must be a multiple of len.
  * Called via softmmu_template.h when code areas are written to with
  * iothread mutex not held.
@@ -1225,12 +1233,31 @@ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
 void tb_invalidate_phys_range_fast(CPUState *cpu, ram_addr_t start,
                                    unsigned len, uintptr_t ra)
 {
+    static __thread ram_addr_t stream_start, stream_end;
+    static __thread int stream_run;     /* > 0: upward, < 0: downward */
     PageDesc *p = page_find(start >> TARGET_PAGE_BITS);
 
     if (p) {
         ram_addr_t last = start + len - 1;
-        struct page_collection *pages = page_collection_lock(start, last);
+        struct page_collection *pages;
 
+        if (start == stream_end) {
+            stream_run = MAX(stream_run, 0) + 1;
+        } else if (start + len == stream_start) {
+            stream_run = MIN(stream_run, 0) - 1;
+        } else {
+            stream_run = 0;
+        }
+        stream_start = start;
+        stream_end = start + len;
+        if (abs(stream_run) >= SMC_STREAM_RUN) {
+            if (stream_run > 0) {
+                last = start | ~TARGET_PAGE_MASK;
+            } else {
+                start &= TARGET_PAGE_MASK;
+            }
+        }
+        pages = page_collection_lock(start, last);
         tb_invalidate_phys_page_range__locked(cpu, pages, p,
                                               start, last, ra);
         page_collection_unlock(pages);

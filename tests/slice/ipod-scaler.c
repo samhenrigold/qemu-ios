@@ -45,11 +45,11 @@ int main(void)
 {
     int irq=0;IPodScalerState s={.irq=&irq,.done=&done};
     uint32_t *r=s.regs;
-    /* A transfer stays busy, its done interrupt unraised, until its end: 5 ns a destination pixel, 20 us at least.
+    /* A transfer stays busy, its done interrupt unraised, until its end: 1 ns a destination pixel, 20 us at least.
      * Done at the start write, an asynchronous transfer's completion freed its request under the kext's submit path. */
     r[2]=1;r[0x40/4]=(640<<16)|960;
     scaler_write(&s,4,1,4);
-    assert(!irq && (r[1]&1) && !r[3] && done.deadline==now+640*960*5);
+    assert(!irq && (r[1]&1) && !r[3] && done.deadline==now+640*960);
     run_to_end(&s);
     assert(irq && !(r[1]&1) && r[3]==1);
     scaler_write(&s,12,1,4);assert(!irq);

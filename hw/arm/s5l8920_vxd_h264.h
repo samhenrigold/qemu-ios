@@ -11,17 +11,24 @@ typedef struct VXDSlice {
     unsigned sr_bit;        /* where the shift register starts, in bits from the NAL's first byte */
     uint32_t sps0, pps0, pic0, slice0, slice1;
     bool last;              /* the picture's last slice */
+    int64_t tag;            /* the picture's, at its last slice: its VXDPicture comes back with it */
 } VXDSlice;
 
 typedef struct VXDPicture {
     const uint8_t *plane[3];  /* Y, Cb, Cr (4:2:0) */
     int stride[3];
     int width, height;
+    int64_t tag;              /* the VXDSlice's */
 } VXDPicture;
 
 VXDH264 *vxd_h264_new(void);
 void vxd_h264_free(VXDH264 *h);
-/* 1: a picture is complete in *pic (valid until the next call); 0: not yet; -1: the slice failed. */
+/*
+ * 1: a picture is complete in *pic (valid until the next call); 0: not yet; -1: the slice failed. Pictures come
+ * in display order, not the slices' (a stream with B pictures holds a reference picture back until the next one).
+ */
 int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic);
+/* After a 1: the next complete picture, if another is (1), as vxd_h264_decode. */
+int vxd_h264_next(VXDH264 *h, VXDPicture *pic);
 
 #endif

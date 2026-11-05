@@ -31,6 +31,7 @@ typedef struct S5L8930PMGRState S5L8930PMGRState;
 #define MIN(a,b) ((a)<(b)?(a):(b))
 static int64_t now;
 static int resets;
+#define QEMU_BUILD_BUG_ON(x) _Static_assert(!(x), "")
 static uint64_t muldiv64(uint64_t a,uint64_t b,uint64_t c) {return (__uint128_t)a*b/c;}
 static int64_t qemu_clock_get_ns(int clock) {return now;}
 static void timer_mod(QEMUTimer *t,int64_t at) {t->pending=true;t->deadline=at;}
@@ -58,5 +59,16 @@ int main(void) {
  wr(&s,PMGR_WDOG_CTL,0);wr(&s,PMGR_WDOG_RST,0);wr(&s,PMGR_WDOG_TMR,0);wr(&s,PMGR_WDOG_CTL,4);assert(resets==3&&!timer.pending);
  wr(&s,PMGR_WDOG_CTL,0);now=0;wr(&s,PMGR_EVT_COUNT(0),24000);wr(&s,PMGR_EVT_STATE(0),3);assert(event.pending&&event.deadline==1000001);now=500000;assert(rd(&s,PMGR_EVT_COUNT(0))==12000);evt_expire(&s.evt[0]);assert(irq);wr(&s,PMGR_EVT_STATE(0),3);assert(!irq);
  wr(&s,GATE_START,0x80000005);assert(rd(&s,GATE_START)==0x55);wr(&s,0x00,PLL_CON0_ENABLE|PLL_CON0_UPDATE);assert((rd(&s,0)&(PLL_CON0_LOCKED|PLL_CON0_UPDATE))==PLL_CON0_LOCKED);wr(&s,0,0);assert(!(rd(&s,0)&PLL_CON0_LOCKED));
- puts("PASS PMGR watchdog expiry/feed/disable, immediate reset, event timer and clock polls");
+     /* The timebase is the same floor as muldiv64's, without its 128-bit divide. */
+    {
+        S5L8930PMGRState tb = { .tick_base_ns = 0 };
+        uint64_t x = 88172645463325252ULL;
+        for (unsigned i = 0; i < 2000000; i++) {
+            x ^= x << 13, x ^= x >> 7, x ^= x << 17;
+            now = (int64_t)(x >> (i % 40 + 1));
+            assert(pmgr_ticks(&tb) == muldiv64((uint64_t)now, PMGR_TIMEBASE_HZ, NANOSECONDS_PER_SECOND));
+        }
+        now = 0;
+    }
+puts("PASS PMGR watchdog expiry/feed/disable, immediate reset, event timer and clock polls");
 }

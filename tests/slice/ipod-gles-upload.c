@@ -1,6 +1,6 @@
 /* Demand-paged texture input is resident before host reads; sizes obey unpack alignment.
  *
- * SLICE contrib/it-gles/mbxshim.c range typedef struct {\n | \nextern void *calloc
+ * SLICE contrib/it-gles/mbxshim.c range typedef struct MapStorage MapStorage; | \nextern void *calloc
  * SLICE contrib/it-gles/mbxshim.c range static int guest_fault_read( | /* ------------------------------------------------------- implemented slots
  */
 #include <assert.h>

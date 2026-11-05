@@ -55,6 +55,7 @@ typedef struct LIS302DLState {
     /* "dt-orientation": the board DT accelerometer node's "orientation" bytes in hex, as the guest's driver
      * reads them; the part reads as that driver expects (ios_dt_mount). Empty: the device's own axes. */
     char *dt_orientation;
+    bool flip_z;            /* the mount reads device z the other way from ios_dt_mount's rule (the iPod touch 4G) */
     int8_t axis[3];         /* derived: each sensor axis as a signed device axis (1-based), 0 until derived */
     /* set by a machine whose gyro sees the turn: an attitude change turns the device over time (lis302dl_motion_rate); transient, not migrated */
     bool motion;

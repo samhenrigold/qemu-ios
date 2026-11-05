@@ -1,4 +1,4 @@
-/* VXD H.264 on the host: every picture of three streams, given as the guest gives them (a slice NAL, the register
+/* VXD H.264 on the host: every picture of four streams, given as the guest gives them (a slice NAL, the register
  * fields AppleVXD375Framework programs and where the shift register starts) with no SPS or PPS, must come out
  * byte-identical to the stream's own decode.
  *
@@ -61,11 +61,18 @@ static void run(const char *name, const uint8_t *data, size_t size)
     AVPacket *pkt = av_packet_alloc();
     AVFrame *f = av_frame_alloc();
     GPtrArray *frames = g_ptr_array_new_with_free_func(g_free);
+    int64_t order[64], given = 0;
     for (size_t at = 0; at < size;) {
         size_t e = at + 3;
         while (e + 3 <= size && !(data[e] == 0 && data[e + 1] == 0 && (data[e + 2] == 1 || (data[e + 2] == 0 && e + 3 < size && data[e + 3] == 1)))) e++;
         if (e + 3 > size) e = size;
-        av_new_packet(pkt, e - at); memcpy(pkt->data, data + at, e - at); avcodec_send_packet(ref, pkt); av_packet_unref(pkt);
+        /* Each picture's slices carry its index in decode order; the unit's pictures must come back with it. */
+        const uint8_t *hdr = data + at + (data[at + 2] == 1 ? 3 : 4);
+        bool slice = (hdr[0] & 31) == 1 || (hdr[0] & 31) == 5;
+        given += slice && (hdr[1] & 0x80);
+        av_new_packet(pkt, e - at); memcpy(pkt->data, data + at, e - at);
+        pkt->pts = slice ? given - 1 : AV_NOPTS_VALUE;
+        avcodec_send_packet(ref, pkt); av_packet_unref(pkt);
         at = e;
         while (avcodec_receive_frame(ref, f) == 0) {
             size_t ys = (size_t)f->width * f->height;
@@ -75,13 +82,14 @@ static void run(const char *name, const uint8_t *data, size_t size)
                 for (int y = 0; y < f->height / 2; y++)
                     memcpy(copy + ys + (c - 1) * ys / 4 + y * f->width / 2, f->data[c] + y * f->linesize[c], f->width / 2);
             g_ptr_array_add(frames, copy);
+            order[frames->len - 1] = f->pts;
         }
     }
 
     /* The guest's view: slices only. */
     VXDH264 *h = vxd_h264_new();
     Truth t = {0};
-    unsigned pictures = 0, slices = 0;
+    unsigned pictures = 0, slices = 0, pictures_given = 0;
     size_t i = 0;
     while (i + 3 < size) {
         size_t s = i + (data[i + 2] == 1 ? 3 : 4), e = s;
@@ -108,8 +116,13 @@ static void run(const char *name, const uint8_t *data, size_t size)
             if (type == 5) ue(&r);
             if (t.poct == 0) { u(&r, t.l2poc); if (t.bfpo) se(&r); }
             if (t.red) ue(&r);
-            unsigned l0 = t.l0;
-            if (st == 0) { if (u(&r, 1)) l0 = ue(&r) + 1; if (u(&r, 1)) for (unsigned idc; (idc = ue(&r)) != 3;) ue(&r); }
+            unsigned l0 = t.l0, l1 = t.l1;
+            if (st == 1) u(&r, 1);
+            if (st <= 1) {
+                if (u(&r, 1)) { l0 = ue(&r) + 1; if (st == 1) l1 = ue(&r) + 1; }
+                for (unsigned list = 0; list <= st; list++) if (u(&r, 1)) for (unsigned idc; (idc = ue(&r)) != 3;) ue(&r);
+            }
+            assert(!(st == 1 && t.wb == 1));
             if (t.wp && st == 0) {
                 ue(&r); ue(&r);
                 for (unsigned k = 0; k < l0; k++) { if (u(&r, 1)) { se(&r); se(&r); } if (u(&r, 1)) { se(&r); se(&r); se(&r); se(&r); } }
@@ -132,16 +145,19 @@ static void run(const char *name, const uint8_t *data, size_t size)
                 .nal = nal, .len = len, .sr_bit = sr_bit, .last = last,
                 .sps0 = (t.w - 1) | t.fmo << 8 | 1 << 9 | t.d8x8 << 10,
                 .pps0 = t.t8x8 | t.cip << 1 | t.cabac << 2 | t.wb << 8 | (t.cqp & 0x1f) << 16 | (t.cqp & 0x1f) << 24,
-                .pic0 = (t.h - 1) << 8 | (t.w * t.h - 1) << 16,
+                .pic0 = (t.h - 1) << 8 | (t.w * t.h - 1) << 16 | (nal[0] & 0x60 ? 8 : 0),   /* bit 3: a reference picture */
                 .slice0 = idc << 28 | (alpha & 15) << 24 | (beta & 15) << 20 | cinit << 14,
-                .slice1 = y << 24 | x << 16 | qp << 10 | (t.l1 - 1) << 5 | (l0 - 1),
+                .slice1 = y << 24 | x << 16 | qp << 10 | (l1 - 1) << 5 | (l0 - 1),
+                .tag = pictures_given,
             };
+            pictures_given += last;
             VXDPicture pic;
             int got = vxd_h264_decode(h, &sl, &pic);
             slices++;
             if (got < 0) { fprintf(stderr, "%s: slice %u failed\n", name, slices); assert(0); }
-            if (got) {
+            for (; got > 0; got = vxd_h264_next(h, &pic)) {
                 assert(pictures < frames->len && pic.width == (int)t.w * 16 && pic.height == (int)t.h * 16);
+                assert(pic.tag == order[pictures]);    /* the picture given as that one, for its buffer */
                 const uint8_t *want = frames->pdata[pictures];
                 size_t ys = (size_t)pic.width * pic.height;
                 for (int yy = 0; yy < pic.height; yy++) assert(!memcmp(pic.plane[0] + yy * pic.stride[0], want + yy * pic.width, pic.width));
@@ -167,5 +183,6 @@ int main(void)
     run("a", stream_a, sizeof(stream_a));
     run("b", stream_b, sizeof(stream_b));
     run("c", stream_c, sizeof(stream_c));
+    run("d", stream_d, sizeof(stream_d));
     return 0;
 }

@@ -333,6 +333,9 @@ typedef struct {
     size_t size;
     uint32_t name;
     unsigned refs;
+    uint32_t usage;
+    /* An open glMapBuffer: the guest memory the shim gave it, its length and access. Zero map_va: unmapped. */
+    uint32_t map_va, map_size, map_access;
 } GLESBuffer;
 
 typedef struct {
@@ -6679,6 +6682,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         b->data = g_realloc(b->data, n ? n : 1);
         gles_buffer_bytes += n - b->size;
         b->size = n;
+        b->usage = a[3];
+        b->map_va = b->map_size = 0;        /* new storage ends a mapping */
         /* A NULL data pointer means "allocate, contents undefined" -- the
          * alloc-then-glBufferSubData idiom. Zero it so an app that draws
          * before filling gets degenerate geometry rather than whatever the
@@ -6722,6 +6727,82 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                 fprintf(stderr, "[gles] glBufferSubData: cannot read %zu bytes at "
                         "guest 0x%08x\n", n, a[3]);
             }
+            return -1;
+        }
+        return 0;
+    }
+
+    /*
+     * OES_mapbuffer. A buffer's bytes live here (b->data), and the host cannot allocate guest memory, so the guest
+     * shim (contrib/it-gles/mbxshim.c) passes memory of its own as a third argument, at least the buffer's size
+     * (from glGetBufferParameteriv). The map copies the buffer into it, whatever the access, so a write mapping
+     * that fills only part of the buffer keeps the rest; the unmap copies it back unless the mapping was read-only.
+     * Asphalt 8 maps its index buffers and memcpy's into the result without checking it: answered 0, as before
+     * this, it crashed in libsystem_c.
+     */
+    case GLES_SLOT_MAP_BUFFER: {                /* target, access, the shim's storage */
+        GLESBuffer *b = gles_buffer_bound(a[0]);
+        uint32_t storage = argc >= 3 ? a[2] : 0;
+
+        if (!b || !b->size) {
+            gles_reject(GL_INVALID_OPERATION);
+            return 0;
+        }
+        if (b->map_va) {
+            return b->map_va;                   /* already mapped: the pointer the app has */
+        }
+        if (!storage) {
+            gles_refuse("map:no-guest-storage");  /* a guest package from before the shim's half */
+            gles_reject(GL_OUT_OF_MEMORY);
+            return 0;
+        }
+        if (gles_guest_rw(cpu, storage, b->data, b->size, 1) != 0) {
+            if (!gles_guest_fault_pending() && gles_refuse("guest-write:glMapBuffer")) {
+                fprintf(stderr, "[gles] glMapBuffer: cannot write %zu bytes at guest 0x%08x\n",
+                        b->size, storage);
+            }
+            return 0;
+        }
+        b->map_va = storage;
+        b->map_size = b->size;
+        b->map_access = a[1];
+        return storage;
+    }
+
+    case GLES_SLOT_UNMAP_BUFFER: {              /* target */
+        GLESBuffer *b = gles_buffer_bound(a[0]);
+
+        if (!b || !b->map_va) {
+            gles_reject(GL_INVALID_OPERATION);
+            return 0;
+        }
+        if (b->map_access != 0x88B8 /* READ_ONLY */ && b->map_size == b->size &&
+            gles_guest_rw(cpu, b->map_va, b->data, b->map_size, 0) != 0) {
+            if (!gles_guest_fault_pending() && gles_refuse("guest-read:glUnmapBuffer")) {
+                fprintf(stderr, "[gles] glUnmapBuffer: cannot read %u bytes at guest 0x%08x\n",
+                        b->map_size, b->map_va);
+            }
+            return -1;                          /* reissued after the fault, or GL_FALSE */
+        }
+        b->map_va = b->map_size = 0;
+        return 1;
+    }
+
+    case GLES_SLOT_GET_BUFFER_PARAMETERIV: {    /* target, pname, params */
+        GLESBuffer *b = gles_buffer_bound(a[0]);
+        uint32_t v;
+
+        if (!b) {
+            return gles_reject(GL_INVALID_OPERATION);
+        }
+        switch (a[1]) {
+        case 0x8764: v = b->size; break;                    /* BUFFER_SIZE */
+        case 0x8765: v = b->usage ? b->usage : 0x88E4; break; /* BUFFER_USAGE (STATIC_DRAW by default) */
+        case 0x88BB: v = 0x88B9; break;                     /* BUFFER_ACCESS_OES: WRITE_ONLY_OES */
+        case 0x88BC: v = b->map_va != 0; break;             /* BUFFER_MAPPED_OES */
+        default: return gles_reject(GL_INVALID_ENUM);
+        }
+        if (a[2] && gles_guest_rw(cpu, a[2], &v, sizeof(v), 1) != 0) {
             return -1;
         }
         return 0;

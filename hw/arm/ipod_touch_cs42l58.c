@@ -3,6 +3,7 @@
 #include "hw/arm/ipod_touch_cs42l58.h"
 #include "trace.h"
 #include "hw/trace-printf.h"
+#include <math.h>
 
 /*
  * Cirrus CS42L58 stereo audio codec, I2C address 0x4A (device tree:
@@ -55,6 +56,54 @@ static unsigned cs42l58_sample_rate(uint8_t control)
     case 0x1d: return 8000;
     default: return 0;
     }
+}
+
+/*
+ * Output volume. iOS sets the volume buttons' level in the codec on some routes, not in the PCM, so the host hears it
+ * only if it is applied here. The top level plays at unity, the PCM as sent, and the rest keep their distance from it:
+ * the codec's positive gains drive the analog side, and applied to full-scale PCM they would only clip. Inferred from
+ * what the drivers write as the volume steps through its 16 levels (blake-lucas's register traces), not a datasheet.
+ *
+ * CS42L59 (n81, 10B500): 7-bit two's complement in 0.5 dB steps, 0x40 muted. No headphone is modeled, so the host hears
+ * the speaker's output, 0x21: iOS scales the PCM itself on that route and parks 0x21 at 0x78 (-4 dB, its unity) for
+ * levels 1 to 16, and 0x40 at level 0 and idle. While it is muted the loudest other output, against its own top
+ * (0x1d's 0x02), plays instead, as a route iOS drives through the headphones' output would.
+ *
+ * CS42L61 (n88, 9B206; speaker): 0x21, 8-bit two's complement in 0.5 dB steps, levels 1-16 0xc4 (-30 dB) to 0x18
+ * (+12 dB). Level 0 keeps 0xc4 and mutes: 0x07 bit 0 set and 0x67 0x3f, cleared again for any other level.
+ */
+double cs42l58_output_gain(CS42L58State *s)
+{
+    /* output register, and its top level in 0.5 dB steps; the speaker's last */
+    static const struct { uint8_t reg; int8_t top; } cs42l59_out[] = {
+        { 0x1d, 2 }, { 0x1f, 2 }, { 0x21, -8 },
+    };
+    double db = -INFINITY;
+
+    switch (s->volume) {
+    case CS42L58_VOLUME_CS42L59:
+        for (unsigned i = 0; i < ARRAY_SIZE(cs42l59_out); i++) {
+            uint8_t v = s->regs[cs42l59_out[i].reg] & 0x7f;
+
+            if (v != 0x40) {
+                double out = (double)((int8_t)(v << 1) / 2 - cs42l59_out[i].top) / 2;
+
+                if (i == ARRAY_SIZE(cs42l59_out) - 1) {
+                    return pow(10.0, out / 20.0);
+                }
+                db = MAX(db, out);
+            }
+        }
+        break;
+    case CS42L58_VOLUME_CS42L61:
+        if (!((s->regs[0x07] & 1) && s->regs[0x67] == 0x3f)) {
+            db = (double)(int8_t)s->regs[0x21] / 2 - 12;
+        }
+        break;
+    default:
+        return 1.0;
+    }
+    return db == -INFINITY ? 0.0 : pow(10.0, db / 20.0);
 }
 
 static int cs42l58_event(I2CSlave *i2c, enum i2c_event event)
@@ -174,6 +223,7 @@ static void cs42l59_init(Object *obj)
 {
     CS42L58(obj)->pdn_status = true;
     CS42L58(obj)->rate_reg = 0x0a;
+    CS42L58(obj)->volume = CS42L58_VOLUME_CS42L59;
 }
 
 static const TypeInfo cs42l59_info = {
@@ -182,10 +232,22 @@ static const TypeInfo cs42l59_info = {
     .instance_init = cs42l59_init,
 };
 
+static void cs42l61_init(Object *obj)
+{
+    CS42L58(obj)->volume = CS42L58_VOLUME_CS42L61;
+}
+
+static const TypeInfo cs42l61_info = {
+    .name          = TYPE_CS42L61,
+    .parent        = TYPE_CS42L58,
+    .instance_init = cs42l61_init,
+};
+
 static void cs42l58_register_types(void)
 {
     type_register_static(&cs42l58_info);
     type_register_static(&cs42l59_info);
+    type_register_static(&cs42l61_info);
 }
 
 type_init(cs42l58_register_types)

@@ -12,7 +12,8 @@
  * SLICE:types include/hw/arm/ipod_touch_mbx.h define MBX
  * SLICE:types include/hw/arm/ipod_touch_mbx.h typedef MBX2DSurface IPodTouchMBXState
  * SLICE hw/arm/ipod_touch_mbx.c fn ipod_touch_mbx_2d_block_len ipod_touch_mbx_post_load
- * SLICE:types hw/arm/s5l8920_vxd.c define MTX_RAM_WORDS|VXD_PENDING
+ * SLICE:types hw/arm/s5l8920_vxd.c define MTX_RAM_WORDS|VXD_PENDING|VXD_TARGETS
+ * SLICE:types hw/arm/s5l8920_vxd.c typedef VXDTarget
  * SLICE:vxd hw/arm/s5l8920_vxd.c range struct S5L8920VXDState { | \n};
  * SLICE hw/arm/s5l8920_vxd.c fn vxd_post_load
  * SLICE:types hw/arm/s5l8930_bbspi.c define FRAME_MAX

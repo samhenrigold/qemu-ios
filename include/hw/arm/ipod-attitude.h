@@ -35,7 +35,8 @@ static inline bool ipod_attitude_gravity(double pitch, double roll, bool flat, d
  * gets C g: C is diag(1, 1, -1) where D is a mirror (det -1: every DT seen from 3.0 on) and its negative where D
  * turns (det +1: the M68's absent 0 and the N45's 3 on 1.x, the iPod touch 2G's 5 on 2.x), as the 1.x OS reads its
  * accelerometer the other way round. Every mount found by hand on hardware-checked rotation (and the iPhone 4's z by
- * its compass) is this rule; the iPod touch 4G's z, never checked, comes out -z like the iPhone 4's.
+ * its compass) is this rule, except the iPod touch 4G's z: checked with a CoreMotion probe on 6.1.6 (face up, and
+ * the gyro's fusion), it reads z, so its board sets the LIS model's flip-z.
  * Fills axis[i] = +/-(j + 1): sensor axis i reads device axis j. False if hex is neither form.
  */
 static inline bool ios_dt_mount(const char *hex, bool accelerometer, int8_t axis[3])
