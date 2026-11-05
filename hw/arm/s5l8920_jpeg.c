@@ -12,8 +12,9 @@
  * Registers as AppleJPEGDriver 2.0.5 (4.2.1) uses them:
  *   0x00 mode: bits 2..0 the output's subsampling (1 4:2:2, 2 4:2:0), bit 3 decode
  *   0x0c handshake (reads back what was written)   0x10 height, 0x14 width (the sensor's landscape picture)
- *   0x18 the compressed size, after the encode     0x1c interrupt acknowledge
- *   0x20 interrupt status: 0x40 encode (or decode) done, 0x08 headers parsed, 0x10 stream corrupt
+ *   0x18 the compressed size, after the encode     0x1c interrupt acknowledge (the driver only ever writes 0)
+ *   0x20 interrupt status: 0x40 encode (or decode) done, 0x08 headers parsed, 0x10 stream corrupt; reading it drops
+ *        the interrupt line (the driver's handler reads it and acknowledges nothing), the status stays until a reset
  *   0x50 source, 0x58 destination (dart1 stream 0) 0x68 compression mode, 0x6c clock control
  *   0x70 start (1)                                 0x78 software reset (1, self-clearing)
  *   0x7c timer, 0x80 timer status                  0x98 bits 23..5 the destination's size, bit 24 its check
@@ -659,9 +660,12 @@ static bool jpeg_dma(S5L8920JPEGState *s, uint32_t va, uint8_t *buf, size_t len,
     return true;
 }
 
+/* Nothing is left to report. Never raises: a status the driver has read must not interrupt it again. */
 static void jpeg_update_irq(S5L8920JPEGState *s)
 {
-    qemu_set_irq(s->irq, s->regs[R_INT_STATUS / 4] != 0);
+    if (!s->regs[R_INT_STATUS / 4]) {
+        qemu_irq_lower(s->irq);
+    }
 }
 
 /* The compressed stream the driver named, parsed: false (and nothing allocated) when it can't be read or decoded. */
@@ -873,13 +877,16 @@ static void jpeg_complete(void *opaque)
     S5L8920JPEGState *s = opaque;
 
     s->regs[R_INT_STATUS / 4] |= s->pending;
-    jpeg_update_irq(s);
+    qemu_irq_raise(s->irq);
 }
 
 static uint64_t jpeg_read(void *opaque, hwaddr addr, unsigned size)
 {
     S5L8920JPEGState *s = opaque;
 
+    if (addr == R_INT_STATUS) {
+        qemu_irq_lower(s->irq);
+    }
     return s->regs[addr / 4];
 }
 
