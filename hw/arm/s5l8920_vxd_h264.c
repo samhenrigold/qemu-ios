@@ -138,7 +138,7 @@ struct VXDH264 {
     int chosen;
     AVCodecContext *codec;
     AVFrame *frame;
-    uint32_t key[3];                 /* SPS0, PPS0, PIC0 of the open stream */
+    uint32_t key[2];                 /* SPS0, PIC0's size fields of the open stream */
     GByteArray *sps, *pps;           /* what the decoder has */
     GPtrArray *pending;              /* the current picture's slices, Annex B */
 };
@@ -427,13 +427,14 @@ void vxd_h264_free(VXDH264 *h)
     }
 }
 
-static int vxd_send(VXDH264 *h, const uint8_t *data, size_t len)
+static int vxd_send(VXDH264 *h, const uint8_t *data, size_t len, int64_t tag)
 {
     AVPacket *pkt = av_packet_alloc();
     int err = -1;
 
     if (pkt && av_new_packet(pkt, len) == 0) {
         memcpy(pkt->data, data, len);
+        pkt->pts = tag;
         err = avcodec_send_packet(h->codec, pkt);
     }
     av_packet_free(&pkt);
@@ -519,7 +520,12 @@ int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic)
     if (!sl->last) {
         return 0;
     }
-    uint32_t key[3] = { sl->sps0, sl->pps0, sl->pic0 };
+    /*
+     * The stream's geometry only: PIC0's low byte is per picture (bit 3 set on a reference picture), and PPS0's
+     * fields reach the decoder in the PPS. Flushed when any of the three changed, a stream with B pictures lost its
+     * references at every switch between them and P pictures and decoded nothing past its IDR.
+     */
+    uint32_t key[2] = { sl->sps0, sl->pic0 & ~0xffu };
     g_autoptr(GByteArray) sps = make_sps(&h->params[h->chosen], sl);
     g_autoptr(GByteArray) pps = make_pps(&h->params[h->chosen], sl, pps_id);
     if (memcmp(key, h->key, sizeof(key))) {
@@ -528,7 +534,8 @@ int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic)
     }
     if (!h->sps || sps->len != h->sps->len || memcmp(sps->data, h->sps->data, sps->len) ||
         pps->len != h->pps->len || memcmp(pps->data, h->pps->data, pps->len)) {
-        if (vxd_send(h, sps->data, sps->len) < 0 || vxd_send(h, pps->data, pps->len) < 0) {
+        if (vxd_send(h, sps->data, sps->len, AV_NOPTS_VALUE) < 0 ||
+            vxd_send(h, pps->data, pps->len, AV_NOPTS_VALUE) < 0) {
             return -1;
         }
         g_clear_pointer(&h->sps, g_byte_array_unref);
@@ -538,12 +545,17 @@ int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic)
     }
     for (unsigned i = 0; i < h->pending->len; i++) {
         GByteArray *nal = h->pending->pdata[i];
-        if (vxd_send(h, nal->data, nal->len) < 0) {
+        if (vxd_send(h, nal->data, nal->len, sl->tag) < 0) {
             g_ptr_array_set_size(h->pending, 0);
             return -1;
         }
     }
     g_ptr_array_set_size(h->pending, 0);
+    return vxd_h264_next(h, pic);
+}
+
+int vxd_h264_next(VXDH264 *h, VXDPicture *pic)
+{
     int err = avcodec_receive_frame(h->codec, h->frame);
     if (err == AVERROR(EAGAIN)) {
         return 0;
@@ -557,6 +569,7 @@ int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic)
     }
     pic->width = h->frame->width;
     pic->height = h->frame->height;
+    pic->tag = h->frame->pts;
     return 1;
 }
 
@@ -565,5 +578,6 @@ int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic)
 VXDH264 *vxd_h264_new(void) { return NULL; }
 void vxd_h264_free(VXDH264 *h) { }
 int vxd_h264_decode(VXDH264 *h, const VXDSlice *sl, VXDPicture *pic) { return -1; }
+int vxd_h264_next(VXDH264 *h, VXDPicture *pic) { return 0; }
 
 #endif
