@@ -334,6 +334,12 @@ static void fmss_run_script(IPodTouchFMSSState *s)
                     } else {
                         id_fifo_size = id_fifo_head = 0;
                     }
+                } else if (b == 0x40 && (v & 0xf) == 1) {
+                    /* A transmit: the stock write program loads the page's 12 spare bytes into FMDATA (0x60-0x68),
+                     * writes 0xc1 here and waits for bit 0 to clear. The page itself moves CPU-side (write_nand_pages),
+                     * so the bytes are already gone and busy clears at once. Left set, every write program polled it
+                     * to FMSS_SCRIPT_STEPS on the vCPU thread. */
+                    fmc[0x40 / 4] &= ~1u;
                 } else if (b == 0x40 && (v & 0xf) == 2) {
                     unsigned count = v >> 4;
                     if (count && count <= sizeof(id_fifo) &&
