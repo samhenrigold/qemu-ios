@@ -387,13 +387,21 @@ static void pl192_write(void *opaque, hwaddr offset, uint64_t value, unsigned si
 static void pl192_irq_handler(void *opaque, int irq, int level)
 {
     PL192State *s = (PL192State *) opaque;
+    uint32_t old = s->rawintr;
 
     if (level) {
         s->rawintr |= 1u << irq;
     } else {
         s->rawintr &= ~(1u << irq);
     }
-    pl192_update(opaque);
+    /*
+     * Devices re-assert an unchanged level on most register writes (the iPod touch 4G's CDMA on each one, thousands
+     * per storage request). Every other input to the result runs its own update: enables, priorities, software
+     * interrupts, the daisy chain and vector acknowledge.
+     */
+    if (s->rawintr != old) {
+        pl192_update(opaque);
+    }
 }
 
 static void pl192_reset(DeviceState *d)

@@ -63,5 +63,16 @@ int main(void) {
     assert(!irq && !parent.stack_i && !child.stack_i);
     pl192_irq_ack(&parent); /* Spurious ACK must not push NO_IRQ. */
     assert(!parent.stack_i && !child.stack_i);
+    /* A line called at the level it already has runs no update. intenable changes behind the model's back here, so
+     * an update would lower the IRQ. */
+    {
+        int line = 0, unused = 0;
+        PL192State one;
+        init(&one); one.irq = &line; one.fiq = &unused;
+        pl192_irq_handler(&one, 5, 1); assert(line);
+        one.intenable = 0;
+        pl192_irq_handler(&one, 5, 1); assert(line);
+        pl192_irq_handler(&one, 5, 0); assert(!line);
+    }
     puts("PASS: daisy IRQ acknowledges the child vector and restores nested priorities");
 }
