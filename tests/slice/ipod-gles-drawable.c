@@ -14,7 +14,7 @@
 #define GLES_OP_DRAWABLE_STORAGE 0x1008
 #define CA_FOURCC_BGRA 0x42475241
 #define A(...) (const unsigned[]){__VA_ARGS__}
-typedef struct { unsigned host; } GuestGC;
+typedef struct { unsigned host;  void *group; } GuestGC;
 static unsigned deleted;
 static long long qc(unsigned op,void *gc,unsigned argc,const unsigned *args)
 { if(op==GLES_OP_DRAWABLE_STORAGE) { assert(argc==2 && args[0] && args[1]);return 0; }
@@ -24,6 +24,7 @@ static void w(const char *s) {}
 static void wx(unsigned long x) {}
 static void wd(unsigned x) {}
 static void refused(const char *what, const char *name, unsigned num) {}
+static void map_free(void *owner, unsigned n, const unsigned *names) { (void)owner; (void)n; (void)names; }
 #include "views.h"
 typedef struct { void *surface; unsigned locks, unlocks, references; } SurfaceRecord;
 static SurfaceRecord records[16];
