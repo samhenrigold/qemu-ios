@@ -325,9 +325,10 @@ static uint64_t scaler_read(void *opaque, hwaddr off, unsigned size)
 }
 
 /*
- * A transfer ends some time after its start, as the block's does: 5 ns a destination pixel (200 Mpixel/s, 3 ms for
- * 640x960), at least 20 us. The pixels are written at the start; the busy bit (+0x4 bit 0) stays set and the done
- * interrupt waits for the end. Done at the start write, the interrupt reached the driver's workloop while the
+ * A transfer ends some time after its start, as the block's does: 1 ns a destination pixel (0.6 ms for 640x960), at
+ * least 20 us. The pixels are written at the start; the busy bit (+0x4 bit 0) stays set and the done interrupt waits
+ * for the end. The end gates the frame: backboardd swaps a landscape game's turned frame only once it is done, so a
+ * transfer still running at the VBL costs the game a whole frame. Done at the start write, the interrupt reached the driver's workloop while the
  * submitting thread held the command gate, and the workloop took the CPU the moment the gate opened: the completion
  * of an asynchronous transfer freed the request before AppleM2ScalerCSCDriver's submit path read the request's
  * callback, so the submit path took the freed memory for a synchronous request, released a null DMA command and
@@ -360,7 +361,7 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
         }
         if (!scaler_convert(s) && !scaler_rgb(s) && !scaler_nv12(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
-        timer_mod(s->done, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MAX(20000, pixels * 5));
+        timer_mod(s->done, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MAX(20000, pixels));
     }
     scaler_irq(s);
 }
