@@ -10,6 +10,7 @@
  * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_update_irq amc_ctrl_of
  * SLICE:amc hw/arm/ipod_touch_amc.c range static const uint32_t amc_banks[] | \nstatic int amc_bank_cmd
  * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_bank_cmd amc_engine0 ipod_touch_amc_write amc_decode_tick
+ * SLICE:amc hw/arm/ipod_touch_amc.c fn ipod_touch_amc_port_avail amc_port_write
  * SLICE:amc hw/arm/ipod_touch_amc.c range static int amc_put_decoder( | static const VMStateInfo vmstate_amc_decoder
  * SLICE:amc hw/arm/ipod_touch_amc.c fn amc_pre_save
  * PKG glib-2.0 libavcodec libavutil
@@ -45,6 +46,8 @@ typedef struct {
     uint32_t dram_base, dram_size; bool rev21; uint32_t result_offset, dma_done;
     uint32_t xfers, xfer[AMC_XFER_QUEUE * 3], e0_resume; uint8_t port[AMC_PORT_BYTES];
     uint32_t port_len; void (*port_kick)(void *); void *port_opaque;
+    void *encoder; uint32_t enc_out_head, enc_out_offset, enc_slot, enc_bytes;
+    GByteArray *enc_in; void (*port_sink)(void *); bool port_sunk;
 } IPodTouchAMCState;
 static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 #define IPOD_TOUCH_AMC(s) ((IPodTouchAMCState *)(s))
@@ -73,6 +76,7 @@ static void stl_be_p(void *p, uint32_t v) { v = GUINT32_TO_BE(v); memcpy(p, &v, 
 static uint16_t lduw_le_p(const void *p) { uint16_t v; memcpy(&v,p,2); return GUINT16_FROM_LE(v); }
 static uint32_t ldl_le_p(const void *p) { uint32_t v; memcpy(&v,p,4); return GUINT32_FROM_LE(v); }
 static void stl_le_p(void *p, uint32_t v) { v = GUINT32_TO_LE(v); memcpy(p, &v, 4); }
+static void stq_le_p(void *p, uint64_t v) { v = GUINT64_TO_LE(v); memcpy(p, &v, 8); }
 static unsigned char *memory(hwaddr a, size_t n) {
     if (a >= 0x08000000 && a - 0x08000000 <= sizeof(dram) &&
         n <= sizeof(dram) - (a - 0x08000000)) return dram + (a - 0x08000000);
@@ -463,6 +467,19 @@ int main(void) {
     assert(!lduw_le_p(aperture+0x18000+0xc) && !a.e0_resume);  /* then cleared; the list is done */
     unsigned loud=0; for (unsigned i=0;i<4096;i++) loud+=a.port[i]!=0;
     assert(loud>100);
+    /* Voice Memos on 6.1.6 (n81ap-10B500): the LC program's mono frame is a 2 KiB job, and the slots stay
+     * the program's capacity apart, so the second slot's job names +0x1000 and still means slot 1. */
+    assert(!g_queue_is_empty(&d->output_sizes));
+    static const uint32_t list_vm[] = { 0x34a1c,0x00140101,0x34a80,0x303060, 0,0x00040001,0x34a94,0x303060 };
+    for (unsigned i=0;i<8;i++) stl_le_p(aperture+0x34a00+(i/4)*0x1c+(i%4)*4,list_vm[i]);
+    static const uint32_t job_vm[] = { 0, 0x800, 0x19100, 0, AMC_PORT_LOCAL_21, 3 };
+    for (unsigned i=0;i<6;i++) stl_le_p(aperture+0x34a80+i*4,job_vm[i]);
+    a.port_len = 0;
+    ipod_touch_amc_write(&a, AMC_E0_HEAD, 0x34a02, 4);
+    assert(a.xfers == 1);
+    amc_decode_tick(&a);
+    assert(!a.xfers && a.port_len == 2048 && !memcmp(a.port, aperture+0x19100, 2048));
+    assert(lduw_le_p(aperture+0x18000+0xe) == 1 && lduw_le_p(aperture+0x18000+0x10) == 1024);
     /* iOS 7 (n90ap 11D257) chains several frames' commands into one list, 16 links and more: every link runs. */
     for (unsigned i=0;i<18;i++) {
         uint32_t at=0x34600+i*0x1c;
@@ -538,6 +555,82 @@ int main(void) {
     d=b.decoder; assert(d && d->pcm->len && (b.pending & 4) && !b.port_len);
     assert(lduw_le_p(aperture+0x18000+0xa) == 1 && lduw_le_p(aperture+0x18000+0xc));
     amc_decoder_close(&b);
+
+    /* The AAC encoder program (Voice Memos, n81ap-10B500): PCM in on the port, packets out by bank 5. */
+    IPodTouchAMCState e = {.buf_base = AMC_BUF_BASE, .dram_base = 0x08000000, .dram_size = 0x08000000,
+                           .result_offset = AMC_RESULT_OFFSET_21, .dma_done = AMC_DMA_DONE_21, .rev21 = true,
+                           .codec_decode = true, .state_handshake = true};
+    memset(aperture, 0, sizeof(aperture));
+    uint8_t *eblock = aperture + AMC_RESULT_OFFSET_21;
+    stl_le_p(eblock + AMC_PARAMS, 0x7f); stl_le_p(eblock + AMC_PARAMS + 4, 1);
+    stl_le_p(eblock + AMC_PARAMS + 8, 44100); stl_le_p(eblock + AMC_PARAMS + 12, 64000);
+    stl_le_p(aperture + 0x20004, 0x2600u << 16 | 0x14); stl_le_p(aperture + 0x20008, 0x30400);
+    ipod_touch_amc_write(&e, AMC_ENC_OUT_HEAD, 0x20002, 4);
+    /* Engine 0's list as the driver builds it: the job {?, bytes, slot, ?, port}, then its commit. */
+    stl_le_p(aperture + 0x34400, 0x34412); stl_le_p(aperture + 0x34404, 0x00140001);
+    stl_le_p(aperture + 0x34408, 0x344a8); stl_le_p(aperture + 0x3440c, AMC_XFER_FIFO);
+    stl_le_p(aperture + 0x34410, 0); stl_le_p(aperture + 0x34414, 0x00040001);
+    stl_le_p(aperture + 0x34418, 0x344bc); stl_le_p(aperture + 0x3441c, AMC_XFER_FIFO);
+    stl_le_p(aperture + 0x344bc, 2);
+    GByteArray *aac = g_byte_array_new();
+    GArray *packet_sizes = g_array_new(false, false, sizeof(unsigned));
+    for (unsigned f = 0; f < 12; f++) {
+        unsigned slot = AMC_RESULT_OFFSET_21 + 0x100 + (f & 1) * AMC_ENC_SLOT_STRIDE;
+        stl_le_p(aperture + 0x344ac, 2048); stl_le_p(aperture + 0x344b0, slot);
+        stl_le_p(aperture + 0x344b8, AMC_PORT_LOCAL_21);
+        stw_le_p(eblock + 0xa + (f & 1) * 4, 1);                     /* the driver filled the slot */
+        assert(ipod_touch_amc_port_avail(&e, 0, true) >= 2048);
+        for (unsigned i = 0; i < 1024; i++) {
+            amc_port_write(&e, 0, (uint16_t)(int16_t)lrint(8000 * sin(2 * M_PI * 733 * (f * 1024 + i) / 44100.0)), 2);
+        }
+        ipod_touch_amc_write(&e, AMC_E0_HEAD, 0x34402, 4);
+        assert(e.enc_slot == slot && e.enc_bytes == 2048 && (e.pending & AMC_E0_DONE) && !e.enc_in->len);
+        ipod_touch_amc_write(&e, 0x010, 0x20, 4);
+        assert(!(e.pending & AMC_E0_DONE));
+        ipod_touch_amc_write(&e, AMC_ENC_GO, 1, 4);
+        assert((e.pending & 4) && !e.enc_slot && !lduw_le_p(eblock + 0xa + (f & 1) * 4));
+        ipod_touch_amc_write(&e, AMC_ENC_GO, 1, 4);                 /* the second go has no frame */
+        unsigned flags = lduw_le_p(eblock + AMC_ERROR), bits = lduw_le_p(eblock + AMC_ERROR + 4);
+        assert(!(flags & 1));
+        if (f == 0) assert(!(flags & 2));                           /* the first frame primes the encoder */
+        if (flags & 2) {
+            unsigned bytes = bits / 8;
+            assert(bits && !(bits & 7));
+            g_byte_array_append(aac, aperture + 0x30400 + aac->len, bytes);
+            g_array_append_val(packet_sizes, bytes);
+        }
+        e.pending &= ~4u;
+    }
+    assert(packet_sizes->len == 11 && e.enc_out_offset == aac->len && aac->len < 0x2600);
+    assert(!memmem(aac->data, aac->len, "Lavc", 4));                /* bit-exact: no encoder tag */
+    /* The packets are AAC-LC that decodes back to the tone, delayed by the encoder's priming. */
+    const AVCodec *dec_codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
+    AVCodecContext *dec = avcodec_alloc_context3(dec_codec);
+    static const uint8_t asc[] = { 0x12, 0x08 };                    /* AAC-LC, 44.1 kHz, mono */
+    dec->extradata = av_mallocz(sizeof(asc) + AV_INPUT_BUFFER_PADDING_SIZE);
+    memcpy(dec->extradata, asc, sizeof(asc)); dec->extradata_size = sizeof(asc);
+    assert(avcodec_open2(dec, dec_codec, NULL) == 0);
+    AVPacket *pkt = av_packet_alloc(); AVFrame *pcm_frame = av_frame_alloc();
+    double energy = 0; unsigned decoded = 0, at = 0;
+    for (unsigned i = 0; i < packet_sizes->len; i++) {
+        unsigned size = g_array_index(packet_sizes, unsigned, i);
+        assert(av_new_packet(pkt, size) == 0);
+        memcpy(pkt->data, aac->data + at, size); at += size;
+        assert(avcodec_send_packet(dec, pkt) == 0);
+        av_packet_unref(pkt);
+        while (avcodec_receive_frame(dec, pcm_frame) == 0) {
+            const float *x = (const float *)pcm_frame->extended_data[0];
+            for (int n = 0; n < pcm_frame->nb_samples; n++) energy += x[n] * x[n];
+            decoded += pcm_frame->nb_samples;
+            av_frame_unref(pcm_frame);
+        }
+    }
+    assert(decoded == 11 * 1024 && sqrt(energy / decoded) > 0.1);  /* the tone's RMS is 0.17 */
+    av_packet_free(&pkt); av_frame_free(&pcm_frame); avcodec_free_context(&dec);
+    amc_encoder_close(&e);
+    assert(!e.encoder && !e.enc_out_head && !e.enc_in->len);
+    g_byte_array_unref(e.enc_in); g_byte_array_unref(aac); g_array_unref(packet_sizes);
+    puts("PASS: the AAC encoder program: PCM in through the port, slot status, packets in bits into bank 5's buffer");
     puts("PASS: iOS 6's AAC program by its parameter block, 32-bit samples in slots of its jobs' size; 3.1's AMC 2.1 collection");
     puts("PASS: AMC 2.1 layout, engine-local input and engine 0 collection into the output port");
     puts("PASS: exact AMC replay, pending frames/PCM/slot/completion and bounded history");

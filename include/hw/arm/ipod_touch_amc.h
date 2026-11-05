@@ -119,6 +119,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodTouchAMCState, IPOD_TOUCH_AMC)
 #define AMC_PORT_BYTES       0x8000          /* above any job: ALAC is 16 KiB */
 #define AMC_PARAMS          0x7f00  /* stream parameters, from the block */
 #define AMC_ERROR           0x7f28  /* status bit 0, error code: from the block */
+#define AMC_ENC_OUT_HEAD    0x180   /* bank 5: the encoder program's output list (AMC 2.1) */
+#define AMC_ENC_GO          0x98c   /* W 1: the encoder program's next frame is in its slot */
+#define AMC_ENC_SLOT_STRIDE 0x1000  /* the encoder's two input slots, block + 0x100 and + 0x1100 */
 #define AMC_RESULT_BUFFERS 0x02        /* halfword, must be <= 2 */
 #define AMC_RESULT_CAPACITY   0x04        /* halfword */
 
@@ -153,9 +156,16 @@ typedef struct IPodTouchAMCState {
     uint8_t port[AMC_PORT_BYTES];
     uint32_t port_len;
     void (*port_kick)(void *opaque);    /* the board's DMA: data in the port */
+    void (*port_sink)(void *opaque);    /* the board's DMA: the port took what was written to it */
+    GByteArray *enc_in;                 /* PCM written to the port for the encoder program */
+    bool port_sunk;
     void *port_opaque;
     uint32_t pending;
     void *decoder;
+    void *encoder;                      /* AMCEncoder: the AAC encoder program's stream */
+    uint32_t enc_out_head;              /* bank 5's list: where the encoder program writes packets */
+    uint32_t enc_out_offset;            /* bytes written there since the list was set */
+    uint32_t enc_slot, enc_bytes;       /* the frame engine 0 moved into a slot, waiting for the go (0x98c) */
     QEMUTimer *decode_timer;
 } IPodTouchAMCState;
 

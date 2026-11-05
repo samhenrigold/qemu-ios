@@ -426,6 +426,11 @@ static void ipad1_amc_port_kick(void *cdma)
     s5l8930_cdma_kick(cdma);
 }
 
+static void ipad1_amc_port_sink(void *cdma)
+{
+    s5l8930_cdma_sink_done(cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE);
+}
+
 static hwaddr ipad1_dart1_xlate(void *dart, unsigned sid, uint32_t va)
 {
     return s5l8930_dart_dev_xlate(dart, sid, va);
@@ -1841,6 +1846,7 @@ static void ipad1_init(MachineState *machine)
     /* Its output port, which CDMA channel 0x17 drains (amc dma-channels). */
     sysbus_mmio_map(sbd, 1, S5L8930_AMC_PORT_BASE);
     IPOD_TOUCH_AMC(dev)->port_kick = ipad1_amc_port_kick;
+    IPOD_TOUCH_AMC(dev)->port_sink = ipad1_amc_port_sink;
     IPOD_TOUCH_AMC(dev)->port_opaque = s->cdma;
     s5l8930_cdma_set_source(s->cdma, S5L8930_AMC_PORT_BASE, AMC_PORT_SIZE,
                             ipod_touch_amc_port_avail, dev);

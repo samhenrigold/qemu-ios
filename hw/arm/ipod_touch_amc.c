@@ -661,12 +661,16 @@ static void amc_decode_publish(IPodTouchAMCState *s)
     bool jobs = s->rev21 && ((s->int_mask[0] & AMC_E0_DONE) || !(s->int_mask[0] & 4));
     unsigned slot = d->slot, offset = slot * d->capacity;
     if (jobs) {
+        /* A slot holds the larger of a job and the program's capacity: an S16 mono frame's job (2 KiB,
+         * Voice Memos on n81ap-10B500) leaves its slots 4 KiB apart, a 32-bit stereo one's (8 KiB)
+         * fills them. */
         uint32_t size = s->xfer[0], from = s->xfer[1] - (s->result_offset + 0x100);
+        uint32_t stride = MAX(size, d->capacity);
         if (!s->xfers || size < bytes ||
-            from % size || from / size >= d->buffers) {
+            from % stride || from / stride >= d->buffers) {
             return;
         }
-        slot = from / size;
+        slot = from / stride;
         offset = from;
     } else if ((s->pending & 4) || lduw_le_p(header + 0xa + slot * 4)) {
         return;
@@ -769,8 +773,205 @@ static bool amc_replay_restore(AMCDecoder *d)
     return ok;
 }
 
+/*
+ * The AAC encoder program (Voice Memos; mapped on the iPod touch 4G's 6.1.6, n81ap-10B500, from
+ * AppleAMC-176 and a trace of a recording). The driver runs it like this:
+ *
+ *  - PCM in: CDMA 0x17, the channel that drains the output port for decode, streams the PCM TO the
+ *    port instead (ipod_touch_amc_port_avail, amc_port_write), and an engine 0 job moves one frame of
+ *    it into the DE's slot (block + 0x100 and + 0x1100, alternating). The job's words name the slot
+ *    and the port as a decode job's do; the move runs the other way. A frame is 1024 samples of S16.
+ *    The job's completion (AMC_E0_DONE) is acknowledged by command 0x20 to engine 0's bank, and
+ *    AMC_ENC_GO then says the frame is there: the program encodes it at that write (amc_encode).
+ *  - Parameters at block + AMC_PARAMS: fields 0x7f, then 32-bit channels (+4), rate (+8) and bit rate
+ *    (+0xc): 1, 44100, 64000 from Voice Memos.
+ *  - Packets out: raw AAC access units into the bank 5 list's buffer (AMC_ENC_OUT_HEAD; one link,
+ *    9728 bytes at aperture 0x30400), one after another from where the list was set; the driver
+ *    copies them to the app (80952f04, 809531a0). It reads each from the status block (block +
+ *    AMC_ERROR): flags +0 (bit 1 a packet, bit 0 an error code at +2) and the packet's length in BITS
+ *    at +4.
+ *  - The driver sets a slot's status (header + 0xa + 4 * slot) to 1 as it fills it; the program clears
+ *    it as it takes the frame, and any other value is a failed frame that ends the stream.
+ *  - Each frame completes with the DE's interrupt (4), packet or not: the first frame only primes the
+ *    encoder. Until this program existed the stream stalled on its first frame and the guest's
+ *    AudioCodecs polled for packets at 100% CPU, so a recording could not be stopped.
+ */
+typedef struct AMCEncoder {
+    AVCodecContext *codec;
+    AVFrame *frame;
+    AVPacket *packet;
+    bool failed;
+} AMCEncoder;
+
+static void amc_encoder_close(IPodTouchAMCState *s)
+{
+    AMCEncoder *e = s->encoder;
+    if (e) {
+        avcodec_free_context(&e->codec);
+        av_frame_free(&e->frame);
+        av_packet_free(&e->packet);
+        g_free(e);
+        s->encoder = NULL;
+    }
+    if (s->enc_in) g_byte_array_set_size(s->enc_in, 0);
+    s->enc_out_head = s->enc_out_offset = 0;
+    s->enc_slot = s->enc_bytes = 0;
+}
+
+static AMCEncoder *amc_encoder_open(IPodTouchAMCState *s)
+{
+    uint8_t params[16];
+    AMCEncoder *e = g_new0(AMCEncoder, 1);
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+
+    s->encoder = e;
+    if (address_space_read(&address_space_memory, s->buf_base + s->result_offset + AMC_PARAMS,
+                           MEMTXATTRS_UNSPECIFIED, params, sizeof(params))) {
+        e->failed = true;
+        return e;
+    }
+    unsigned channels = ldl_le_p(params + 4), rate = ldl_le_p(params + 8), bitrate = ldl_le_p(params + 12);
+    AMCT("encoder: %u Hz, %u channel(s), %u bit/s (fields %04x)", rate, channels, bitrate, lduw_le_p(params));
+    e->codec = codec ? avcodec_alloc_context3(codec) : NULL;
+    e->frame = av_frame_alloc();
+    e->packet = av_packet_alloc();
+    if (!e->codec || !e->frame || !e->packet || (channels != 1 && channels != 2) ||
+        rate < 8000 || rate > 48000) {
+        warn_report("AMC: AAC encoder unavailable for %u Hz, %u channel(s)", rate, channels);
+        e->failed = true;
+        return e;
+    }
+    e->codec->sample_rate = rate;
+    e->codec->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    av_channel_layout_default(&e->codec->ch_layout, channels);
+    e->codec->bit_rate = bitrate >= 8000 && bitrate <= 320000 ? bitrate : 64000;
+    e->codec->profile = AV_PROFILE_AAC_LOW;
+    e->codec->time_base = (AVRational){ 1, rate };
+    e->codec->flags |= AV_CODEC_FLAG_BITEXACT;  /* no "Lavc" tag in the first packet */
+    if (avcodec_open2(e->codec, codec, NULL) < 0) {
+        warn_report("AMC: AAC encoder failed to open");
+        e->failed = true;
+        return e;
+    }
+    e->frame->format = AV_SAMPLE_FMT_FLTP;
+    e->frame->sample_rate = rate;
+    e->frame->nb_samples = e->codec->frame_size;
+    e->frame->pts = 0;
+    av_channel_layout_copy(&e->frame->ch_layout, &e->codec->ch_layout);
+    if (av_frame_get_buffer(e->frame, 0) < 0) {
+        e->failed = true;
+    }
+    return e;
+}
+
+/* Write len bytes into the bank 5 list's buffer at the stream's offset. */
+static bool amc_encoder_out(IPodTouchAMCState *s, const uint8_t *data, uint32_t len)
+{
+    uint32_t head = s->enc_out_head, skip = s->enc_out_offset, done = 0;
+    for (unsigned links = 0; head && done < len; links++) {
+        uint32_t w[3];
+        hwaddr link = amc_dma_addr(s, (head & 3) == 2, head & ~3u, sizeof(w));
+        if (links == 64 || link == -1 ||
+            address_space_read(&address_space_memory, link, MEMTXATTRS_UNSPECIFIED, w, sizeof(w))) {
+            return false;
+        }
+        uint32_t size = le32_to_cpu(w[1]) >> 16, dst = le32_to_cpu(w[2]);
+        if (skip >= size) {
+            skip -= size;
+        } else {
+            uint32_t n = MIN(size - skip, len - done);
+            hwaddr to = amc_dma_addr(s, s->rev21, dst + skip, n);
+            if (to == -1 || address_space_write(&address_space_memory, to, MEMTXATTRS_UNSPECIFIED,
+                                                data + done, n)) {
+                return false;
+            }
+            done += n;
+            skip = 0;
+        }
+        head = le32_to_cpu(w[0]);
+    }
+    s->enc_out_offset += done;
+    return done == len;
+}
+
+/* Engine 0's job for the encoder: one frame of the port's PCM into the DE's slot. */
+static void amc_encoder_take(IPodTouchAMCState *s, uint32_t slot, uint32_t n)
+{
+    unsigned have = s->enc_in ? MIN(s->enc_in->len, n) : 0;
+    if (have) {
+        address_space_write(&address_space_memory, s->buf_base + slot, MEMTXATTRS_UNSPECIFIED,
+                            s->enc_in->data, have);
+        g_byte_array_remove_range(s->enc_in, 0, have);
+    }
+    s->enc_slot = slot;
+    s->enc_bytes = have;
+    AMCT("encoder: %u of %u bytes port -> slot %05x, %u left", have, n, slot,
+         s->enc_in ? s->enc_in->len : 0);
+}
+
+/* The go (AMC_ENC_GO): the slot's frame encoded, its packet (if any) published, the DE's completion. */
+static void amc_encode(IPodTouchAMCState *s)
+{
+    AMCEncoder *e = s->encoder ? s->encoder : amc_encoder_open(s);
+    uint32_t slot = s->enc_slot;
+    unsigned have = s->enc_bytes;
+    g_autofree uint8_t *pcm = g_malloc0(MAX(have, 1));
+    uint8_t status[6] = { 0 };
+    int got = 0;
+
+    if (!slot) {
+        return;                         /* no frame waiting (the driver kicks it twice) */
+    }
+    s->enc_slot = s->enc_bytes = 0;
+    address_space_read(&address_space_memory, s->buf_base + slot, MEMTXATTRS_UNSPECIFIED, pcm, have);
+    if (!e->failed) {
+        unsigned channels = e->codec->ch_layout.nb_channels, samples = e->frame->nb_samples;
+        if (av_frame_make_writable(e->frame) < 0) {
+            e->failed = true;
+        }
+        for (unsigned ch = 0; !e->failed && ch < channels; ch++) {
+            float *out = (float *)e->frame->extended_data[ch];
+            for (unsigned i = 0; i < samples; i++) {
+                unsigned at = (i * channels + ch) * 2;
+                out[i] = at + 2 <= have ? (int16_t)lduw_le_p(pcm + at) / 32768.0f : 0.0f;
+            }
+        }
+        if (!e->failed && avcodec_send_frame(e->codec, e->frame) < 0) {
+            e->failed = true;
+        }
+        e->frame->pts = e->frame->pts + samples;
+        while (!e->failed && (got = avcodec_receive_packet(e->codec, e->packet)) == 0) {
+            if (e->packet->size > 0xfff8 / 8 || !amc_encoder_out(s, e->packet->data, e->packet->size)) {
+                warn_report("AMC: encoded packet of %d bytes does not fit the output list", e->packet->size);
+                e->failed = true;
+            } else {
+                stw_le_p(status, 2);
+                stw_le_p(status + 4, e->packet->size * 8);
+            }
+            av_packet_unref(e->packet);
+        }
+    }
+    if (e->failed) {
+        stw_le_p(status, 1);
+        stw_le_p(status + 2, 100);      /* the driver's own "no output" (as decode's failure) */
+    }
+    AMCT("encode: %u bytes from slot %05x, packet %u bits", have, slot, lduw_le_p(status + 4));
+    address_space_write(&address_space_memory, s->buf_base + s->result_offset + AMC_ERROR,
+                        MEMTXATTRS_UNSPECIFIED, status, 6);
+    /* The driver marks a slot it filled (header + 0xa + 4 * slot = 1); the program clears it as it takes
+     * the frame, and the driver reads anything else as a failed frame. */
+    if (slot >= s->result_offset + 0x100) {
+        uint16_t taken = 0;
+        unsigned index = (slot - (s->result_offset + 0x100)) / AMC_ENC_SLOT_STRIDE;
+        address_space_write(&address_space_memory, s->buf_base + s->result_offset + 0xa + 4 * index,
+                            MEMTXATTRS_UNSPECIFIED, &taken, sizeof(taken));
+    }
+    s->pending |= 4;
+}
+
 #else
 static void amc_decoder_close(IPodTouchAMCState *s) {}
+static void amc_encoder_close(IPodTouchAMCState *s) {}
 static bool amc_decode_dma(IPodTouchAMCState *s, uint32_t head) { return false; }
 static void amc_decode_publish(IPodTouchAMCState *s) {}
 static void amc_decode_drain(IPodTouchAMCState *s) {}
@@ -1089,6 +1290,16 @@ static bool amc_engine0(IPodTouchAMCState *s, uint32_t head)
                     s->xfers == AMC_XFER_QUEUE) {
                     return false;
                 }
+#ifdef IT_HAVE_AVCODEC
+                if (to == AMC_PORT_LOCAL_21 && s->enc_in && s->enc_in->len) {
+                    /* The encoder program's job: only it streams PCM into the port (see amc_encode). */
+                    amc_encoder_take(s, from, n);
+                    s->pending |= AMC_E0_DONE;      /* the move itself is done (the driver enables it) */
+                    have_job = false;
+                    head = le32_to_cpu(w[0]);
+                    continue;
+                }
+#endif
                 uint32_t *x = s->xfer + 3 * s->xfers++;
                 x[0] = n; x[1] = from; x[2] = to;
                 have_job = false;
@@ -1309,10 +1520,16 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
         }
     }
 
+    if (addr == AMC_ENC_OUT_HEAD && (val & 3)) {
+        /* A new output buffer for the encoder program: its packets start again at offset 0. */
+        s->enc_out_head = val;
+        s->enc_out_offset = 0;
+    }
     if (s->codec_decode) {
         if (addr == AMC_JOB_CMD) {
             uint8_t clear[0x12] = { 0 };
             amc_decoder_close(s);
+            amc_encoder_close(s);
             s->pending = 0;
             s->xfers = s->port_len = s->e0_resume = 0;
             AMC_REG(0x100) = 0;
@@ -1328,6 +1545,13 @@ static void ipod_touch_amc_write(void *opaque, hwaddr addr, uint64_t val,
         } else if (addr == 0x110 && val == 0x20) {
             /* Bank 4 acknowledges its completed linked DMA before rearming. */
             s->pending &= ~s->dma_done;
+#ifdef IT_HAVE_AVCODEC
+        } else if (addr == AMC_ENC_GO && val == 1 && s->enc_slot) {
+            amc_encode(s);
+#endif
+        } else if (addr == 0x010 && val == 0x20) {
+            /* Engine 0 acknowledges its completion the same way (the encoder program raises it). */
+            s->pending &= ~AMC_E0_DONE;
         } else if (s->rev21 && addr == AMC_E0_HEAD) {
             if (!amc_engine0(s, val)) {
                 warn_report("AMC: engine 0 command list rejected");
@@ -1351,6 +1575,7 @@ static void ipod_touch_amc_reset(DeviceState *dev)
     IPodTouchAMCState *s = IPOD_TOUCH_AMC(dev);
 
     amc_decoder_close(s);
+    amc_encoder_close(s);
     timer_del(s->decode_timer);
     s->pending = 0;
     s->xfers = s->port_len = s->e0_resume = 0;
@@ -1368,7 +1593,13 @@ static void ipod_touch_amc_reset(DeviceState *dev)
 uint32_t ipod_touch_amc_port_avail(void *opaque, hwaddr addr, bool to_device)
 {
     IPodTouchAMCState *s = opaque;
-    return to_device ? 0 : s->port_len;
+    if (to_device) {
+        /* The encoder program's input: PCM the driver streams in on the output port's channel. */
+        unsigned held = s->enc_in ? s->enc_in->len : 0;
+        s->port_sunk = false;
+        return held < AMC_PORT_BYTES ? AMC_PORT_BYTES - held : 0;
+    }
+    return s->port_len;
 }
 
 /* The DMA engine reads the port a word at a time. */
@@ -1385,6 +1616,22 @@ static uint64_t amc_port_read(void *opaque, hwaddr addr, unsigned size)
 
 static void amc_port_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
+    IPodTouchAMCState *s = opaque;
+    uint8_t b[8];
+
+    /* Only the encoder program's input arrives here (ipod_touch_amc_port_avail). */
+    if (!s->enc_in) {
+        s->enc_in = g_byte_array_new();
+    }
+    if (s->enc_in->len >= AMC_PORT_BYTES) {
+        return;
+    }
+    stq_le_p(b, val);
+    g_byte_array_append(s->enc_in, b, size);
+    if (!s->port_sunk && s->port_sink) {
+        s->port_sunk = true;
+        s->port_sink(s->port_opaque);       /* taken: the chain completes when it stops pushing */
+    }
 }
 
 static const MemoryRegionOps amc_port_ops = {
@@ -1411,6 +1658,10 @@ static void ipod_touch_amc_finalize(Object *obj)
     IPodTouchAMCState *s = IPOD_TOUCH_AMC(obj);
     timer_free(s->decode_timer);
     amc_decoder_close(s);
+    amc_encoder_close(s);
+    if (s->enc_in) {
+        g_byte_array_unref(s->enc_in);
+    }
 }
 
 /* Stable wire state contains no AVCodecContext pointers. Replay restores its
@@ -1546,7 +1797,7 @@ static int amc_pre_load(void *opaque)
 static int amc_post_load(void *opaque, int version_id)
 {
     IPodTouchAMCState *s = opaque;
-    if (s->xfers > AMC_XFER_QUEUE || s->port_len > AMC_PORT_BYTES) {
+    if (s->xfers > AMC_XFER_QUEUE || s->port_len > AMC_PORT_BYTES || s->enc_bytes > AMC_PORT_BYTES) {
         return -EINVAL;
     }
     if (s->codec_decode != (s->mode == AMC_MODE_DECODE) ||
@@ -1567,7 +1818,7 @@ static int amc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ipod_touch_amc = {
     .name = TYPE_IPOD_TOUCH_AMC,
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .pre_save = amc_pre_save,
     .pre_load = amc_pre_load,
@@ -1586,6 +1837,11 @@ static const VMStateDescription vmstate_ipod_touch_amc = {
         VMSTATE_UINT8_ARRAY_V(port, IPodTouchAMCState, AMC_PORT_BYTES, 3),
         VMSTATE_UINT32_V(port_len, IPodTouchAMCState, 3),
         VMSTATE_UINT32_V(e0_resume, IPodTouchAMCState, 4),
+        /* The encoder's place in its output and the frame it holds; the codec itself starts again. */
+        VMSTATE_UINT32_V(enc_out_head, IPodTouchAMCState, 5),
+        VMSTATE_UINT32_V(enc_out_offset, IPodTouchAMCState, 5),
+        VMSTATE_UINT32_V(enc_slot, IPodTouchAMCState, 5),
+        VMSTATE_UINT32_V(enc_bytes, IPodTouchAMCState, 5),
         VMSTATE_END_OF_LIST()
     },
 };
