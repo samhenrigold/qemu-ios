@@ -1,5 +1,6 @@
-/* Lockbot on 2.x only forwards ProgramArguments, not launchd's environment dictionary.
- * Set the helper for this installation service alone, then replace the launcher.
+/* Lockbot on 2.x and the qualified iOS 9 service path filter the inserted-library
+ * environment supplied by the job. Set it immediately before executing this
+ * installation service alone, then replace the launcher.
  */
 #include <stdlib.h>
 #include <unistd.h>

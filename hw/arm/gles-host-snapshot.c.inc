@@ -23,7 +23,7 @@
  */
 
 #define SNAP_MAGIC   0x534c4731u     /* "1GLS" */
-#define SNAP_VERSION 4
+#define SNAP_VERSION 6
 #define SNAP_SCAN_GAP 256            /* names probed past the last live one */
 
 static uint32_t gles_group_handle(GLESGroup *group);
@@ -466,10 +466,12 @@ static void snap_put_buffers(SnapW *w, GHashTable *t)
         GLESBuffer *b = v;
         sw32(w, GPOINTER_TO_UINT(k));
         swbytes(w, b->data, b->size);
+        sw32(w, b->usage); sw32(w, b->map_va); sw32(w, b->map_size);
+        sw32(w, b->map_access); sw32(w, b->map_offset); sw32(w, b->map_range);
     }
 }
 
-static void snap_get_buffers(SnapR *r, GHashTable *t)
+static void snap_get_buffers(SnapR *r, GHashTable *t, uint32_t version)
 {
     uint32_t n = sr32(r);
     for (uint32_t i = 0; i < n && !r->bad; i++) {
@@ -485,6 +487,14 @@ static void snap_get_buffers(SnapR *r, GHashTable *t)
         b->refs = 1;
         b->size = len;
         b->data = len ? g_memdup2(p, len) : NULL;
+        if (version >= 5) {
+            b->usage = sr32(r); b->map_va = sr32(r); b->map_size = sr32(r);
+            b->map_access = sr32(r); b->map_offset = sr32(r); b->map_range = sr32(r) != 0;
+            if (b->map_offset > len || b->map_size > len - b->map_offset ||
+                (b->map_va && (uint64_t)b->map_va + b->map_size > UINT32_MAX)) {
+                g_free(b->data); g_free(b); r->bad = true; break;
+            }
+        }
         gles_buffer_bytes += len;
         g_hash_table_replace(t, GUINT_TO_POINTER(name), b);
     }
@@ -877,7 +887,7 @@ static void snap_get_glsl(SnapR *r)
             GLint loc = (GLint)sr32(r);
             if (loc >= 0) glBindAttribLocation(pr, loc, name);
         }
-        if (linked) glLinkProgram(pr);
+        if (linked) { gles_link_program(pr); gles_fetch_link(pr); }
         for (uint32_t k = 0; k < MIN(nsh, 16); k++) glDeleteShader(shs[k]);  /* freed with the program */
         g_hash_table_insert(*t, GUINT_TO_POINTER(guest), GUINT_TO_POINTER(pr));
         uint32_t nuni = sr32(r);
@@ -963,6 +973,8 @@ static void snap_put_host(SnapW *w, GLESHost *h)
     sw32(w, h->drawable_width);
     sw32(w, h->drawable_height);
     sw32(w, h->drawable_announced);
+    sw32(w, h->drawable_renderbuffer);
+    sw32(w, h->clip_enabled);
     snap_put_array(w, &h->vertex);
     for (unsigned i = 0; i < GLES_MAX_TEXUNITS; i++) snap_put_array(w, &h->texcoord[i]);
     sw32(w, h->client_active_unit);
@@ -998,6 +1010,9 @@ static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
     h->drawable_width = sr32(r);
     h->drawable_height = sr32(r);
     h->drawable_announced = sr32(r);
+    h->drawable_renderbuffer = version >= 5 ? sr32(r) : 0;
+    h->clip_enabled = version >= 6 ? sr32(r) : 0;
+    if (h->clip_enabled & ~255u) r->bad = true;
     if (h->inited && (h->drawable_width - 1 >= GLES_FB_MAX || h->drawable_height - 1 >= GLES_FB_MAX)) {
         r->bad = true;      /* 1..GLES_FB_MAX, as gles_drawable_storage takes them */
     }
@@ -1028,7 +1043,9 @@ static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
     h->program = sr32(r);
     {
         const uint8_t *p = srbytes(r, &len);
-        if (p && len == sizeof(h->default_pvrtc)) memcpy(&h->default_pvrtc, p, len);
+        size_t expected = version >= 5 ? sizeof(h->default_pvrtc) : offsetof(GLESPVRTC, immutable_levels);
+        if (p && len == expected) memcpy(&h->default_pvrtc, p, len);
+        else r->bad = true;
     }
 }
 
@@ -1059,20 +1076,70 @@ static bool snap_surface_ok(GLESSurface *s)
 }
 
 static uint32_t snap_get_tables(SnapR *r, GHashTable *buffers, GHashTable *surfaces,
-                                GHashTable *rb_sized, GHashTable *pvrtc)
+                                GHashTable *rb_sized, GHashTable *pvrtc, uint32_t version)
 {
     GHashTableIter it;
     gpointer k, v;
     uint32_t next = sr32(r);
-    snap_get_buffers(r, buffers);
+    snap_get_buffers(r, buffers, version);
     snap_get_map(r, surfaces, GLES_SURFACE_SNAP_BYTES, sizeof(GLESSurface));
     g_hash_table_iter_init(&it, surfaces);
     while (g_hash_table_iter_next(&it, &k, &v)) {
         if (!snap_surface_ok(v)) r->bad = true;
     }
     snap_get_map(r, rb_sized, 0, 0);
-    snap_get_map(r, pvrtc, sizeof(GLESPVRTC), sizeof(GLESPVRTC));
+    snap_get_map(r, pvrtc, version >= 5 ? sizeof(GLESPVRTC) : offsetof(GLESPVRTC, immutable_levels), sizeof(GLESPVRTC));
     return next;
+}
+
+/* Queries are context-local. Ended results are materialized; an active query
+ * is split at the snapshot boundary and its partial result is accumulated. */
+static void snap_put_query(SnapW *w, GLESHost *h, uint32_t id, GLESQuery *q, bool deleted)
+{
+    GLuint result=0;
+    if(h->active_query==id)glEndQuery(GL_SAMPLES_PASSED);
+    if(q->begun) {
+        if(q->restored)result=q->saved;
+        else {glGetQueryObjectuiv(q->host,GL_QUERY_RESULT,&result);result=gles_query_combine(q,result);}
+    }
+    sw32(w,id);sw32(w,q->target);sw32(w,q->begun);sw32(w,q->ended);sw32(w,result);sw32(w,deleted);
+    if(h->active_query==id){q->partial=result;glBeginQuery(GL_SAMPLES_PASSED,q->host);}
+}
+static void snap_put_queries(SnapW *w, GLESHost *h)
+{
+    sw32(w,h->next_query);sw32(w,h->active_query);
+    sw32(w,(h->queries?g_hash_table_size(h->queries):0)+(h->deleted_query?1:0));
+    if(h->queries) {
+        GHashTableIter it;gpointer key,value;g_hash_table_iter_init(&it,h->queries);
+        while(g_hash_table_iter_next(&it,&key,&value))snap_put_query(w,h,GPOINTER_TO_UINT(key),value,false);
+    }
+    if(h->deleted_query)snap_put_query(w,h,h->active_query,h->deleted_query,true);
+}
+static void snap_get_queries(SnapR *r, GLESHost *h)
+{
+    h->next_query=sr32(r);h->active_query=sr32(r);uint32_t n=sr32(r);
+    if(n>16385){r->bad=true;return;}
+    h->queries=g_hash_table_new_full(g_direct_hash,g_direct_equal,NULL,g_free);
+    for(uint32_t i=0;i<n&&!r->bad;i++) {
+        uint32_t id=sr32(r);GLESQuery *q=g_new0(GLESQuery,1);
+        q->target=sr32(r);q->begun=sr32(r)!=0;q->ended=sr32(r)!=0;q->saved=sr32(r);
+        bool deleted=sr32(r)!=0;q->restored=q->ended;
+        if((deleted&&(id!=h->active_query||h->deleted_query||!q->begun||q->ended))||!id||g_hash_table_contains(h->queries,GUINT_TO_POINTER(id))||
+           (q->begun&&!gles_query_target(q->target))||(!q->begun&&(q->target||q->ended))||
+           (q->begun&&!q->ended&&id!=h->active_query)) {g_free(q);r->bad=true;break;}
+        if(deleted)h->deleted_query=q;else g_hash_table_insert(h->queries,GUINT_TO_POINTER(id),q);
+    }
+    if(g_hash_table_size(h->queries)>16384)r->bad=true;
+    GLESQuery *active=h->deleted_query?h->deleted_query:g_hash_table_lookup(h->queries,GUINT_TO_POINTER(h->active_query));
+    if(h->active_query&&(!active||!active->begun||active->ended))r->bad=true;
+}
+static void snap_restore_queries(GLESHost *h)
+{
+    if(!h->queries)return;
+    GHashTableIter it;gpointer value;g_hash_table_iter_init(&it,h->queries);
+    while(g_hash_table_iter_next(&it,NULL,&value)){GLESQuery *q=value;glGenQueries(1,&q->host);}
+    GLESQuery *active=h->deleted_query?h->deleted_query:g_hash_table_lookup(h->queries,GUINT_TO_POINTER(h->active_query));
+    if(active){if(h->deleted_query)glGenQueries(1,&active->host);active->partial=active->saved;active->restored=false;glBeginQuery(GL_SAMPLES_PASSED,active->host);}
 }
 
 /* Save one context: its own fields, and when it is the context that carries
@@ -1090,6 +1157,7 @@ static void snap_put_context(SnapW *w, uint32_t handle, GLESHost *h, bool object
     if (!h->inited) return;
     gh_current = h;
     CGLSetCurrentContext(h->cgl);
+    snap_put_queries(w,h);
     snap_capture_gl(&s);
     swbytes(w, &s, sizeof(s));
     if (objects) snap_put_objects(w);
@@ -1159,7 +1227,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
     SnapR r = { p, n, 0, false };
     uint32_t ngroups, ncontexts, version;
 
-    if (sr32(&r) != SNAP_MAGIC || ((version = sr32(&r)) != 3 && version != SNAP_VERSION) ||
+    if (sr32(&r) != SNAP_MAGIC || ((version = sr32(&r)) < 3 || version > SNAP_VERSION) ||
         sr32(&r) != sizeof(GLESCtxGL)) {
         fprintf(stderr, "[gles] snapshot: GL state from an incompatible build; not restored\n");
         return false;
@@ -1183,7 +1251,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
         g->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
         g->pvrtc = snap_new_owned();
         g->charged = g_hash_table_new(g_direct_hash, g_direct_equal);
-        g->next_buffer_name = snap_get_tables(&r, g->buffers, g->surfaces, g->rb_sized, g->pvrtc);
+        g->next_buffer_name = snap_get_tables(&r, g->buffers, g->surfaces, g->rb_sized, g->pvrtc, version);
         g_hash_table_insert(gles_groups, GUINT_TO_POINTER(handle), g);
     }
     ncontexts = sr32(&r);
@@ -1215,7 +1283,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
             h->surfaces = snap_new_owned();
             h->rb_sized = g_hash_table_new(g_direct_hash, g_direct_equal);
             h->pvrtc = snap_new_owned();
-            h->next_buffer_name = snap_get_tables(&r, h->buffers, h->surfaces, h->rb_sized, h->pvrtc);
+            h->next_buffer_name = snap_get_tables(&r, h->buffers, h->surfaces, h->rb_sized, h->pvrtc, version);
         }
         snap_get_host(&r, h, version);
         objects = sr32(&r);
@@ -1224,6 +1292,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
             qatomic_inc(&gles_live_contexts);
         }
         if (!h->inited) continue;
+        if(version>=6)snap_get_queries(&r,h);
         const uint8_t *sp = srbytes(&r, &len);
         if (r.bad || !sp || len != sizeof(s)) { r.bad = true; break; }
         memcpy(&s, sp, sizeof(s));
@@ -1247,6 +1316,7 @@ static bool gles_snapshot_load(const uint8_t *p, size_t n)
         if (!handle) qatomic_inc(&gles_live_contexts);
         if (objects) snap_get_objects(&r);
         snap_apply_gl(&s);
+        snap_restore_queries(h);
     }
     gh_current = &gh_legacy;
     CGLSetCurrentContext(NULL);

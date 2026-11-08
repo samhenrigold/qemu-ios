@@ -1,6 +1,6 @@
 /*
  * VXD (Imagination MSVDX with an MTX core), the H.264/MPEG-4 decoder of the
- * S5L8920 and A4 (DT vxd,s5l8930x / vxd,s5l8920x; AppleVXD375).
+ * S5L8920 and A4 (AppleVXD375), also used by A6's AppleVXD390 driver.
  *
  * The MTX runs Imagination's DXVA firmware (BUILD_DXVA_FW1.00.10.0963 inside
  * AppleVXD375). This model doesn't run it: it plays its part (H) at the
@@ -64,6 +64,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8920VXDState, S5L8920_VXD)
 #define TO_HOST_OFF         0xc00
 #define TO_HOST_WORDS       0xf0
 
+#define MSG_PADDING         0x00
+#define MSG_INIT            0x80
 #define MSG_RENDER          0x81
 #define   RENDER_NO_RESPONSE 0x0800 /* word 7 flags: no CMD_COMPLETED for this one */
 #define   RENDER_HOST_INT   0x4000  /* word 7 flags: interrupt the host at its end (a picture's last slice) */
@@ -80,13 +82,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8920VXDState, S5L8920_VXD)
 #define VXD_SETUP_NS        30000
 #define VXD_MB_NS           8000
 #define VXD_PENDING         16
-
+#define VXD_STREAMS         16
 #define VXD_TARGETS         32
 
 typedef struct VXDTarget {
     int64_t seq;
     uint32_t ptd, luma, chroma, stride;
 } VXDTarget;
+
+typedef struct VXDStream {
+    VXDH264 *codec;
+    uint32_t tag;
+    uint64_t used;
+    /* Reordered output belongs to this stream's original render buffer. */
+    VXDTarget target[VXD_TARGETS];
+    int64_t seq;
+} VXDStream;
 
 struct S5L8920VXDState {
     SysBusDevice parent_obj;
@@ -95,24 +106,50 @@ struct S5L8920VXDState {
     uint32_t regs[0x1000 / 4];
     uint32_t comms[0x1000 / 4];
     uint32_t ram[2][MTX_RAM_WORDS];   /* code (MCMID 0x10..), data (0x18..) */
-    VXDH264 *h264;
-    /*
-     * Where each picture goes, by its tag (the count of pictures given). The host decoder gives them in display
-     * order, a reference picture only once the next one is decoded; the hardware writes each to its own buffer as
-     * it decodes it, and the guest reorders. Written to the current render's buffer, a stream with B pictures had
-     * each P picture in the next P picture's buffer. ponytail: a stream's last held-back picture never comes (no
-     * end of stream reaches the host decoder); its buffer keeps what it held.
-     */
-    VXDTarget target[VXD_TARGETS];
-    int64_t seq;
+    VXDStream streams[VXD_STREAMS];
+    uint64_t stream_clock;
     uint32_t ram_addr;                /* word address for MTX_RAM_DATA */
     QEMUTimer *done;                  /* the oldest pending render's end */
     uint32_t pending;                 /* renders decoded, not yet completed */
     uint32_t fence[VXD_PENDING];      /* their fences and ends, oldest first */
+    bool compact[VXD_PENDING];       /* DEVA messages carry a 16-bit header fence */
     int64_t due[VXD_PENDING];
     int64_t busy_until;               /* when the last of them ends */
     FILE *trace;
 };
+
+static void vxd_streams_clear(S5L8920VXDState *s)
+{
+    for (unsigned i = 0; i < VXD_STREAMS; i++) {
+        vxd_h264_free(s->streams[i].codec);
+    }
+    memset(s->streams, 0, sizeof(s->streams));
+    s->stream_clock = 0;
+}
+
+static VXDStream *vxd_stream(S5L8920VXDState *s, uint32_t tag)
+{
+    VXDStream *oldest = &s->streams[0];
+    for (unsigned i = 0; i < VXD_STREAMS; i++) {
+        VXDStream *stream = &s->streams[i];
+        if (stream->codec && stream->tag == tag) {
+            stream->used = ++s->stream_clock;
+            return stream;
+        }
+        if (!stream->codec || (oldest->codec && stream->used < oldest->used)) {
+            oldest = stream;
+        }
+    }
+    /* The firmware tags its page-directory word with a decoder context.
+     * Translation masks the low bits; codec/reference state must retain them.
+     * Camera Roll interleaves thumbnail IDRs with playback P pictures under
+     * the same page directory. Sharing one DPB lets the former reset the latter.
+     * Bound host state; an evicted idle stream resumes at its next IDR. */
+    vxd_h264_free(oldest->codec);
+    *oldest = (VXDStream){ .codec = vxd_h264_new(), .tag = tag,
+                           .used = ++s->stream_clock };
+    return oldest;
+}
 
 #define VXD_LOG(s, ...) do { if ((s)->trace) fprintf((s)->trace, "vxd: " __VA_ARGS__); } while (0)
 
@@ -171,13 +208,15 @@ typedef struct VXDRender {
     uint32_t bs_va, bs_len;  /* the bitstream LLDMA, to the VEC shift register: its start, its total length */
     uint32_t seg_va[VXD_BS_SEGS], seg_len[VXD_BS_SEGS];   /* and its descriptors' pieces */
     unsigned segs;
-    uint32_t size, mode, luma, chroma;
+    uint32_t size, mode, luma, chroma, row_stride;
 } VXDRender;
 
 #define CMD_REGVALPAIR_WRITE 0x1
 #define CMD_RENDEC_WRITE     0x2
+#define CMD_RENDEC_INLINE    0x5
 #define CMD_COMPLETION       0x6
 #define CMD_HEADER           0x7
+#define CMD_HEADER_EXT       0x9
 #define CMD_LLDMA            0xa
 #define CMD_SR_SETUP         0xb
 #define CMD_SLLDMA           0xc
@@ -188,17 +227,15 @@ typedef struct VXDRender {
 #define CMDS_OPERATING_MODE       0x1008
 #define CMDS_LUMA_RECONSTRUCTED   0x100c
 #define CMDS_CHROMA_RECONSTRUCTED 0x1010
+#define CMDS_EXTENDED_ROW_STRIDE  0x1040
 
-static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
+static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
+                                unsigned words, VXDRender *r, bool packed)
 {
     uint32_t d[8];
-
-    if (!vxd_rw(ptd, lldma, d, sizeof(d), false) || d[2] != 0x350) {
-        return false;
-    }
-    unsigned words = d[1] & 0xffff;
-    g_autofree uint32_t *c = g_new(uint32_t, words + 8);
-    if (!vxd_rw(ptd, d[6], c, words * 4, false)) {
+    if (!words || words > 0xffff) return false;
+    g_autofree uint32_t *c = g_new0(uint32_t, words + 8);
+    if (!vxd_rw(ptd, commands, c, words * 4, false)) {
         return false;
     }
     memset(r, 0, sizeof(*r));
@@ -208,7 +245,22 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
         case CMD_HEADER:
             i += 5;
             break;
+        case CMD_HEADER_EXT:
+            if (words - i < 8) return false;
+            i += 8;
+            break;
         case CMD_REGVALPAIR_WRITE:
+            if (packed) {
+                unsigned count = (c[i] >> 16) & 0xfff;
+                uint32_t reg = 0x04800000 | (c[i] & 0xffff);
+                if (count > words - i - 1) return false;
+                for (unsigned j = 0; j < count; j++, reg += 4) {
+                    if (reg >= VEC_H264_FE_SPS0 && reg < VEC_H264_FE_SPS0 + 0x14)
+                        r->fe[(reg - VEC_H264_FE_SPS0) / 4] = c[i + 1 + j];
+                }
+                i += 1 + count;
+                break;
+            }
             for (unsigned k = 0; k < n && i + 2 + 2 * k < words; k++) {
                 uint32_t reg = c[i + 1 + 2 * k];
                 if (reg >= VEC_H264_FE_SPS0 && reg < VEC_H264_FE_SPS0 + 0x14) {
@@ -232,18 +284,47 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
                     case CMDS_OPERATING_MODE: r->mode = v; break;
                     case CMDS_LUMA_RECONSTRUCTED: r->luma = v; break;
                     case CMDS_CHROMA_RECONSTRUCTED: r->chroma = v; break;
+                    case CMDS_EXTENDED_ROW_STRIDE: r->row_stride = v & 0x3ffc0; break;
                     }
                 }
                 k += 1 + count;
             }
             i += 1 + n;
             break;
+        case CMD_RENDEC_INLINE: {
+            /* A6 packs the register and count into the command itself. */
+            unsigned count = (c[i] >> 16) & 0xfff;
+            unsigned reg = packed ? c[i] & 0xffff : (c[i] & 0xffff) >> 2;
+            if (count > words - i - 1) return false;
+            for (unsigned j = 0; j < count; j++) {
+                uint32_t v = c[i + 1 + j];
+                switch (reg + 4 * j) {
+                case CMDS_DISPLAY_PICTURE_SIZE: r->size = v; break;
+                case CMDS_OPERATING_MODE: r->mode = v; break;
+                case CMDS_LUMA_RECONSTRUCTED: r->luma = v; break;
+                case CMDS_CHROMA_RECONSTRUCTED: r->chroma = v; break;
+                case CMDS_EXTENDED_ROW_STRIDE: r->row_stride = v & 0x3ffc0; break;
+                }
+            }
+            i += 1 + count;
+            break;
+        }
         case CMD_SR_SETUP:
             r->sr_offset = c[i + 1];
             i += 3;
             break;
         case CMD_LLDMA:
         case CMD_SLLDMA:
+            if (packed) {
+                if (words - i < 2) return false;
+                r->bs_len = c[i] & 0x0fffffff;
+                r->bs_va = c[i + 1];
+                r->seg_va[0] = r->bs_va;
+                r->seg_len[0] = r->bs_len;
+                r->segs = 1;
+                i += 2;
+                break;
+            }
             /*
              * A descriptor moves at most 0xffff bytes: a longer slice NAL (a 1024x768 movie's IDR, 290 KB) is a
              * list, word 7 the next descriptor >> 4, word 1 bit 31 on the last. Only the first one read, every
@@ -267,6 +348,11 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
             }
             i++;
             break;
+        case 0xe: /* Packed firmware-context transfer: count, then IOVA. */
+            if (!packed) { i++; break; }
+            if (words - i < 2) return false;
+            i += 2; /* The host decoder retains the reconstruction state. */
+            break;
         case CMD_COMPLETION:
             i = words;
             break;
@@ -276,6 +362,21 @@ static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
         }
     }
     return r->bs_va && r->luma;
+}
+
+static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
+{
+    uint32_t d[8];
+    if (!vxd_rw(ptd, lldma, d, sizeof(d), false) || d[2] != 0x350) return false;
+    return vxd_parse_commands(ptd, d[6], d[1] & 0xffff, r, false);
+}
+
+static bool vxd_parse_packed(uint32_t ptd, uint32_t commands, unsigned words, VXDRender *r)
+{
+    uint32_t first;
+    return vxd_rw(ptd, commands, &first, sizeof(first), false) &&
+        first == ((uint32_t)CMD_HEADER_EXT << 28) &&
+        vxd_parse_commands(ptd, commands, words, r, true);
 }
 
 /* A coded slice's NAL header byte: forbidden bit clear, type 1 or 5. */
@@ -325,6 +426,7 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
 {
     enum { BACK = 64 };
     static const unsigned strides[8] = { 384, 768, 1280, 1920, 512, 1024, 2048, 4096 };
+    if (!r->segs || !r->bs_len || r->bs_len > 16 * 1024 * 1024) return -1;
     uint32_t end = r->segs ? r->seg_va[r->segs - 1] + r->seg_len[r->segs - 1] : 0;   /* no segs: refused below */
     g_autofree uint8_t *buf = g_malloc(BACK + r->bs_len);
 
@@ -357,20 +459,28 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
         .sps0 = r->fe[0], .pps0 = r->fe[1], .pic0 = r->fe[2], .slice0 = r->fe[3], .slice1 = r->fe[4],
         .last = last,
     };
+    VXDStream *stream = vxd_stream(s, ptd);
+    unsigned stride = r->mode & (1u << 28) ? r->row_stride : strides[(r->mode >> 24) & 7];
+    if (!stride || stride > 16320) return -1;
     if (last) {
-        s->seq++;
-        s->target[s->seq % VXD_TARGETS] = (VXDTarget){ s->seq, ptd, r->luma, r->chroma, strides[(r->mode >> 24) & 7] };
-        sl.tag = s->seq;
+        stream->seq++;
+        stream->target[stream->seq % VXD_TARGETS] = (VXDTarget){ stream->seq, ptd, r->luma, r->chroma, stride };
+        sl.tag = stream->seq;
     }
     VXDPicture pic;
-    int got = vxd_h264_decode(s->h264, &sl, &pic);
-    for (int more = got; more > 0; more = vxd_h264_next(s->h264, &pic)) {
-        const VXDTarget *t = &s->target[(uint64_t)pic.tag % VXD_TARGETS];
+    int got = vxd_h264_decode(stream->codec, &sl, &pic);
+    if (s->trace) {
+        fprintf(s->trace, "decode regs %08x %08x %08x %08x %08x sr=%u nal=%d bytes=%u last=%d\n",
+                r->fe[0], r->fe[1], r->fe[2], r->fe[3], r->fe[4], sl.sr_bit, nal, (unsigned)sl.len, last);
+    }
+    for (int more = got; more > 0; more = vxd_h264_next(stream->codec, &pic)) {
+        const VXDTarget *t = &stream->target[(uint64_t)pic.tag % VXD_TARGETS];
         if (pic.tag < 0 || t->seq != pic.tag) {
             VXD_LOG(s, "picture %" PRId64 " has no buffer\n", pic.tag);
             continue;
         }
-        unsigned w = MIN((unsigned)pic.width, t->stride), hgt = pic.height;
+        if (t->stride < (unsigned)pic.width) return -1;
+        unsigned w = pic.width, hgt = pic.height;
         g_autofree uint8_t *row = g_malloc(w);
         for (unsigned y = 0; y < hgt; y++) {
             vxd_rw(t->ptd, t->luma + y * t->stride, (void *)(pic.plane[0] + y * pic.stride[0]), w, true);
@@ -419,12 +529,17 @@ static void vxd_complete(void *opaque)
     unsigned n = 0;
 
     while (n < s->pending && s->due[n] <= now) {
-        uint32_t done[3] = { MSG_CMD_COMPLETED << 8 | 12, s->fence[n], 0 };
-        vxd_post(s, done, 3);
+        uint32_t done[5] = { MSG_CMD_COMPLETED << 8 | 12, s->fence[n], 0 };
+        if (s->compact[n]) {
+            done[0] = (s->fence[n] << 16) | MSG_CMD_COMPLETED << 8 | 20;
+            done[1] = 0; /* No decoder error flags. */
+        }
+        vxd_post(s, done, s->compact[n] ? 5 : 3);
         n++;
     }
     s->pending -= n;
     memmove(s->fence, s->fence + n, s->pending * sizeof(s->fence[0]));
+    memmove(s->compact, s->compact + n, s->pending * sizeof(s->compact[0]));
     memmove(s->due, s->due + n, s->pending * sizeof(s->due[0]));
     if (s->pending) {
         timer_mod(s->done, s->due[0]);
@@ -435,31 +550,73 @@ static void vxd_message(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
 {
     uint8_t id = msg[0] >> 8;
 
-    VXDRender r;
-    int got = id == MSG_RENDER && words >= 3 && vxd_parse_render(msg[1], msg[2], &r) ? vxd_decode(s, msg[1], &r) : -2;
-    VXD_LOG(s, "message %02x fence %u slice %08x: %s\n", id, words > 4 ? msg[4] : 0, words > 6 ? msg[6] : 0,
+    if (s->trace) {
+        fprintf(s->trace, "message words");
+        for (unsigned i = 0; i < MIN(words, 12); i++) {
+            fprintf(s->trace, " %08x", msg[i]);
+        }
+        fprintf(s->trace, "\n");
+    }
+
+    /* Padding wraps the command ring; INIT configures firmware resources.
+     * Neither submits a picture or owns a decode fence. A synthetic
+     * CMD_COMPLETED for fence zero can retire the native client's first job
+     * early, or leave an unclaimed reply holding its interrupt asserted. */
+    if (id == MSG_PADDING || id == MSG_INIT) {
+        VXD_LOG(s, "message %02x: no picture completion\n", id);
+        return;
+    }
+    bool compact = words == 5 && id == MSG_RENDER;
+    uint32_t fence = compact ? msg[0] >> 16 : words > 4 ? msg[4] : 0;
+    uint32_t flags = compact ? msg[1] & 0xffff : words > 7 ? msg[7] : 0;
+    uint32_t ptd = compact ? msg[3] : words > 1 ? msg[1] : 0;
+    if (s->trace && compact && id == MSG_RENDER) {
+        uint32_t head[32];
+        uint32_t dma[8];
+        unsigned count = MIN(msg[1] >> 16, G_N_ELEMENTS(head));
+        if (count && vxd_rw(ptd, msg[2], dma, sizeof(dma), false) &&
+            dma[2] == 0x350 && vxd_rw(ptd, dma[6], head, count * 4, false)) {
+            fprintf(s->trace, "command head");
+            for (unsigned i = 0; i < count; i++) {
+                fprintf(s->trace, " %08x", head[i]);
+            }
+            fprintf(s->trace, "\n");
+        }
+    }
+    VXDRender r = {0};
+    bool parsed = id == MSG_RENDER && words >= 3 &&
+        vxd_parse_render(ptd, msg[2], &r);
+    if (!parsed && compact && id == MSG_RENDER)
+        parsed = vxd_parse_packed(ptd, msg[2], msg[1] >> 16, &r);
+    if (compact && !r.mode) r.mode = msg[4];
+    int got = parsed ? vxd_decode(s, ptd, &r) : -2;
+    VXD_LOG(s, "message %02x fence %u slice %08x: %s\n", id, fence, words > 6 ? msg[6] : 0,
             got == 1 ? "picture" : got == 0 ? "slice" : got == -1 ? "FAILED" : "not a render");
     /*
-     * A render takes its decode time, decoded or not; fence = word 4 (psb's FW_VA_RENDER). Only a message whose flags
-     * (word 7) ask for the host's interrupt (FW_VA_RENDER_HOST_INT, a picture's last slice) or that doesn't waive the
+     * A render takes its decode time, decoded or not. The legacy fence/flags are in words 4/7;
+     * DEVA packs them in the high half of word 0 / low half of word 1. Only a message whose flags
+     * ask for the host's interrupt (FW_VA_RENDER_HOST_INT, a picture's last slice) or that doesn't waive the
      * reply (FW_VA_RENDER_NO_RESPONCE_MSG, every other slice) gets a CMD_COMPLETED: a picture completes once, at its
      * end. Completed at each slice, a two-slice picture's fence came back while its second slice was still decoding.
      */
     int64_t cost = VXD_SETUP_NS;
-    if (got != -2 && words > 7 && (msg[7] & RENDER_HOST_INT)) {     /* the picture's macroblocks, at its last slice */
-        unsigned wmb = ((r.size & 0xfff) + 16) / 16, last = msg[6] >> 16;
-        cost += (int64_t)((last >> 8) * wmb + (last & 0xff) + 1) * VXD_MB_NS;
+    if (got != -2 && (flags & RENDER_HOST_INT)) {
+        unsigned wmb = ((r.size & 0xfff) + 16) / 16;
+        unsigned blocks = compact ? wmb * ((((r.size >> 12) & 0xfff) + 16) / 16) :
+            ((msg[6] >> 24) * wmb + ((msg[6] >> 16) & 0xff) + 1);
+        cost += (int64_t)blocks * VXD_MB_NS;
     }
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->busy_until = MAX(now, s->busy_until) + cost;
-    if (id == MSG_RENDER && words > 7 && (msg[7] & (RENDER_HOST_INT | RENDER_NO_RESPONSE)) == RENDER_NO_RESPONSE) {
+    if (id == MSG_RENDER && (flags & (RENDER_HOST_INT | RENDER_NO_RESPONSE)) == RENDER_NO_RESPONSE) {
         return;
     }
     if (s->pending == VXD_PENDING) {          /* more outstanding than the driver ever queues: end the oldest now */
         s->due[0] = 0;
         vxd_complete(s);
     }
-    s->fence[s->pending] = words > 4 ? msg[4] : 0;
+    s->fence[s->pending] = fence;
+    s->compact[s->pending] = compact;
     s->due[s->pending++] = s->busy_until;
     if (!timer_pending(s->done)) {
         timer_mod(s->done, s->due[0]);
@@ -580,13 +737,19 @@ static void vxd_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
         }
         return;
     case VXD_CONTROL:
+        VXD_LOG(s, "control %08" PRIx64 " status %08x pending %u\n",
+                val, s->regs[VXD_INT_STATUS / 4], s->pending);
         s->regs[off / 4] = val & ~VXD_SOFT_RESETS;   /* resets finish at once */
         return;
     case VXD_INT_CLEAR:
+        VXD_LOG(s, "interrupt clear %08" PRIx64 " status %08x\n",
+                val, s->regs[VXD_INT_STATUS / 4]);
         s->regs[VXD_INT_STATUS / 4] &= ~val;
         vxd_update_irq(s);
         return;
     case VXD_HOST_INT_ENABLE:
+        VXD_LOG(s, "interrupt enable %08" PRIx64 " status %08x\n",
+                val, s->regs[VXD_INT_STATUS / 4]);
         s->regs[off / 4] = val;
         vxd_update_irq(s);
         return;
@@ -608,7 +771,6 @@ static void vxd_init(Object *obj)
 {
     S5L8920VXDState *s = S5L8920_VXD(obj);
 
-    s->h264 = vxd_h264_new();
     s->done = timer_new_ns(QEMU_CLOCK_VIRTUAL, vxd_complete, s);
     memory_region_init_io(&s->iomem, obj, &vxd_ops, s, TYPE_S5L8920_VXD, 0x100000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
@@ -626,6 +788,7 @@ static void vxd_reset(DeviceState *dev)
 {
     S5L8920VXDState *s = S5L8920_VXD(dev);
 
+    vxd_streams_clear(s);
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->comms, 0, sizeof(s->comms));
     s->ram_addr = 0;
@@ -642,12 +805,21 @@ static void vxd_reset(DeviceState *dev)
 static int vxd_post_load(void *opaque, int version_id)
 {
     S5L8920VXDState *s = opaque;
+    vxd_streams_clear(s);
     return s->pending <= VXD_PENDING ? 0 : -EINVAL;    /* counts fence[] and due[] */
+}
+
+static void vxd_finalize(Object *obj)
+{
+    S5L8920VXDState *s = S5L8920_VXD(obj);
+    vxd_streams_clear(s);
+    timer_free(s->done);
+    if (s->trace) fclose(s->trace);
 }
 
 static const VMStateDescription vxd_vmstate = {
     .name = TYPE_S5L8920_VXD,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = vxd_post_load,
     .fields = (const VMStateField[]) {
@@ -657,6 +829,7 @@ static const VMStateDescription vxd_vmstate = {
         VMSTATE_TIMER_PTR_V(done, S5L8920VXDState, 2),
         VMSTATE_UINT32_V(pending, S5L8920VXDState, 2),
         VMSTATE_UINT32_ARRAY_V(fence, S5L8920VXDState, VXD_PENDING, 2),
+        VMSTATE_BOOL_ARRAY_V(compact, S5L8920VXDState, VXD_PENDING, 3),
         VMSTATE_INT64_ARRAY_V(due, S5L8920VXDState, VXD_PENDING, 2),
         VMSTATE_INT64_V(busy_until, S5L8920VXDState, 2),
         VMSTATE_END_OF_LIST()
@@ -677,6 +850,7 @@ static const TypeInfo vxd_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(S5L8920VXDState),
     .instance_init = vxd_init,
+    .instance_finalize = vxd_finalize,
     .class_init = vxd_class_init,
 };
 

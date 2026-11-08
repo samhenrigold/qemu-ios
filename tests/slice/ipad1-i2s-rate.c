@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+static unsigned ctpop32(uint32_t x) { return __builtin_popcount(x); }
 typedef unsigned Clock;
 typedef int ClockEvent;
 static unsigned clock_get_hz(Clock *clock) { return clock ? *clock : 0; }
@@ -32,6 +34,9 @@ static unsigned clock_get_hz(Clock *clock) { return clock ? *clock : 0; }
 typedef struct S5L8930I2SState {
     uint32_t regs[0x400];
     bool ctrl_run;
+    bool mca;
+    uint32_t frame_rate;
+    unsigned out_channels, out_bytes;
     uint8_t port;
     Clock *lrclk;
     uint64_t nco_base;
@@ -74,6 +79,7 @@ static uint32_t address_space_ldl_le(int *as, hwaddr addr, int attrs, void *resu
 
 struct audsettings { int freq, nchannels, fmt; bool big_endian; };
 #define AUDIO_FORMAT_S16 1
+#define AUDIO_FORMAT_S32 2
 static int opened, voice_rate, active = -1;
 static void i2s_out_cb(void *opaque, int free_bytes) {}
 static void *audio_be_open_out(void *be, void *old, const char *name, void *opaque,
@@ -102,7 +108,8 @@ int main(void)
     CS42L58State cs42l59 = { .rate_reg = 0x0a, .lrclk = &lrclk };
 
     i2s_ports[0] = &i2s0;
-    i2s0 = (S5L8930I2SState) { .lrclk = &lrclk, .rate = 44100, .voice = &i2s0 };
+    i2s0 = (S5L8930I2SState) { .lrclk = &lrclk, .rate = 44100, .voice = &i2s0,
+                             .out_channels = 2, .out_bytes = 2 };
     i2s0.regs[I2S_TXCOM >> 2] = I2S_CMD_RUN;
     i2s0.regs[I2S_TXCON >> 2] = 0x03100081;        /* 10B500's TX config: the codec's slave */
     i2s0.regs[I2S_FRAME_BITS >> 2] = 0x28000300;
@@ -158,6 +165,22 @@ int main(void)
     assert(s5l8930_i2s_rate(0) == 16000);
     i2s0.regs[I2S_TXCON >> 2] = 0x03100081;
     assert(s5l8930_i2s_rate(0) == 48000);
+    /* Native N42 speaker startup: mono S16, four-channel RX, 48 kHz
+     * virtual clock. Legacy ports remain stereo S16. */
+    S5L8930I2SState mca = { .mca = true, .frame_rate = 48000 };
+    i2s_ports[6] = &mca;
+    mca.regs[8 >> 2] = 0x1010;
+    mca.regs[0x24 >> 2] = 1;
+    mca.regs[0x38 >> 2] = 15;
+    assert(s5l8930_i2s_rate(6) == 48000);
+    assert(s5l8930_i2s_frame_bytes(6, false) == 2);
+    assert(s5l8930_i2s_frame_bytes(6, true) == 8);
+    assert(s5l8930_i2s_frame_bytes(0, false) == 4);
+    assert(s5l8930_i2s_frame_bytes(99, false) == 4);
+    mca.regs[0x18 >> 2] = 0x109;
+    assert(i2s_tx_running(&mca));
+    mca.regs[0x18 >> 2] = 0;
+    assert(!i2s_tx_running(&mca));
     puts("PASS: i2s0 runs at the codec's LRCLK as the slave (TX config bit 20), at its NCO as the master, and its "
          "voice follows either");
     return 0;

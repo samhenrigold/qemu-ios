@@ -98,22 +98,87 @@ static unsigned be32(const unsigned char *p) {
     return (unsigned)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 }
 
+/* Fat apps may put ARM64 first (Pages 2.0 does). This emulator's installd
+ * needs the supported 32-bit ARM slice's signing metadata. */
+static long appsync_arm32_slice(const unsigned char *header, unsigned size) {
+    if (size < 8) return -1;
+    if (be32(header) != 0xcafebabe) return 0;
+    unsigned count = be32(header + 4);
+    if (!count || count > (size - 8) / 20) return -1;
+    for (unsigned i = 0; i < count; i++) {
+        const unsigned char *arch = header + 8 + 20 * i;
+        if (be32(arch) == 12) {
+            unsigned offset = be32(arch + 8);
+            return offset && offset <= 0x7fffffff ? (long)offset : -1;
+        }
+    }
+    return -1;
+}
+
 // Read the first Mach-O slice's identifier and entitlements from its embedded
 // signature. A missing or malformed signature leaves both outputs untouched.
 // The load commands are read whole: Chrome 21's take 4556 bytes, and with the
 // first 4 KiB only its LC_CODE_SIGNATURE (the last) was never found, so 6.x
 // installd refused it (code_info_identifier=n, InstallMapUpdateFailed).
 #define HEADER_BYTES 65536
-static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents) {
+extern CFTypeRef CFDictionaryGetValue(CFDictionaryRef, const void *);
+extern unsigned long CFStringGetTypeID(void);
+extern int snprintf(char *, unsigned long, const char *, ...);
+static void executable_signature_info(CFStringRef, CFStringRef *, CFTypeRef *);
+
+/* Modern installation services pass a bundle directory. Resolve only its
+ * declared executable; the embedded signature remains the metadata source. */
+static int bundle_signature_info(const char *bundle, CFStringRef *ident, CFTypeRef *ents) {
+    char file[1400], executable[256];
+    int length = snprintf(file, sizeof file, "%s/Info.plist", bundle);
+    if (length < 0 || (unsigned)length >= sizeof file) return 0;
+    int fd = open(file, 0);
+    if (fd < 0) return 0;
+    unsigned char *bytes = malloc(HEADER_BYTES);
+    long n = bytes ? pread(fd, bytes, HEADER_BYTES, 0) : -1;
+    close(fd);
+    if (n <= 0 || n == HEADER_BYTES) { free(bytes); return 0; }
+    CFDataRef data = CFDataCreate(0, bytes, n);
+    free(bytes);
+    CFTypeRef plist = data ? CFPropertyListCreateFromXMLData(0, data, 0, 0) : 0;
+    if (data) CFRelease((CFTypeRef)data);
+    if (!plist || CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+        if (plist) CFRelease(plist);
+        return 0;
+    }
+    CFStringRef key = CFStringCreateWithCString(0, "CFBundleExecutable", 0x08000100);
+    CFTypeRef value = CFDictionaryGetValue((CFDictionaryRef)plist, key);
+    CFRelease((CFTypeRef)key);
+    if (!value || CFGetTypeID(value) != CFStringGetTypeID() ||
+        !CFStringGetCString((CFStringRef)value, executable, sizeof executable, 0x08000100) ||
+        !executable[0] || !strcmp(executable, ".") || !strcmp(executable, "..")) {
+        CFRelease(plist);
+        return 0;
+    }
+    for (unsigned i = 0; executable[i]; i++) {
+        if (executable[i] == '/') { CFRelease(plist); return 0; }
+    }
+    length = snprintf(file, sizeof file, "%s/%s", bundle, executable);
+    if (length > 0 && (unsigned)length < sizeof file) {
+        CFStringRef path = CFStringCreateWithCString(0, file, 0x08000100);
+        executable_signature_info(path, ident, ents);
+        CFRelease((CFTypeRef)path);
+    }
+    CFRelease(plist);
+    return 1;
+}
+
+static void executable_signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents) {
     char file[1024];
     if (!path || !CFStringGetCString(path, file, sizeof file, 0x08000100)) return;
     int fd = open(file, 0);
     if (fd < 0) return;
     unsigned char *h = malloc(HEADER_BYTES);
     if (!h) { close(fd); return; }
-    long base = 0, n = pread(fd, h, HEADER_BYTES, 0);
-    if (n >= 28 && be32(h) == 0xcafebabe && be32(h + 4)) {
-        base = be32(h + 16);
+    long n = pread(fd, h, HEADER_BYTES, 0);
+    long base = n > 0 ? appsync_arm32_slice(h, n) : -1;
+    if (base < 0) { free(h); close(fd); return; }
+    if (base) {
         n = pread(fd, h, HEADER_BYTES, base);
     }
     unsigned sigoff = 0, siglen = 0;
@@ -150,6 +215,12 @@ static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents
     free(b);
     free(h);
     close(fd);
+}
+
+static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents) {
+    char file[1024];
+    if (!path || !CFStringGetCString(path, file, sizeof file, 0x08000100)) return;
+    if (!bundle_signature_info(file, ident, ents)) executable_signature_info(path, ident, ents);
 }
 
 static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,

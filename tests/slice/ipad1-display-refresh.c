@@ -35,6 +35,7 @@ typedef struct { uint8_t data[W * H * 4]; } DisplaySurface;
 typedef struct { DisplaySurface surface; } QemuConsole;
 
 typedef struct S5L8930DisplayState {
+    bool h5p;
     DisplayPipe pipe[1];
     QemuConsole *con;
     uint8_t *front, *front_next;
@@ -56,7 +57,7 @@ static uint8_t ram[0x10000];
 static unsigned updates;
 
 static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h) { *w = W; *h = H; }
-static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len)
+static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len, const uint32_t *tables)
 {
     assert(va + len <= sizeof(ram));
     memcpy(dst, ram + va, len);

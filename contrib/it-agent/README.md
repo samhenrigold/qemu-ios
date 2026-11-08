@@ -9,6 +9,13 @@ Install `/usr/local/bin/it_agent` (root:wheel 0755) and the launch job in
 `com.qemu.it-pbd` job so two clipboard daemons never compete. The bake script
 performs the file changes; its documented ownership step is required.
 
+iOS 8 and later also need `ProcessType = Interactive` on this command-service
+job. The default background policy throttles the daemon and its children to
+priority 4, delaying RPCs and helper execution. Native qualification of the
+Interactive job shows priority 31 and subsecond polling. FirmwareKit's
+`SideloadTools.install` applies this setting for iOS 8+, including the cached
+launchd definition; older guest job definitions retain their existing policy.
+
 Requests are `id operation arguments\n<binary body>` on the guest wire, with a
 base64 body in QOM's `agent-request` string. `agent-result` returns
 `id status\n<base64 body>`. `agent-cancel` accepts an id. `agent-status` is
@@ -55,7 +62,10 @@ Files of any size still move: `itqmp.agent` sends a put over one request as
 and reads a get the agent refuses with -EFBIG back by `getrange`. The QOM setter
 reports an over-limit request as such, not as a queue error.
 Execution runs in a child process group with a roughly 60-second tick budget.
-The daemon keeps polling and servicing clipboard during child execution.
+The daemon keeps polling during child execution. Clipboard IPC runs in a separate
+`--clipboard-worker` instance of the same executable, supervised by the daemon.
+A blocked pasteboard server cannot block RPC polling or command-child reaping.
+The worker inherits the launchd process group; no second launch job is needed.
 
 Tokens correlate daemon sessions; they are **not a privilege boundary** against
 other guest processes that can issue cp15 calls. Keep QMP local and never expose
@@ -65,8 +75,9 @@ request returns `-ECONNRESET`, never automatic replay. Host cancellation revokes
 the old session; its next poll kills the child group. Cancellation cannot undo an
 already executed command. Reset clears transient requests/results.
 
-Command service starts immediately; only the clipboard waits 40 seconds for
-UIKit readiness. The agent corrects the guest wall clock when drift exceeds two seconds. It touches receive-buffer pages before host
+Command service starts immediately; the clipboard worker waits 40 seconds for
+UIKit readiness. The launch job uses an absolute executable path so the daemon
+can re-exec that worker. A worker that exits is retried after five seconds. The agent corrects the guest wall clock when drift exceeds two seconds. It touches receive-buffer pages before host
 copies, because debug memory writes cannot fault in iOS demand-zero pages.
 
 Tests: `tests/slice/ipod-agent-proto.c` and `ipod-agent-ops.c` exercise production C under

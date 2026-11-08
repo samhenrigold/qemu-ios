@@ -7028,6 +7028,21 @@ void register_cp_regs_for_features(ARMCPU *cpu)
     }
     if (arm_feature(env, ARM_FEATURE_GENERIC_TIMER)) {
         define_arm_cp_regs(cpu, generic_timer_cp_reginfo);
+#ifndef CONFIG_USER_ONLY
+        if (arm_feature(env, ARM_FEATURE_SWIFT_INTERRUPT_PROBE)) {
+            /* Swift exposes CNTVOFF at EL1 without architected Hyp mode.
+             * Keep the generic timer's write semantics: an offset change
+             * must immediately update ISTATUS, IRQ and the next deadline.
+             * This register owns its reset state; there is no EL2 alias. */
+            const ARMCPRegInfo swift_cntvoff = {
+                .name = "SWIFT_CNTVOFF", .cp = 15, .opc1 = 4, .crm = 14,
+                .type = ARM_CP_64BIT | ARM_CP_IO | ARM_CP_OVERRIDE,
+                .access = PL1_RW, .writefn = gt_cntvoff_write,
+                .fieldoffset = offsetof(CPUARMState, cp15.cntvoff_el2),
+            };
+            define_one_arm_cp_reg(cpu, &swift_cntvoff);
+        }
+#endif
     }
     if (cpu_isar_feature(aa64_ecv_traps, cpu)) {
         define_arm_cp_regs(cpu, gen_timer_ecv_cp_reginfo);
@@ -9064,6 +9079,10 @@ static void arm_cpu_do_interrupt_aarch32(CPUState *cs)
         addr = 0x1c;
         /* Disable FIQ, IRQ and imprecise data aborts.  */
         mask = CPSR_A | CPSR_I | CPSR_F;
+        if (arm_feature(env, ARM_FEATURE_SWIFT_INTERRUPT_PROBE)) {
+            new_mode = ARM_CPU_MODE_IRQ;
+            mask = CPSR_A | CPSR_I;
+        }
         if (env->cp15.scr_el3 & SCR_FIQ) {
             /* FIQ routed to monitor mode */
             new_mode = ARM_CPU_MODE_MON;

@@ -232,14 +232,15 @@ static const char *gles_find_encode(void)
 static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
 {
     const unsigned char *p = code;
-    unsigned loads[16], offs[4], noffs = 0, pos = 0, i, j, gc = 0;
+    unsigned loads[16], constants[16] = {0}, offs[4], noffs = 0, pos = 0, i, j, gc = 0;
     int prev = 0, mlp = 0, it_left = 0, it_cond = 0;
+    unsigned guarded_until = 0;
 
     for (i = 0; i < 16; i++) loads[i] = 0;
 #define NOTE(o) do { unsigned o_ = (o); if (o_ != 0xc && o_ != 0xc0 && o_ >= 0x10 && o_ < 0x10 + 4 * nslots) { \
         for (j = 0; j < noffs && offs[j] != o_; j++) {} \
         if (j == noffs && noffs < 4) offs[noffs++] = o_; } } while (0)
-#define LOAD(rt, rn, imm, tail) do { unsigned rn_ = (rn), rt_ = (rt), imm_ = (imm); \
+#define LOAD(rt, rn, imm, tail) do { unsigned rn_ = (rn), rt_ = (rt), imm_ = (imm); constants[rt_] = 0; \
         if ((rn_ <= 9 || rn_ == 12 || rn_ == 14) && imm_ > 9) { loads[rt_] = imm_; if (rt_ == 0 && !gc && imm_ != 0x78) gc = imm_; \
             if (rt_ == 15) { NOTE(imm_); if (tail) goto done; } } } while (0)
 #define CALL(rm) do { if (loads[(rm) & 15]) NOTE(loads[(rm) & 15]); } while (0)
@@ -272,10 +273,30 @@ static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
             if (!wide) {
                 pos += 2;
                 if ((h1 & 0xF800) == 0x6800) LOAD(h1 & 7, (h1 >> 3) & 7, ((h1 >> 6) & 0x1F) * 4, 0);   /* ldr */
+                else if ((h1 & 0xFE00) == 0x5800) { if (constants[(h1 >> 6) & 7]) LOAD(h1 & 7, (h1 >> 3) & 7, constants[(h1 >> 6) & 7], 0); } /* ldr register offset */
                 else if ((h1 & 0xFF07) == 0x4780) CALL(h1 >> 3);                                        /* blx rm */
-                else if ((h1 & 0xFF07) == 0x4700) { CALL(h1 >> 3); if (!conditional) break; }            /* bx rm */
-                else if ((h1 & 0xFF00) == 0xBD00) { if (!conditional) break; }                          /* pop {..pc} */
-                else if (h1 == 0x46FE) mlp = !conditional;                                              /* mov lr, pc */
+                else if ((h1 & 0xFF07) == 0x4700) { CALL(h1 >> 3); if (!conditional && pos - 2 >= guarded_until) break; } /* bx rm */
+                else if ((h1 & 0xFF00) == 0xBD00) {                                                   /* pop {..pc} */
+                    /* A forward null-context branch can skip the entire call
+                     * body, including this return. Once the body yielded its
+                     * dispatch call, do not scan the alternate return: lr may
+                     * still track a stacked argument, not a second target. */
+                    if (!conditional && (noffs || pos - 2 >= guarded_until)) break;
+                }
+                else if ((h1 & 0xF500) == 0xB100) {                                                   /* cbz/cbnz */
+                    unsigned target = pos + 2 + ((h1 >> 3) & 0x1f) * 2 + ((h1 >> 9) & 1) * 64;
+                    /* A null-context guard may return before the branch's
+                     * non-null path reaches the dispatch load. Scan both
+                     * forward paths instead of stopping at that return. */
+                    if (target <= 160 && target > guarded_until) guarded_until = target;
+                }
+                else if ((h1 & 0xFF00) == 0x4600) {                                                   /* mov rd, rm */
+                    if (!conditional) {
+                        unsigned rd = (h1 & 7) | ((h1 >> 4) & 8), rm = (h1 >> 3) & 15;
+                        loads[rd] = loads[rm]; constants[rd] = constants[rm];
+                    }
+                    if (h1 == 0x46FE) mlp = !conditional;                                              /* mov lr, pc */
+                }
                 else if ((h1 & 0xFF00) == 0xBF00 && (h1 & 0xF)) {                                       /* it */
                     it_left = 4 - __builtin_ctz(h1 & 0xF);
                     it_cond = ((h1 >> 4) & 0xF) != 0xE;
@@ -287,12 +308,29 @@ static int gles_trampoline_slot(const void *code, int thumb, unsigned nslots)
             pos += 4;
             rn = h1 & 0xF;
             rt = h2 >> 12;
+            /* A dispatch table can exceed the LDR immediate's 4095-byte
+             * reach. Later wrappers materialize its offset with MOVW, then
+             * load the entry using a register offset. */
+            if ((h1 & 0xfbf0) == 0xf240 && !conditional) {
+                unsigned rd = (h2 >> 8) & 15;
+                constants[rd] = ((h1 & 15) << 12) | ((h1 & 0x400) << 1) |
+                                ((h2 & 0x7000) >> 4) | (h2 & 255);
+                loads[rd] = 0;
+                continue;
+            }
             switch (h1 & 0xFFF0) {
             case 0xF8D0: LOAD(rt, rn, h2 & 0xFFF, 0); break;                                            /* ldr.w */
             case 0xF890: case 0xF8B0: case 0xF990: case 0xF9B0:                                         /* ldrb/h.w */
                 if (rt != 15) LOAD(rt, rn, h2 & 0xFFF, 0);
                 break;
-            case 0xF850: case 0xF810: case 0xF830: case 0xF910: case 0xF930:                            /* [rn, #imm8] */
+            case 0xF850:
+                if (!(h2 & 0x0800)) { /* ldr.w rt,[rn,rm,lsl #imm2] */
+                    unsigned rm = h2 & 15;
+                    if (constants[rm]) LOAD(rt, rn, constants[rm] << ((h2 >> 4) & 3), 0);
+                    break;
+                }
+                /* fall through: indexed immediate form */
+            case 0xF810: case 0xF830: case 0xF910: case 0xF930:                            /* [rn, #imm8] */
                 if ((h2 & 0x0800) && (h2 & 0x0600) == 0x0600 && !(rt == 15 && (h1 & 0xFFF0) != 0xF850))
                     LOAD(rt, rn, h2 & 0xFF, (h1 & 0xFFF0) == 0xF850 && (h2 & 0x0100) && !conditional && !prev);
                 break;

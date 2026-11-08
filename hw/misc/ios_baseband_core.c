@@ -74,6 +74,20 @@ uint16_t ios_bb_h5_crc(const uint8_t *p, size_t n)
     return r;
 }
 
+/* Apple userspace H5 uses CRC16-X25, little endian, including link frames. */
+static uint16_t h5_userspace_crc(const uint8_t *p, size_t n)
+{
+    uint16_t c = 0xffff;
+
+    while (n--) {
+        c ^= *p++;
+        for (unsigned i = 0; i < 8; i++) {
+            c = (c >> 1) ^ ((c & 1) ? 0x8408 : 0);
+        }
+    }
+    return c ^ 0xffff;
+}
+
 /* One built H5 packet (header + payload [+ crc]); kept for retransmission. */
 static void h5_send_wire(IosBbCore *bb, const uint8_t *pkt, unsigned n)
 {
@@ -101,7 +115,11 @@ static void h5_send_wire(IosBbCore *bb, const uint8_t *pkt, unsigned n)
         }
         fprintf(stderr, "\n");
     }
-    bb->out(bb->opaque, wire, o - wire);
+    if (bb->h5_wire_out) {
+        bb->h5_wire_out(bb->h5_opaque, wire, o - wire);
+    } else {
+        bb->out(bb->opaque, wire, o - wire);
+    }
 }
 
 /*
@@ -112,21 +130,24 @@ static void h5_send_pkt(IosBbCore *bb, int type, bool reliable, uint8_t seq,
                         const uint8_t *data, unsigned len)
 {
     uint8_t pkt[4 + H5_MAX_PAYLOAD + 2];
-    bool crc = bb->h5_crc && type != H5_TYPE_LINK;
+    bool crc = bb->h5_userspace || (bb->h5_crc && type != H5_TYPE_LINK);
     unsigned n = 4 + len;
 
     if (len > H5_MAX_PAYLOAD) {
         return;
     }
     pkt[0] = seq | (bb->h5_rx_next << 3) | (crc << 6) | (reliable << 7);
-    pkt[1] = type | ((len & 0xf) << 4);
-    pkt[2] = len >> 4;
+    pkt[1] = type | (bb->h5_userspace ? (len >> 8) << 4 : (len & 0xf) << 4);
+    pkt[2] = bb->h5_userspace ? len : len >> 4;
     pkt[3] = ~(pkt[0] + pkt[1] + pkt[2]);
-    memcpy(pkt + 4, data, len);
+    if (len) {
+        memcpy(pkt + 4, data, len);
+    }
     if (crc) {
-        uint16_t c = ios_bb_h5_crc(pkt, n);
-        pkt[n++] = c >> 8;
-        pkt[n++] = c;
+        uint16_t c = bb->h5_userspace ? h5_userspace_crc(pkt, n) :
+                                      ios_bb_h5_crc(pkt, n);
+        pkt[n++] = bb->h5_userspace ? c : c >> 8;
+        pkt[n++] = bb->h5_userspace ? c >> 8 : c;
     }
     h5_send_wire(bb, pkt, n);
     bb->h5_need_ack = false;
@@ -164,7 +185,7 @@ static void h5_send_one_unacked(IosBbCore *bb, const uint8_t *data, unsigned len
     p->seq = bb->h5_tx_seq;
     p->len = len;
     memcpy(p->data, data, len);
-    h5_send_pkt(bb, H5_TYPE_DATA, true, bb->h5_tx_seq, data, len);
+    h5_send_pkt(bb, bb->h5_data_type ?: H5_TYPE_DATA, true, bb->h5_tx_seq, data, len);
     bb->h5_tx_seq = (bb->h5_tx_seq + 1) & 7;
 }
 
@@ -188,7 +209,7 @@ static void h5_pump(IosBbCore *bb)
 static void h5_retransmit(IosBbCore *bb)
 {
     for (unsigned i = 0; i < bb->h5_nunacked; i++) {
-        h5_send_pkt(bb, H5_TYPE_DATA, true, bb->h5_unacked[i].seq,
+        h5_send_pkt(bb, bb->h5_data_type ?: H5_TYPE_DATA, true, bb->h5_unacked[i].seq,
                     bb->h5_unacked[i].data, bb->h5_unacked[i].len);
     }
 }
@@ -208,17 +229,20 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
         TRACE("h5 bad header checksum\n");
         return;
     }
-    len = (p[1] >> 4) | (p[2] << 4);
+    len = bb->h5_userspace ? p[2] | ((p[1] >> 4) << 8) :
+                             (p[1] >> 4) | (p[2] << 4);
     if (len > 1500 || 4u + len + ((p[0] >> 6) & 1) * 2u != n) {
         TRACE("h5 bad length %u (n %u)\n", len, n);
         return;
     }
     if (p[0] & 0x40) {
-        uint16_t c = ios_bb_h5_crc(p, 4 + len);
+        uint16_t c = bb->h5_userspace ? h5_userspace_crc(p, 4 + len) :
+                                      ios_bb_h5_crc(p, 4 + len);
         uint16_t r = (p[4 + len] << 8) | p[4 + len + 1];
         /* 1.0's boot kernel sends it low byte first (its restore kernel, which the
          * notes were read from, high byte first): either is the same CRC. */
-        if (c != r && c != (uint16_t)((r << 8) | (r >> 8))) {
+        if (bb->h5_userspace ? c != (uint16_t)((r << 8) | (r >> 8)) :
+            (c != r && c != (uint16_t)((r << 8) | (r >> 8)))) {
             TRACE("h5 crc mismatch %04x != %04x\n", c, r);
             return;
         }
@@ -246,6 +270,9 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
     }
 
     if (type == H5_TYPE_LINK) {
+        if (len < 2) {
+            return;
+        }
         switch (p[4]) {
         case H5_LINK_SYNC:
             /* 01 7e */
@@ -257,8 +284,14 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
              * the configuration in our response: without one it is 0 and it
              * waits forever "for remote window to open". Answer window 7. */
             bb->h5_crc = len >= 3 && (p[6] & 0x10);
+            /* Apple userspace bit 6 requests extended sequence headers.
+             * This peer implements the three-bit sequence space, so decline
+             * that optional feature instead of echoing support we lack.
+             * 11A465 otherwise adds four bytes before each data payload. */
             h5_send_pkt(bb, H5_TYPE_LINK, false, 0,
-                        (const uint8_t[]){ 0x04, 0x7b, len >= 3 ? p[6] : IOS_BB_H5_WINDOW }, 3);
+                        (const uint8_t[]){ 0x04, 0x7b,
+                            len >= 3 ? p[6] & (bb->h5_userspace ? ~0x40 : 0xff) :
+                                       IOS_BB_H5_WINDOW }, 3);
             bb->h5_active = true;
             TRACE("h5 active (crc %d)\n", bb->h5_crc);
             h5_pump(bb);
@@ -274,12 +307,13 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
     if (type == H5_TYPE_ACK) {
         return;
     }
-    if (type != H5_TYPE_DATA || !(p[0] & 0x80)) {
+    if (type != (bb->h5_data_type ?: H5_TYPE_DATA) || !(p[0] & 0x80)) {
         /* Data must be reliable; the kernel rejects ours otherwise. */
         return;
     }
     if (seq == bb->h5_rx_next) {
         bb->h5_rx_next = (seq + 1) & 7;
+        bb->h5_need_ack = true;
         h5_rx_payload(bb, p + 4, len);
     } else {
         /* Retransmission of something we already have: just re-ack. */
@@ -1084,7 +1118,8 @@ static unsigned sms_build_deliver(IosBbCore *bb, const char *number, const char 
     if (bb->sca[0]) {
         uint8_t semi[10];
 
-        sca_oct = digits_to_semi(bb->sca, semi, sizeof(semi));
+        const char *digits = bb->sca + (bb->sca[0] == '+');
+        sca_oct = digits_to_semi(digits, semi, sizeof(semi));
         oct[n++] = 1 + sca_oct;
         oct[n++] = 0x91;
         memcpy(oct + n, semi, sca_oct);
@@ -1245,7 +1280,20 @@ static IosBbCall *call_new(IosBbCore *bb, bool mt, const char *number, int stat)
             memset(c, 0, sizeof(*c));
             c->used = true;
             c->mt = mt;
-            c->id = bb->next_call_id++;
+            bool collision;
+            do {
+                if (bb->next_call_id < 1 || bb->next_call_id > 255) {
+                    bb->next_call_id = 1;
+                }
+                c->id = bb->next_call_id++;
+                collision = false;
+                for (int j = 0; j < IOS_BB_MAX_CALLS; j++) {
+                    if (&bb->calls[j] != c && bb->calls[j].used &&
+                        bb->calls[j].id == c->id) {
+                        collision = true;
+                    }
+                }
+            } while (collision);
             c->stat = stat;
             c->next_stat = -1;
             c->due_ms = 0;
@@ -1270,6 +1318,13 @@ static IosBbCall *call_by_id(IosBbCore *bb, int id)
 
 static void emit_xcallstat(IosBbCore *bb, int id, int stat)
 {
+    if (bb->call_event) {
+        IosBbCall *c = call_by_id(bb, id);
+        if (c) {
+            bb->call_event(bb->call_opaque, c);
+        }
+        return;
+    }
     if (!bb->ch[bb->call_ch].open) {
         return;
     }
@@ -1282,7 +1337,7 @@ static void call_release(IosBbCore *bb, IosBbCall *c)
     c->next_stat = -1;
     c->due_ms = 0;
     emit_xcallstat(bb, c->id, IOS_BB_CALL_RELEASED);
-    if (c->emergency && bb->xemc_on && bb->ch[bb->call_ch].open) {
+    if (!bb->call_event && c->emergency && bb->xemc_on && bb->ch[bb->call_ch].open) {
         chan_printf(bb, bb->call_ch, "\r\n+XEMC: 0\r\n");
     }
     c->used = false;
@@ -1317,12 +1372,40 @@ static bool service_ok(const IosBbCore *bb)
     return radio_ok(bb) && !sim_locked(bb);
 }
 
+bool ios_bb_submit_sms_pdu(IosBbCore *bb, const uint8_t *pdu, size_t len,
+                            uint8_t *reference)
+{
+    unsigned before = bb->mo_count;
+    char old_number[sizeof(bb->last_mo_num)], old_text[sizeof(bb->last_mo_text)];
+
+    if (bb->off || !bb->sim_present || !service_ok(bb) || len < 5 || len > 220 ||
+        pdu[0] + 1u >= len || (pdu[pdu[0] + 1] & 3) != 1) {
+        return false;
+    }
+    memcpy(old_number, bb->last_mo_num, sizeof(old_number));
+    memcpy(old_text, bb->last_mo_text, sizeof(old_text));
+    sms_parse_submit(bb, pdu, len);
+    if (bb->mo_count == before) {
+        memcpy(bb->last_mo_num, old_number, sizeof(old_number));
+        memcpy(bb->last_mo_text, old_text, sizeof(old_text));
+        return false;
+    }
+    bb->sms_mr = (bb->sms_mr + 1) & 0xff;
+    *reference = bb->sms_mr;
+    return true;
+}
+
 /* Emit the URCs that create a ringing call on 1.0 (DLCI 1). */
 static void call_ring_urcs(IosBbCore *bb, IosBbCall *c)
 {
     bool active = false;
 
     emit_xcallstat(bb, c->id, IOS_BB_CALL_INCOMING);
+    if (bb->call_event) {
+        /* Binary transports publish call state through the shared callback;
+         * AT channel availability and periodic RING URCs do not apply. */
+        return;
+    }
     /* Type 145 carries the digits alone: the phone adds the '+' itself (4.2.1 showed "++1..."). */
     chan_printf(bb, bb->call_ch, "\r\n+CLIP: \"%s\",%d,,,\"\",0\r\n",
                 c->number + (c->number[0] == '+'), at_type_of(c->number));
@@ -1350,7 +1433,9 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 {
     IosBbCall *c;
 
-    if (!bb->ch[bb->call_ch].open || !service_ok(bb) || !number[0]) {
+    if (bb->off || !bb->sim_present ||
+        (!bb->call_event && !bb->ch[bb->call_ch].open) ||
+        !service_ok(bb) || !number[0]) {
         return false;
     }
     /*
@@ -1375,7 +1460,7 @@ static void call_progress(IosBbCore *bb, IosBbCall *c, int stat)
 {
     /* The connected line: 1.0 shows the number of an answered outgoing call
      * only from +COLP (handler 0x1e08e), never from +CLCC. */
-    if (stat == IOS_BB_CALL_ACTIVE && !c->mt && !bb->colp_off &&
+    if (!bb->call_event && stat == IOS_BB_CALL_ACTIVE && !c->mt && !bb->colp_off &&
         (c->stat == IOS_BB_CALL_DIALING || c->stat == IOS_BB_CALL_ALERTING)) {
         chan_printf(bb, bb->call_ch, "\r\n+COLP: \"%s\",%d\r\n",
                     c->number, at_type_of(c->number));
@@ -1384,6 +1469,24 @@ static void call_progress(IosBbCore *bb, IosBbCall *c, int stat)
     c->next_stat = -1;
     c->due_ms = 0;
     emit_xcallstat(bb, c->id, stat);
+}
+
+bool ios_bb_answer(IosBbCore *bb, int id)
+{
+    IosBbCall *c = call_by_id(bb, id);
+
+    if (!c || bb->off || !bb->sim_present || !service_ok(bb) ||
+        (c->stat != IOS_BB_CALL_INCOMING && c->stat != IOS_BB_CALL_WAITING)) {
+        return false;
+    }
+    for (unsigned i = 0; i < IOS_BB_MAX_CALLS; i++) {
+        IosBbCall *other = &bb->calls[i];
+        if (other->used && other != c && other->stat == IOS_BB_CALL_ACTIVE) {
+            call_progress(bb, other, IOS_BB_CALL_HELD);
+        }
+    }
+    call_progress(bb, c, IOS_BB_CALL_ACTIVE);
+    return true;
 }
 
 void ios_bb_remote_answer(IosBbCore *bb)
@@ -1617,6 +1720,43 @@ static int reg_stat(const IosBbCore *bb)
     return camped(bb) ? 1 : 2;
 }
 
+bool ios_bb_set_radio_mode(IosBbCore *bb, int mode)
+{
+    if (mode != 0 && mode != 1 && mode != 4) {
+        return false;
+    }
+    if (mode == bb->cfun) {
+        return true;
+    }
+    bb->cfun = mode;
+    if (mode == 1) {
+        reg_schedule(bb);
+        if (bb->ch[bb->xsim_ch].open && !bb->xsim_pushed) {
+            bb->xsim_due_ms = bb->now_ms + 500;
+        }
+    } else {
+        for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
+            if (bb->calls[i].used) {
+                call_release(bb, &bb->calls[i]);
+            }
+        }
+        if (bb->ch[bb->creg_ch].open && bb->creg_n > 0) {
+            chan_printf(bb, bb->creg_ch, "\r\n+CREG: 0\r\n");
+            bb->last_creg = 0;
+        }
+        bb->reg_step = 0;
+    }
+    return true;
+}
+
+int ios_bb_network_registration(IosBbCore *bb, int64_t now_ms)
+{
+    bb->now_ms = now_ms;
+    camp_update(bb);
+    return bb->sim_present && !bb->off ? reg_stat(bb) : 0;
+}
+
+
 /*
  * +XREG value for the data bearer (4.x getDataRAT: values up to 2 count as none).
  * ponytail: one fixed bearer; make it a property if the Mac app wants E/3G toggles.
@@ -1801,6 +1941,66 @@ static void chld_command(IosBbCore *bb, int ch, const char *arg)
     }
 }
 
+/* Shared call model: QMI and AT use identical service checks and timing. */
+int ios_bb_dial(IosBbCore *bb, const char *number)
+{
+    IosBbCall *c;
+    if (bb->off || !number || !*number || strlen(number) >= sizeof(bb->last_dialed) ||
+        !(ios_bb_is_emergency_number(number) ? radio_ok(bb) : service_ok(bb))) {
+        return -1;
+    }
+    c = call_new(bb, false, number, IOS_BB_CALL_DIALING);
+    if (!c) {
+        return -1;
+    }
+    snprintf(bb->last_dialed, sizeof(bb->last_dialed), "%s", number);
+    c->emergency = ios_bb_is_emergency_number(number);
+    c->next_stat = IOS_BB_CALL_ALERTING;
+    c->due_ms = bb->now_ms + 2000;
+    if (bb->call_event) {
+        emit_xcallstat(bb, c->id, c->stat);
+    }
+    return c->id;
+}
+
+bool ios_bb_hangup(IosBbCore *bb, int id)
+{
+    IosBbCall *c = call_by_id(bb, id);
+    if (!c) {
+        return false;
+    }
+    bb->ceer_cause = 16;
+    call_release(bb, c);
+    return true;
+}
+
+/* Release the active call and accept a held/waiting call using shared events. */
+bool ios_bb_release_active(IosBbCore *bb)
+{
+    bool changed = false;
+    for (unsigned i = 0; i < IOS_BB_MAX_CALLS; i++) {
+        IosBbCall *c = &bb->calls[i];
+        if (c->used && (c->stat == IOS_BB_CALL_ACTIVE ||
+                        c->stat == IOS_BB_CALL_DIALING ||
+                        c->stat == IOS_BB_CALL_ALERTING)) {
+            bb->ceer_cause = 16;
+            call_release(bb, c);
+            changed = true;
+        }
+    }
+    for (unsigned i = 0; i < IOS_BB_MAX_CALLS; i++) {
+        IosBbCall *c = &bb->calls[i];
+        if (c->used && (c->stat == IOS_BB_CALL_HELD ||
+                        c->stat == IOS_BB_CALL_WAITING ||
+                        c->stat == IOS_BB_CALL_INCOMING)) {
+            call_progress(bb, c, IOS_BB_CALL_ACTIVE);
+            changed = true;
+            break;
+        }
+    }
+    return changed;
+}
+
 /* atd<number>[;] — voice call; the model always accepts a healthy dial. */
 static void dial_command(IosBbCore *bb, int ch, const char *num)
 {
@@ -1819,18 +2019,12 @@ static void dial_command(IosBbCore *bb, int ch, const char *num)
         }
     }
     nbuf[n] = 0;
-    if (!n || !bb->ch[bb->call_ch].open ||
-        !(ios_bb_is_emergency_number(nbuf) ? radio_ok(bb) : service_ok(bb))) {
-        at_error(bb, ch);                        /* final code 1: call failed */
-        return;
-    }
-    c = call_new(bb, false, nbuf, IOS_BB_CALL_DIALING);
-    if (!c) {
+    int id = bb->ch[bb->call_ch].open ? ios_bb_dial(bb, nbuf) : -1;
+    if (id < 0) {
         at_error(bb, ch);
         return;
     }
-    snprintf(bb->last_dialed, sizeof(bb->last_dialed), "%s", nbuf);
-    c->emergency = ios_bb_is_emergency_number(nbuf);
+    c = call_by_id(bb, id);
     at_ok(bb, ch);
     if (c->emergency && bb->xemc_on) {
         chan_printf(bb, bb->call_ch, "\r\n+XEMC: 1\r\n");   /* CommCenter: "EMERGENCY CALL: Start" */
@@ -1856,9 +2050,12 @@ static void cmgs_prompt_commit(IosBbCore *bb, int ch, bool send)
         return;
     }
     n = hex_nibbles(c->line, pdu, sizeof(pdu));
-    sms_parse_submit(bb, pdu, n);
-    bb->sms_mr = (bb->sms_mr + 1) & 0xff;
-    chan_printf(bb, ch, "\r\n+CMGS: %d\r\n", bb->sms_mr);
+    uint8_t reference;
+    if (!ios_bb_submit_sms_pdu(bb, pdu, n, &reference)) {
+        at_error(bb, ch);
+        return;
+    }
+    chan_printf(bb, ch, "\r\n+CMGS: %d\r\n", reference);
     at_ok(bb, ch);
 }
 
@@ -1912,7 +2109,9 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     unsigned n, tpdu;
     IosBbSms *slot;
 
-    if (!bb->ch[bb->sms_ch].open || !service_ok(bb) || !ios_bb_sms_sender_ok(number) || !text[0]) {
+    if ((!bb->sms_event && !bb->ch[bb->sms_ch].open) ||
+        bb->off || !bb->sim_present || !service_ok(bb) ||
+        !ios_bb_sms_sender_ok(number) || !text[0]) {
         return false;
     }
     number += number[0] == '+';
@@ -1926,7 +2125,12 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     snprintf(slot->pdu, sizeof(slot->pdu), "%s", pdu);
     bb->store_next++;
 
-    chan_printf(bb, bb->sms_ch, "\r\n+CMT: ,%u\r\n\r\n%s\r\n", tpdu, pdu);
+    if (bb->sms_event) {
+        bb->sms_event(bb->sms_opaque,
+                      (bb->store_next - 1) % IOS_BB_SMS_STORE);
+    } else {
+        chan_printf(bb, bb->sms_ch, "\r\n+CMT: ,%u\r\n\r\n%s\r\n", tpdu, pdu);
+    }
     return true;
 }
 
@@ -2018,6 +2222,67 @@ const char *ios_bb_sim_lock(const IosBbCore *bb)
         return "off";
     }
     return bb->pin_ok ? "ready" : "pin";
+}
+
+size_t ios_bb_sim_read_file(const IosBbCore *bb, uint16_t fid,
+                            uint8_t *data, size_t capacity)
+{
+    uint8_t value[32];
+    size_t n = 0;
+
+    if (!bb->sim_present) {
+        return 0;
+    }
+    switch (fid) {
+    case 0x6fad: /* EF_AD: normal operation, shared PLMN's MNC length. */
+        memset(value, 0, 4);
+        value[3] = strlen(bb->plmn) == 6 ? 3 : 2;
+        n = 4;
+        break;
+    case 0x6f38: /* EF_SST: same service table as the existing AT SIM. */
+        memset(value, 0, 4);
+        value[0] = 0xff;
+        n = 4;
+        break;
+    case 0x2fe2: /* EF_ICCID: swapped semi-octets, padded with f. */
+        n = digits_to_semi(bb->iccid, value, sizeof(value));
+        break;
+    case 0x6f07: { /* EF_IMSI: length, odd/even identity nibble, digits. */
+        size_t digits = strlen(bb->imsi);
+        if (!digits || digits > 15) {
+            return 0;
+        }
+        value[1] = ((bb->imsi[0] - '0') << 4) | (digits & 1 ? 9 : 1);
+        n = 2 + digits_to_semi(bb->imsi + 1, value + 2, sizeof(value) - 2);
+        value[0] = n - 1;
+        break;
+    }
+    case 0x6f46: /* EF_SPN: display condition and GSM default alphabet name. */
+        memset(value, 0xff, 17);
+        value[0] = 0;
+        for (const char *name = bb->operator_long; *name;) {
+            unsigned consumed = 1;
+            int code = gsm7_lookup(name, &consumed);
+            unsigned width = code >= 0x100 ? 2 : 1;
+            if (n + width > 16) {
+                break;
+            }
+            if (width == 2) {
+                value[++n] = 0x1b;
+            }
+            value[++n] = code < 0 ? 0x3f : code & 0x7f;
+            name += consumed;
+        }
+        n = 17;
+        break;
+    default:
+        return 0;
+    }
+    if (n > capacity) {
+        return 0;
+    }
+    memcpy(data, value, n);
+    return n;
 }
 
 /* min to 8 digits (a PIN is 4-8, a PUK 8). */
@@ -2376,13 +2641,18 @@ static void at_command_line(IosBbCore *bb, int ch, const char *line)
         int op = 0, fid = 0;
 
         sscanf(arg, "%d,%d", &op, &fid);
-        if (fid == 0x6fad && op == 176) {
-            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"00000002\"\r\n");
+        if ((fid == 0x6fad || fid == 0x6f38) && op == 176) {
+            uint8_t data[32];
+            char hex[65];
+            size_t len = ios_bb_sim_read_file(bb, fid, data, sizeof(data));
+            for (size_t i = 0; i < len; i++) {
+                snprintf(hex + 2 * i, 3, "%02X", data[i]);
+            }
+            hex[2 * len] = 0;
+            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"%s\"\r\n", hex);
         } else if (fid == 0x6fad && op == 192) {
             /* 2G GET RESPONSE: size 4, EF id 6FAD, transparent. */
             chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046FAD040011FFBB01020000\"\r\n");
-        } else if (fid == 0x6f38 && op == 176) {
-            chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"FF000000\"\r\n");
         } else if (fid == 0x6f38 && op == 192) {
             /* size 4, EF id 6F38, transparent; read needs CHV1, update ADM. */
             chan_printf(bb, ch, "\r\n+CRSM: 144,0,\"000000046F38040014FF4401020000\"\r\n");
@@ -2467,28 +2737,7 @@ static void at_command_line(IosBbCore *bb, int ch, const char *line)
         int n = atoi(arg);
 
         at_ok(bb, ch);
-        /* Only 0/1/4 move the radio; 4.x's +cfun=6/7 come from its SIM toolkit code. */
-        if ((n == 0 || n == 1 || n == 4) && n != bb->cfun) {
-            bb->cfun = n;
-            if (n == 1) {
-                reg_schedule(bb);
-                if (bb->ch[bb->xsim_ch].open && !bb->xsim_pushed) {
-                    bb->xsim_due_ms = bb->now_ms + 500;
-                }
-            } else {
-                /* Radio off: drop every call and report "not registered". */
-                for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
-                    if (bb->calls[i].used) {
-                        call_release(bb, &bb->calls[i]);
-                    }
-                }
-                if (bb->ch[bb->creg_ch].open && bb->creg_n > 0) {
-                    chan_printf(bb, bb->creg_ch, "\r\n+CREG: 0\r\n");
-                    bb->last_creg = 0;
-                }
-                bb->reg_step = 0;
-            }
-        }
+        ios_bb_set_radio_mode(bb, n);
         return;
     }
     if ((arg = arg_after(cmd, "creg=", NULL))) {
@@ -2956,7 +3205,9 @@ static void at_chan_input(IosBbCore *bb, int ch, const uint8_t *data, unsigned l
 /* H5 reliable data payload: mux bytes, or the pre-mux "default" channel. */
 static void h5_rx_payload(IosBbCore *bb, const uint8_t *data, unsigned len)
 {
-    if (bb->mux) {
+    if (bb->h5_payload_out) {
+        bb->h5_payload_out(bb->h5_opaque, data, len);
+    } else if (bb->mux) {
         mx_input(bb, data, len);
     } else {
         at_chan_input(bb, 0, data, len);
@@ -3103,6 +3354,56 @@ void ios_bb_ifx_unsent(IosBbIfx *x, const uint8_t *miso)
 
 /* ------------------------------------------------------------------ public API */
 
+void ios_bb_h5_restart(IosBbCore *bb)
+{
+    /* A baud-change command can restart the link from its reliable payload
+     * callback. Complete that packet's acknowledgement in the old sequence
+     * space before discarding it, so the peer can begin the new handshake. */
+    if (bb->h5_need_ack) {
+        h5_send_ack(bb);
+    }
+    bb->h5_tx_seq = 0;
+    bb->h5_rx_next = 0;
+    bb->h5_nunacked = 0;
+    bb->h5_txq_len = 0;
+    bb->h5_need_ack = false;
+}
+
+void ios_bb_h5_input(IosBbCore *bb, const uint8_t *buf, size_t len)
+{
+    bb->h5 = true;
+    h5_input(bb, buf, len);
+    if (bb->h5_need_ack) {
+        h5_send_ack(bb);
+    }
+}
+
+bool ios_bb_h5_send(IosBbCore *bb, const uint8_t *buf, size_t len)
+{
+    size_t packets = len / H5_MAX_PAYLOAD + !!(len % H5_MAX_PAYLOAD);
+    size_t available = sizeof(bb->h5_txq) - bb->h5_txq_len;
+
+    if (len > available || packets > (available - len) / 2) {
+        return false;
+    }
+    while (len) {
+        unsigned n = MIN(len, H5_MAX_PAYLOAD);
+        h5_queue(bb, buf, n);
+        buf += n;
+        len -= n;
+    }
+    h5_pump(bb);
+    return true;
+}
+
+void ios_bb_h5_tick(IosBbCore *bb, int64_t now_ms)
+{
+    bb->now_ms = now_ms;
+    if (bb->h5_nunacked && now_ms - bb->h5_last_tx_ms >= H5_RETX_MS) {
+        h5_retransmit(bb);
+    }
+}
+
 void ios_bb_input(IosBbCore *bb, const uint8_t *buf, size_t len)
 {
     if (bb->off) {
@@ -3132,6 +3433,48 @@ void ios_bb_input(IosBbCore *bb, const uint8_t *buf, size_t len)
     }
     if (bb->h5_need_ack) {
         h5_send_ack(bb);
+    }
+}
+
+void ios_bb_calls_tick(IosBbCore *bb, int64_t now_ms)
+{
+    bb->now_ms = now_ms;
+    if (bb->off) {
+        return;
+    }
+    for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
+        IosBbCall *c = &bb->calls[i];
+
+        if (!c->used) {
+            continue;
+        }
+        if (c->next_stat == -2 && now_ms >= c->due_ms) {
+            /* MT call: repeat the ring until answered or given up. */
+            c->rings++;
+            if (!bb->call_event) {
+                chan_printf(bb, bb->call_ch, "\r\nRING\r\n");
+            }
+            if (bb->s0 > 0 && c->rings >= bb->s0) {
+                call_progress(bb, c, IOS_BB_CALL_ACTIVE);
+            } else {
+                c->due_ms = now_ms + 3000;
+            }
+        } else if (c->next_stat >= 0 && now_ms >= c->due_ms) {
+            if (c->next_stat == IOS_BB_CALL_ALERTING) {
+                c->stat = IOS_BB_CALL_ALERTING;
+                emit_xcallstat(bb, c->id, IOS_BB_CALL_ALERTING);
+                if (bb->answer_delay_ms >= 0) {
+                    c->next_stat = IOS_BB_CALL_ACTIVE;
+                    c->due_ms = now_ms + (bb->answer_delay_ms ? bb->answer_delay_ms : 100);
+                } else {
+                    c->next_stat = -1;
+                }
+            } else if (c->next_stat == IOS_BB_CALL_ACTIVE) {
+                call_progress(bb, c, IOS_BB_CALL_ACTIVE);
+            } else {
+                c->next_stat = -1;
+            }
+        }
     }
 }
 
@@ -3182,38 +3525,7 @@ void ios_bb_tick(IosBbCore *bb, int64_t now_ms)
             bb->xsim_pushed = true;
         }
     }
-    for (int i = 0; i < IOS_BB_MAX_CALLS; i++) {
-        IosBbCall *c = &bb->calls[i];
-
-        if (!c->used) {
-            continue;
-        }
-        if (c->next_stat == -2 && now_ms >= c->due_ms) {
-            /* MT call: repeat the ring until answered or given up. */
-            c->rings++;
-            chan_printf(bb, bb->call_ch, "\r\nRING\r\n");
-            if (bb->s0 > 0 && c->rings >= bb->s0) {
-                call_progress(bb, c, IOS_BB_CALL_ACTIVE);
-            } else {
-                c->due_ms = now_ms + 3000;
-            }
-        } else if (c->next_stat >= 0 && now_ms >= c->due_ms) {
-            if (c->next_stat == IOS_BB_CALL_ALERTING) {
-                c->stat = IOS_BB_CALL_ALERTING;
-                emit_xcallstat(bb, c->id, IOS_BB_CALL_ALERTING);
-                if (bb->answer_delay_ms >= 0) {
-                    c->next_stat = IOS_BB_CALL_ACTIVE;
-                    c->due_ms = now_ms + (bb->answer_delay_ms ? bb->answer_delay_ms : 100);
-                } else {
-                    c->next_stat = -1;
-                }
-            } else if (c->next_stat == IOS_BB_CALL_ACTIVE) {
-                call_progress(bb, c, IOS_BB_CALL_ACTIVE);
-            } else {
-                c->next_stat = -1;
-            }
-        }
-    }
+    ios_bb_calls_tick(bb, now_ms);
     if (bb->h5_nunacked && now_ms - bb->h5_last_tx_ms >= H5_RETX_MS) {
         h5_retransmit(bb);
         bb->h5_last_tx_ms = now_ms;
@@ -3286,7 +3598,16 @@ void ios_bb_reset(IosBbCore *bb)
     bool registered = bb->registered, sim_present = bb->sim_present, nitz = bb->nitz;
     uint32_t search_ms = bb->search_ms;
     char loci_plmn[sizeof(bb->loci_plmn)];
+    IosBbCallFn call_event = bb->call_event;
+    void *call_opaque = bb->call_opaque;
+    IosBbSmsFn sms_event = bb->sms_event;
+    void *sms_opaque = bb->sms_opaque;
     IosBbOutFn out = bb->out, data_out = bb->data_out;
+    IosBbOutFn h5_wire_out = bb->h5_wire_out;
+    IosBbOutFn h5_payload_out = bb->h5_payload_out;
+    void *h5_opaque = bb->h5_opaque;
+    bool h5_userspace = bb->h5_userspace;
+    uint8_t h5_data_type = bb->h5_data_type;
     void *opaque = bb->opaque, *data_opaque = bb->data_opaque;
     int64_t now_ms = bb->now_ms, wall_offset_ms = bb->wall_offset_ms;
     unsigned power_offs = bb->power_offs;
@@ -3336,8 +3657,17 @@ void ios_bb_reset(IosBbCore *bb)
     bb->search_ms = search_ms;
     bb->sim_present = sim_present;
 
+    bb->call_event = call_event;
+    bb->call_opaque = call_opaque;
+    bb->sms_event = sms_event;
+    bb->sms_opaque = sms_opaque;
     bb->out = out;
     bb->opaque = opaque;
+    bb->h5_wire_out = h5_wire_out;
+    bb->h5_payload_out = h5_payload_out;
+    bb->h5_opaque = h5_opaque;
+    bb->h5_userspace = h5_userspace;
+    bb->h5_data_type = h5_data_type;
     bb->data_out = data_out;
     bb->data_opaque = data_opaque;
     bb->now_ms = now_ms;

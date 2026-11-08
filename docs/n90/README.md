@@ -7,6 +7,10 @@ into the DT. It adds 512 MiB of DRAM, the iPad's CS42L61 codec and Mikey, the HD
 ("No Service") and the home screen. Touch, Wi-Fi, usbmux/AFC (DeviceClass iPhone), and clean power-off
 with persistence all work.
 
+The shared graphics bridge renders the native Maps grid on 10A403 using
+vertex-array objects, direct program uniforms and the GL 2.1 vertex-emission
+adapter. The focused renderer regressions cover these operations.
+
 ## What runs
 
 - 512 MiB: the machine's DRAM and its iBoot mirror come from the board. CDMA's memory-vs-FIFO test reads

@@ -10,10 +10,11 @@
  * SLICE hw/arm/s5l8930_display.c fn panel_word
  */
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 typedef uint64_t hwaddr;
-typedef struct { uint32_t panel, native; } DisplayPipe;
+typedef struct { uint32_t panel, native; bool h5p; } DisplayPipe;
 #include "slice.h"
 
 int main(void)
@@ -40,6 +41,11 @@ int main(void)
     assert(panel_word(&p, DP_SIZE, native) == native);                  /* K48's geometry is not N90's */
     assert(panel_word(&q, DP_SIZE, n90) == n90);
     assert(panel_word(&p, DP_UI_BASE(0) + DP_UI_STRIDE, 640 * 4 | 2) == (768 * 4 | 2));
+    DisplayPipe h5p = { .native = 640u << 16 | 1136, .panel = 768u << 16 | 1136, .h5p = true };
+    assert(panel_word(&h5p, 0x4070, h5p.native) == h5p.panel);
+    assert(panel_word(&h5p, 0x4058, h5p.native) == h5p.panel);
+    assert(panel_word(&h5p, 0x4060, h5p.native) == h5p.native);
+    assert(panel_word(&h5p, 0x4048, 640 * 4 | 0x43) == (768 * 4 | 0x43));
     assert(panel_word(&p, CLCD_SIZE, 639u << 16 | 959) == (767u << 16 | 1023));
     puts("PASS: panel= geometry words read as the panel's (K48 and a portrait board); unset reads raw");
 }

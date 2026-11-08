@@ -57,6 +57,14 @@ int main(void)
     assert(!strcmp(ver(FE_SGX1, sgx511, sizeof sgx511), "OpenGL ES-CM 1.1 IMGSGX535-63.24"));
     assert(!strcmp(ver(FE_SGX1, sgx712, sizeof sgx712), "OpenGL ES-CM 1.1 IMGSGX535-97.7"));
     assert(!strcmp(ver(FE_SGX2, 0, 0), "OpenGL ES 2.0"));
+    /* Original N42 11A465 543RC2 driver's identity (the build omits RC2). */
+    static const char sgx543[] = "PowerVR SGX 543\0IMGSGX543GLDriver\0IMGSGX543-97\0";
+    assert(!strcmp(fe_cstring(sgx543, sizeof sgx543, "PowerVR "), "PowerVR SGX 543"));
+    assert(!strcmp(ver(FE_SGX2, sgx543, sizeof sgx543), "OpenGL ES 2.0 IMGSGX543-97"));
+    static const char sgx554[] = "IMGSGX554-115.15\0";
+    assert(!strcmp(ver(FE_SGX2, sgx554, sizeof sgx554), "OpenGL ES 2.0 IMGSGX554-115.15"));
+    static const char bad[] = "IMGSGX543GLDriver\0IMGSGX543-\0";
+    assert(!strcmp(ver(FE_SGX2, bad, sizeof bad), "OpenGL ES 2.0"));
 
     /* GLEngine: ES 1.1 and 2.0 take different lists from the same names; 4.2.1 has no APPLE_sync, 6.1.6 has it. */
     static const char ge421[] = "GL_ARB_shadow\0GL_OES_depth_texture\0GL_OES_packed_depth_stencil\0"

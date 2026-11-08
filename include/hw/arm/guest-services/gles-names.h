@@ -22,7 +22,7 @@
  * then gligen.sh with no argument to check.
  */
 #ifndef GLES_NAMES_VERSION
-#define GLES_NAMES_VERSION 0xad3b3412
+#define GLES_NAMES_VERSION 0xf31a2b68
 #define GLES_ID_MAX 948              /* ids are 0..GLES_ID_MAX, all below GLES_OP_BASE */
 #define GLES_F_BATCH 1
 #define GLES_F_EXPORT 2
@@ -886,8 +886,8 @@ GLES_FN(glCopyBufferSubData,                   copy_buffer_sub_data,            
 GLES_FN(glPrimitiveRestartIndex,               primitive_restart_index,                       855, 1,  GLES_F_BATCH)
 GLES_FN(glGetQueryObjecti64v,                  get_query_objecti64v,                          856, 3,  0)
 GLES_FN(glGetQueryObjectui64v,                 get_query_objectui64v,                         857, 3,  0)
-GLES_FN(glMapBufferRangeEXT,                   map_buffer_range,                              858, NA, 0)
-GLES_FN(glFlushMappedBufferRangeEXT,           flush_mapped_buffer_range,                     859, 3,  GLES_F_BATCH)
+GLES_FN(glMapBufferRangeEXT,                   map_buffer_range,                              858, 4,  GLES_F_EXPORT)
+GLES_FN(glFlushMappedBufferRangeEXT,           flush_mapped_buffer_range,                     859, 3,  GLES_F_EXPORT)
 GLES_FN(glQueryCounter,                        query_counter,                                 860, 2,  0)
 GLES_FN(glGetInteger64i_v,                     get_integer64i_v,                              861, 3,  0)
 GLES_FN(glGetBufferParameteri64v,              get_buffer_parameteri64v,                      862, 3,  0)

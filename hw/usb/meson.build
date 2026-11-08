@@ -33,6 +33,10 @@ system_ss.add(when: 'CONFIG_VT82C686', if_true: files('vt82c686-uhci-pci.c'))
 system_ss.add(when: 'CONFIG_XLNX_VERSAL', if_true: files('xlnx-versal-usb2-ctrl-regs.c'))
 system_ss.add(when: 'CONFIG_XLNX_USB_SUBSYS', if_true: files('xlnx-usb-subsystem.c'))
 
+# N42 HSIC transport qualification (opt-in USB device).
+system_ss.add(when: ['CONFIG_USB', 'CONFIG_IPAD1'], if_true: files('dev-bcm-hsic.c'))
+system_ss.add(when: ['CONFIG_USB', 'CONFIG_IPAD1', 'CONFIG_IOS_BASEBAND'], if_true: files('dev-mdm9x15.c'))
+
 # emulated usb devices
 system_ss.add(when: 'CONFIG_USB_HUB', if_true: files('dev-hub.c'))
 system_ss.add(when: 'CONFIG_USB_HID', if_true: files('dev-hid.c'))

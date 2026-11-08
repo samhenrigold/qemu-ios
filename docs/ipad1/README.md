@@ -144,3 +144,10 @@ count at c044d94a is `ring[idx(+0x14)].w5 - BC + ([cdma+0x54] + Σ ring[i].len f
 The sum is 2048 on the first harvest and 0 on the next, so the model's +0x14 has to track how the
 driver advances [cdma+0x48]/[cdma+0x54] on completion. Decode those, then retest. Reporting +0x14
 as the prefetched next descriptor instead avoids the panic but breaks the first count.
+
+Microphone backend qualification note (2026-11-03): the synthetic recordings
+above qualify the guest receive/DMA path. This checkout's CoreAudio backend
+advertised zero input voices before the new shared AudioQueue capture work;
+the earlier claim of a verified Mac microphone under CoreAudio was therefore
+too broad. Real host capture through the new backend still needs native
+verification; Shazam's listening screen alone is not that verification.

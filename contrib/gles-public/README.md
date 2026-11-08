@@ -44,6 +44,12 @@ the prepare. The first CoreAnimation use prints `[gles] CoreAnimation composites
 matrix `gl` column requires that line, because a software CoreAnimation draws the same
 pictures.
 
+For SGX ES2, `GL_EXT_shader_framebuffer_fetch` requires a positive host
+capability query. CGL preserves coherent reads through attachment copies or
+texture barriers with ordered primitive batching. Native ES hosts require
+the matching driver extension. See [iPhone 5 graphics](../../docs/n42/README.md#audio-camera-and-graphics)
+for the shared renderer contract.
+
 ## Linking
 
 Legacy-linked (`contrib/armv6-toolchain` `LEGACY_LINK=1`: no `LC_DYLD_INFO_ONLY`, classic relocations, r9 reserved as

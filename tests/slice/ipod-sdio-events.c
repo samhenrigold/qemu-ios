@@ -1,19 +1,20 @@
 /* Decode production Broadcom events at the offsets used by both guest drivers.
  *
- * SLICE include/hw/arm/ipod_touch_sdio.h define BDC_|BCMETH_|ETHER_TYPE_BRCM|WL_EVENT_MSG_LEN|SDPCM_(EVENT|DATA)_CHANNEL
- * SLICE hw/arm/ipod_touch_sdio.c fn sdio_bdc_hdrlen sdpcm_send_event
+ * SLICE include/hw/net/bcm_fullmac.h define BDC_|BCMETH_|ETHER_TYPE_BRCM|WL_EVENT_MSG_LEN|ESCAN_|BSS_INFO_|BCM_FULLMAC_(EVENT|DATA)
+ * SLICE hw/arm/bcm_fullmac.c fn sdio_bdc_hdrlen bcm_fullmac_event_data sdpcm_send_event
  */
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#define MAX(a,b) ((a)>(b)?(a):(b))
 #define trace_sdio(...) ((void)0)
-typedef struct { unsigned bdc_hdrlen; struct { uint8_t mac[6]; } chip; } IPodTouchSDIOState;
+typedef struct { unsigned bdc_hdrlen; uint8_t mac[6]; } BCMFullmacState;
 static uint8_t bytes[128];static unsigned length,channel;
 static void stw_be_p(uint8_t *p,uint16_t v) {p[0]=v>>8;p[1]=v;}
 static void stl_be_p(uint8_t *p,uint32_t v) {p[0]=v>>24;p[1]=v>>16;p[2]=v>>8;p[3]=v;}
 static void g_strlcpy(char *p,const char *s,unsigned n) {snprintf(p,n,"%s",s);}
-static void sdpcm_send(IPodTouchSDIOState *s,unsigned c,uint8_t *p,unsigned n) {
+static void bcm_fullmac_send(BCMFullmacState *s,unsigned c,uint8_t *p,unsigned n) {
  assert(n<=sizeof(bytes));memcpy(bytes,p,n);length=n;channel=c;
 }
 #include "slice.h"
@@ -22,7 +23,7 @@ static uint32_t be32(uint8_t *p) {return (uint32_t)p[0]<<24|p[1]<<16|p[2]<<8|p[3
 int main(void) {
  for(unsigned hdr=0;hdr<=6;hdr+=2) {
   if(hdr==2)continue;
-  IPodTouchSDIOState s={hdr, {{0x02,0x9f,0xef,0x8e,0x4a,0xf8}}};sdpcm_send_event(&s,0x12345678,0x87654321,0xabcd);
+  BCMFullmacState s={hdr, {0x02,0x9f,0xef,0x8e,0x4a,0xf8}};sdpcm_send_event(&s,0x12345678,0x87654321,0xabcd);
   unsigned bdc=hdr?hdr:6;
   assert(length==bdc+76 && channel==(bdc==4?1:2));
   assert(bytes[0]==0x20);for(unsigned i=1;i<bdc;i++)assert(!bytes[i]);

@@ -14,6 +14,15 @@ typedef uint64_t hwaddr;
 typedef struct {unsigned size,sp,rp;} FIFO;
 typedef struct {uint32_t reg[32]; FIFO rx,tx; unsigned channel; bool s5l8720_irq,rx_since_timeout; int dmairq,rxdmareq,irq,chr; int *fifo_timeout_timer, *tx_done_timer; uint32_t wordtime, tx_char_ns;} Exynos4210UartState;
 static unsigned levels[4],pulses;
+#define CHR_IOCTL_SERIAL_SET_BREAK 1
+static unsigned break_count;
+static int break_level[4];
+static int qemu_chr_fe_ioctl(int *chr, int cmd, void *arg)
+{
+ assert(cmd==CHR_IOCTL_SERIAL_SET_BREAK);
+ break_level[break_count++]=*(int *)arg;
+ return 0;
+}
 #define QEMU_CLOCK_VIRTUAL 0
 static int64_t qemu_clock_get_ns(int c){return 100;}
 static void timer_del(int *t){*t=0;}
@@ -115,5 +124,42 @@ int main(void){
  s.reg[I_(UINTSP)]=UINTSP_RXD;exynos4210_uart_update_irq(&s);
  assert(levels[3]);
  exynos4210_uart_write(&s,UINTP,UINTSP_RXD,4);assert(!levels[3]);
+ /* BREAK transitions reach the connected shared-wire backend once each. */
+ assert(!break_count);
+ exynos4210_uart_write(&s,UCON,0x115c95,4);
+ exynos4210_uart_write(&s,UCON,0x115c95,4);
+ exynos4210_uart_write(&s,UCON,0x115c85,4);
+ assert(break_count==2 && break_level[0]==1 && break_level[1]==0);
+ /* N42 modem replies are shorter than the CPU receive threshold. DMA must
+  * start on arrival, while the CPU still waits for the line timeout. */
+ s.s5l8720_irq=true;s.rx.size=16;s.rx.sp=s.rx.rp=0;
+ s.reg[I_(UFCON)]=0x1c1;s.reg[I_(UCON)]=0x115c87;
+ s.reg[I_(UINTSP)]=0;s.reg[I_(UTRSTAT)]=6;
+ levels[1]=levels[3]=0;timer=0;
+ exynos4210_uart_receive(&s,reply,sizeof(reply));
+ assert(levels[1] && !levels[3] && timer);
+ assert(!(s.reg[I_(UTRSTAT)] & UTRSTAT_Rx_TIMEOUT));
+ exynos4210_uart_timeout_int(&s);
+ assert(levels[3] && (s.reg[I_(UTRSTAT)] & UTRSTAT_Rx_TIMEOUT));
+ assert(!(s.reg[I_(UTRSTAT)] & UTRSTAT_S5L_Rx_INT));
+ /* The driver acknowledges just timeout; it must not leave a fabricated
+  * threshold event holding the IRQ high. */
+ s.rx.rp=s.rx.sp;s.reg[I_(UTRSTAT)] &= ~UTRSTAT_Rx_BUFFER_DATA_READY;
+ exynos4210_uart_write(&s,UTRSTAT,UTRSTAT_Rx_TIMEOUT,4);
+ assert(!levels[3] && !(s.reg[I_(UTRSTAT)] & UTRSTAT_S5L_Rx_INT));
+ /* The native fast ISR only acknowledges; the deferred reader must get
+  * CPU time even while the FIFO remains at its trigger level. */
+ s.rx.sp=s.rx.rp=0;s.reg[I_(UINTSP)]=0;s.reg[I_(UTRSTAT)]=6;
+ s.reg[I_(UCON)]=0x115c85;timer=0; /* S5L PIO mode, independent timeout. */
+ uint8_t full[15]={0};exynos4210_uart_receive(&s,full,sizeof(full));
+ assert(levels[3] && (s.reg[I_(UTRSTAT)] & UTRSTAT_S5L_Rx_INT));
+ exynos4210_uart_write(&s,UTRSTAT,UTRSTAT_S5L_Rx_INT,4);
+ assert(!levels[3] && fifo_elements_number(&s.rx)==15 && timer);
+ exynos4210_uart_timeout_int(&s);
+ assert(levels[3] && (s.reg[I_(UTRSTAT)] & UTRSTAT_Rx_TIMEOUT));
+ exynos4210_uart_write(&s,UTRSTAT,UTRSTAT_Rx_TIMEOUT,4);
+ assert(!levels[3]);
+ s.rx.rp=1;exynos4210_uart_receive(&s,reply,1);
+ assert(levels[3]);
  puts("PASS: S5L receive/timeout/transmit/error mapping, enables, acknowledgments, and DMA transitions");
 }

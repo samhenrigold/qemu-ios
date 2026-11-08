@@ -69,3 +69,11 @@ The IPA executable must be decrypted (cryptid 0), match the device architecture,
 and use frameworks that its firmware actually provides. FairPlay decryption is
 outside this component. Kernel code-signing policy belongs to the emulator's
 boot recipe; the dylib does not modify the kernel or re-sign system binaries.
+
+Modern installation services can supply a bundle directory to the metadata
+reader. It resolves `CFBundleExecutable` from a bounded XML or binary Info.plist
+and reads the declared executable’s embedded signature. It rejects executable
+path traversal and preserves original non-null verifier metadata. This does not
+synthesize private entitlements. The iOS 8 test installed and launched a user app with its normal container
+and location authorization after preparation through FirmwareKit. Other modern
+guests still require independent qualification.

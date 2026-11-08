@@ -15,6 +15,7 @@
  * SLICE:shim contrib/it-gles/mbxshim.c range static int surface_fault_read( | static int GLESBindCoreSurface(
  * SLICE:bind contrib/it-gles/mbxshim.c range static int GLESBindCoreSurface( | /*\n * GLESBindView is
  * SLICE:finish contrib/it-gles/mbxshim.c fn GLESFinishTexture GLESSwapNotification
+ * SLICE:layout contrib/gles-public/opengles.c fn fe_gl_fourcc
  * CFLAGS -I$ROOT/include -Wno-pointer-to-int-cast -Wno-pointer-bool-conversion -framework OpenGL -framework VideoToolbox -framework CoreVideo -framework CoreMedia -framework CoreFoundation
  * PKG glib-2.0
  */
@@ -81,6 +82,17 @@ static bool physical_memory_test_and_clear_dirty(ram_addr_t at, ram_addr_t len, 
     memcpy(seen + at, ram + at, len); dirty_clears += d;
     return d;
 }
+static uint32_t gles_cur_ctx;
+static int cpu_memory_rw_debug(CPUState *cpu,vaddr at,void *p,size_t n,bool write)
+{ return gles_guest_rw(cpu,at,p,n,write); }
+static uint16_t lduw_be_p(const void *p)
+{ const uint8_t *b=p;return (b[0]<<8)|b[1]; }
+static uint16_t lduw_le_p(const void *p)
+{ const uint8_t *b=p;return b[0]|(b[1]<<8); }
+static void stw_be_p(void *p,uint16_t v)
+{ uint8_t *b=p;b[0]=v>>8;b[1]=v; }
+static void stw_le_p(void *p,uint16_t v)
+{ uint8_t *b=p;b[0]=v;b[1]=v>>8; }
 #include "helpers.h"
 #define CA_FOURCC_555L GLES_SURFACE_RGB555
 static void w(const char *s) {}
@@ -89,12 +101,13 @@ static void wx(unsigned v) {}
 #define CA_FOURCC_565L GLES_SURFACE_RGB565
 #define CA_FOURCC_BGRA GLES_SURFACE_BGRA32
 static unsigned abi_format = 0x34323076;
+static unsigned abi_plane_stride = 2;
 static unsigned surface_lock_flags = 1;       /* IOSurface's read-only lock (CoreSurface: 2) */
 static int abi_surface_fault_read(unsigned long base,unsigned stride,unsigned rows,unsigned bytes)
 { /* a packed surface's rows are touched for their pixels only (2 x 2 bytes in a 16-byte stride),
    * not their padding, which past the last row's pixels can be another, unmapped page */
   bool packed=abi_format==GLES_SURFACE_RGB555;
-  assert((base==0x10000000 || base==0x10000100) && stride==(packed?16:2) && bytes==(packed?4:2) && rows<=2);return 1; }
+  assert((base==0x10000000 || base==0x10000100) && stride==(packed?16:abi_plane_stride) && bytes==(packed?4:abi_plane_stride) && rows<=2);return 1; }
 #define A(...) (const unsigned[]){__VA_ARGS__}
 static unsigned abi_args[9], abi_locks, abi_finished, abi_signals;
 static int abi_signal_error;
@@ -105,7 +118,7 @@ static int p_IOSurfaceLock(void *s, unsigned mode, unsigned *seed)
 static int p_IOSurfaceUnlock(void *s, unsigned mode, unsigned *seed)
 { surface_arg(s); assert(mode==1); abi_locks--; return 0; }
 static void *p_IOSurfaceGetBaseAddress(void *s) { surface_arg(s); return (void *)0x10000000; }
-static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?16:2; }
+static unsigned p_IOSurfaceGetBytesPerRow(void *s) { surface_arg(s); return abi_format==GLES_SURFACE_RGB555?16:abi_plane_stride; }
 static unsigned p_IOSurfaceGetBytesPerElement(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetWidth(void *s) { surface_arg(s); return 2; }
 static unsigned p_IOSurfaceGetHeight(void *s) { surface_arg(s); return 2; }
@@ -115,8 +128,8 @@ static unsigned p_IOSurfaceGetPlaneCount(void *s) { surface_arg(s); return abi_f
 static void *p_IOSurfaceGetBaseAddressOfPlane(void *s, unsigned plane)
 { surface_arg(s); return (void *)(uintptr_t)(0x10000000 + plane * 256); }
 static unsigned p_IOSurfaceGetBytesPerRowOfPlane(void *s, unsigned plane)
-{ surface_arg(s); return 2; }
-static unsigned p_IOSurfaceGetWidthOfPlane(void *s, unsigned plane) { surface_arg(s); return plane ? 1 : 2; }
+{ surface_arg(s); return abi_plane_stride; }
+static unsigned p_IOSurfaceGetWidthOfPlane(void *s, unsigned plane) { surface_arg(s); return plane ? abi_plane_stride/2 : abi_plane_stride; }
 static unsigned p_IOSurfaceGetHeightOfPlane(void *s, unsigned plane) { surface_arg(s); return plane ? 1 : 2; }
 static long long qc(unsigned op, void *gc, unsigned argc, const unsigned *a)
 { if(op==89) { assert(!argc); abi_finished++; return 0; } assert(op==GLES_OP_BIND_SURFACE && (argc==8 || argc==9)); memset(abi_args,0,sizeof(abi_args)); memcpy(abi_args,a,argc*4); return 0; }
@@ -139,6 +152,7 @@ static void *dlsym(void *lib,const char *name)
 #include "bind.h"
 #undef surface_fault_read
 #include "finish.h"
+#include "layout.h"
 int main(void)
 {
     void *fault_pages=mmap(NULL,16384,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
@@ -149,14 +163,31 @@ int main(void)
     assert(GLESBindCoreSurface(NULL, 0x84f5, (void *)0x1234));
     assert(abi_args[0]==0x84f5 && abi_args[1]==0x10000000 && abi_args[6]==0x10000100 && abi_args[8]==4242);
     assert(!abi_locks);
+    /* Native iOS 6 EIS requests packed RGBA planes with 8_8_8_8_REV;
+     * mapping that layout to zero silently imported the whole NV12 image. */
+    unsigned camera_rgba = fe_gl_fourcc(0x1908, 0x8367);
+    assert(camera_rgba == GLES_SURFACE_RGBA32);
+    assert(GLESBindCoreSurfaceAs(NULL,0x84f5,(void *)0x1234,camera_rgba,0,2,2));
+    assert(abi_args[5]==0x34323076 && abi_args[6]==0x10000100);
     /* One plane of a 4:2:0 surface, as 5.x+ CoreAnimation asks for each (texImageIOSurface's plane): the luma as
      * L008, the Cb/Cr plane as 2C08 at half the size, neither with a second plane. */
-    assert(GLESBindCoreSurfaceAs(NULL, 0x84f5, (void *)0x1234, GLES_SURFACE_L8, 0));
+    assert(GLESBindCoreSurfaceAs(NULL, 0x84f5, (void *)0x1234, GLES_SURFACE_L8, 0, 0, 0));
     assert(abi_args[1]==0x10000000 && abi_args[2]==2 && abi_args[3]==2 && abi_args[4]==2 &&
            abi_args[5]==GLES_SURFACE_L8 && !abi_args[6] && !abi_args[7]);
-    assert(GLESBindCoreSurfaceAs(NULL, 0x84f5, (void *)0x1234, GLES_SURFACE_LA88, 1));
+    assert(GLESBindCoreSurfaceAs(NULL, 0x84f5, (void *)0x1234, GLES_SURFACE_LA88, 1, 0, 0));
     assert(abi_args[1]==0x10000100 && abi_args[2]==2 && abi_args[3]==1 && abi_args[4]==1 &&
            abi_args[5]==GLES_SURFACE_LA88 && !abi_args[6] && !abi_args[7] && !abi_locks);
+    abi_plane_stride=8;
+    assert(GLESBindCoreSurfaceAs(NULL,0x84f5,(void *)0x1234,GLES_SURFACE_RGBA32,0,2,2));
+    assert(abi_args[1]==0x10000000 && abi_args[2]==8 && abi_args[3]==2 && abi_args[4]==2 &&
+           abi_args[5]==GLES_SURFACE_RGBA32 && !abi_args[6] && !abi_args[7]);
+    assert(GLESBindCoreSurfaceAs(NULL,0x84f5,(void *)0x1234,camera_rgba,1,2,1));
+    assert(abi_args[1]==0x10000100 && abi_args[2]==8 && abi_args[3]==2 && abi_args[4]==1 &&
+           abi_args[5]==GLES_SURFACE_RGBA32 && !abi_args[6] && !abi_args[7]);
+    assert(!GLESBindCoreSurfaceAs(NULL,0x84f5,(void *)0x1234,GLES_SURFACE_RGBA32,0,3,2));
+    assert(!GLESBindCoreSurfaceAs(NULL,0x84f5,(void *)0x1234,GLES_SURFACE_RGBA32,1,2,2));
+    assert(!abi_locks);
+    abi_plane_stride=2;
     abi_format=GLES_SURFACE_RGB555;
     assert(GLESBindCoreSurface(NULL,0x84f5,(void *)0x1234));
     assert(abi_args[2]==16 && abi_args[5]==GLES_SURFACE_RGB555 && !abi_args[6] && !abi_locks);

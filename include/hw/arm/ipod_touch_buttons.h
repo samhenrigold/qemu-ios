@@ -31,5 +31,7 @@ void ipad1_press_button(IPodTouchButton button, bool down);
 void ipod_touch_1g_press_button(IPodTouchButton button, bool down);
 /* The S5L8920 boards' (-M n18, n88) GPIO buttons; no-op on other machines. */
 void s5l8920_press_button(IPodTouchButton button, bool down);
+/* The S5L8950 N42 board's GPIO buttons; no-op on other machines. */
+void s5l8950_press_button(IPodTouchButton button, bool down);
 
 #endif /* HW_ARM_IPOD_TOUCH_BUTTONS_H */

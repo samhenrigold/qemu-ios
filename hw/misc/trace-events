@@ -38,6 +38,7 @@ allwinner_sramc_read(uint64_t offset, uint64_t data) "offset 0x%" PRIx64 " data 
 allwinner_sramc_write(uint64_t offset, uint64_t data) "offset 0x%" PRIx64 " data 0x%" PRIx64
 
 # avr_power.c
+ios_baseband_control(int pin, int level, int64_t now, int64_t camp_due) "pin %d level %d now %" PRId64 " camp_due %" PRId64
 avr_power_read(uint8_t value) "power_reduc read value:%u"
 avr_power_write(uint8_t value) "power_reduc write value:%u"
 

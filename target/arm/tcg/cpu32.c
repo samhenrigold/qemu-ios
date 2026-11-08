@@ -575,6 +575,27 @@ static void cortex_a15_initfn(Object *obj)
     define_arm_cp_regs(cpu, cortexa15_cp_reginfo);
 }
 
+/* Apple Swift implements the ARMv7s ISA: ARMv7, integer division, VFPv4,
+ * NEON, and multiprocessor extensions. Initial execution model; Apple-specific
+ * system registers are supplied by the S5L8950 machine as their contracts are
+ * qualified against the stock kernel. MIDR is the r1p1 Swift identity. */
+static void apple_swift_initfn(Object *obj)
+{
+    ARMCPU *cpu = ARM_CPU(obj);
+    cortex_a15_initfn(obj);
+    cpu->dtb_compatible = "apple,swift";
+    cpu->midr = 0x611f0001;
+    /* Keep this initial functional model's inherited 4 MiB L2 geometry
+     * internally consistent. The A15 seed above encodes 2304 sets despite
+     * its 4 MiB comment, which gives XNU 36 page colors and fails its
+     * power-of-two check. 4096 sets, 16 ways and 64-byte lines encode 4 MiB.
+     * Qualification of physical Swift cache associativity remains separate. */
+    cpu->ccsidr[2] = 0x71ffe07a;
+    set_feature(&cpu->env, ARM_FEATURE_SWIFT_INTERRUPT_PROBE);
+    unset_feature(&cpu->env, ARM_FEATURE_EL2);
+    unset_feature(&cpu->env, ARM_FEATURE_EL3);
+}
+
 static const ARMCPRegInfo cortexr5_cp_reginfo[] = {
     /* Dummy the TCM region regs for the moment */
     { .name = "BTCM", .cp = 15, .opc1 = 0, .crn = 9, .crm = 1, .opc2 = 0,
@@ -888,6 +909,7 @@ static const ARMCPUInfo arm_tcg_cpus[] = {
     { .name = "cortex-a8",   .initfn = cortex_a8_initfn },
     { .name = "cortex-a9",   .initfn = cortex_a9_initfn },
     { .name = "cortex-a15",  .initfn = cortex_a15_initfn },
+    { .name = "apple-swift", .initfn = apple_swift_initfn },
     { .name = "cortex-r5",   .initfn = cortex_r5_initfn },
     { .name = "cortex-r5f",  .initfn = cortex_r5f_initfn },
     { .name = "cortex-r52",  .initfn = cortex_r52_initfn },

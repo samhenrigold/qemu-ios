@@ -14,11 +14,11 @@
 #include <string.h>
 
 typedef struct { uint32_t regs[0x6000 / 4]; } DisplayPipe;
-typedef struct S5L8930DisplayState { DisplayPipe pipe[1]; } S5L8930DisplayState;
+typedef struct S5L8930DisplayState { bool h5p; DisplayPipe pipe[1]; } S5L8930DisplayState;
 #include "types.h"
 
 static uint8_t ram[0x10000];
-static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len)
+static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len, const uint32_t *tables)
 {
     assert(va + len <= sizeof(ram));
     memcpy(dst, ram + va, len);

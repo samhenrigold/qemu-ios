@@ -25,7 +25,7 @@ static void inspect(MTFrame *frame, unsigned length, unsigned fingers) {
     uint8_t *p=(uint8_t *)frame;
     unsigned data=le16(p+1), sum=0;
     assert(length==21+data && length<=0x400);
-    assert(data==24+(fingers ? fingers : 1)*28+2);
+    assert(data==24+(fingers ? fingers : 1)*frame->frame_packet.header.fingerDataLen+2);
     for(unsigned i=0;i<14;i++)sum+=p[i];
     assert((sum&65535)==le16(p+14));
     sum=0;for(unsigned i=16;i<21;i++)sum+=p[i];assert(!(sum&255));
@@ -63,5 +63,23 @@ int main(void) {
     frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,1);p=(uint8_t*)frame;
     assert((int16_t)le16(p+49)==-72+(int)(.25f*14566) && (int16_t)le16(p+51)==33+(int)(.75f*19465));
     free(frame);
+    /* New controller paths append a flags word, keeping old profiles at 28
+     * bytes. Verify stride, empty frames and checksum with all five slots. */
+    MTSensorProfile extended=mt_profile_ipod;extended.contact_flags=true;s.profile=&extended;
+    for(unsigned n=0;n<=5;n++){
+        memset(fingers,0,sizeof(fingers));
+        for(unsigned i=0;i<n;i++)fingers[i]=(MTFingerState){.phase=MT_FINGER_DOWN,.x=.5f,.y=.5f,.contact_flags=(uint16_t)(i+1)};
+        now+=100000000;frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,n);
+        assert(frame->frame_packet.header.fingerDataLen==30);
+        p=(uint8_t *)frame;
+        for(unsigned i=0;i<n;i++)assert(p[45+i*30]==i+1&&le16(p+45+i*30+28)==i+1);
+        free(frame);
+    }
+    /* Edge origin must not be replayed on liftoff or gesture-end reports. */
+    for(int phase=MT_FINGER_LIFTED;phase<=MT_FINGER_ENDING;phase++){
+        memset(fingers,0,sizeof(fingers));fingers[0]=(MTFingerState){.phase=phase,.x=.5f,.y=.5f,.contact_flags=MT_CONTACT_FROM_EDGE_TIP};
+        now+=100000000;frame=mt_build_frame(&s,fingers,&length);inspect(frame,length,1);p=(uint8_t *)frame;
+        assert(le16(p+45+28)==0);free(frame);
+    }
     puts("PASS: empty, one-to-five contact and sparse-slot frames; all checksums and idle timestamp");
 }

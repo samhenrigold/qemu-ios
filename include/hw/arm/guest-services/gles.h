@@ -374,6 +374,9 @@ static inline const char *gles_id_name(uint32_t id)
  * Only calls that return nothing and pass no guest pointer are queued.
  */
 #define GLES_OP_BATCH                   (GLES_OP_BASE + 9)
+/* Optional implemented renderer features. Unknown on older cores => no bits. */
+#define GLES_OP_CAPABILITIES            (GLES_OP_BASE + 10)
+#define GLES_CAP_FRAMEBUFFER_FETCH      1u
 #define GLES_BATCH_MAX_WORDS            4096
 
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */
@@ -383,6 +386,7 @@ static inline const char *gles_id_name(uint32_t id)
  * kEAGLColorFormatRGB565 gets this, and every size in the present path has to
  * follow the format rather than assume four bytes. */
 #define GLES_SURFACE_RGB555 0x4c353535 /* L555: opaque little-endian RGB555 */
+#define GLES_SURFACE_RGB555_BE         0x00000010  /* CoreVideo 16BE555 */
 #define GLES_SURFACE_RGB565             0x4c353635  /* 'L565' */
 /* 8 bits of alpha per pixel: CoreAnimation's shadow masks (a popover's, a layer's shadowPath). */
 #define GLES_SURFACE_A8                 0x41303038  /* 'A008' */
@@ -399,6 +403,12 @@ static inline const char *gles_id_name(uint32_t id)
 #define GLES_SURFACE_LA88               0x32433038  /* '2C08' */
 /* The same two channels as 7.x QuartzCore names them on its IOSurfaces (text and glyph layers). */
 #define GLES_SURFACE_LA88_IOS7          0x4c413838  /* 'LA88' */
+#define GLES_SURFACE_LA8_IOS10          0x4c413038  /* 'LA08': CoreImage kCIFormatLA8 */
+/* CoreVideo's high precision formats. The two integer formats have big-endian
+ * samples; RGhA has little-endian IEEE half-float samples. */
+#define GLES_SURFACE_ARGB64            0x62363461  /* 'b64a' */
+#define GLES_SURFACE_AG32              0x62333261  /* 'b32a' */
+#define GLES_SURFACE_RGBA16F           0x52476841  /* 'RGhA' */
 /* 16 bits, A1R5G5B5 little-endian (premultiplied: a clear pixel is 0), in rows: 3.1.3's album
  * covers (ArtworkCache's 320x320, 16-bit skip-first data) as CoreAnimation hands them over. */
 #define GLES_SURFACE_ARGB1555           0x35353531  /* '5551' */
@@ -416,6 +426,11 @@ int gles_guest_rw(CPUState *cpu, vaddr va, void *buf, size_t len, bool write);
  * possibly copied part, when a page needs the full path (not plain RAM in the TLB, unmapped, not permitted). */
 bool guest_rw_ram(CPUState *cpu, vaddr va, uint8_t *buf, size_t len, bool write);
 bool gles_guest_fault_pending(void);
+/* Host-only native draw sections: no guest memory accesses, GL reentry, or
+ * migration/reset callbacks. The guest executor remains serialized while the
+ * BQL is released. Pair begin/end on the same vCPU thread. */
+bool gles_native_begin(void);
+void gles_native_end(bool unlocked);
 void qc_gles_dump_stats(void);
 int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        uint32_t argc, const uint32_t *args);

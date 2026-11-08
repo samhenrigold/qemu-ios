@@ -21,6 +21,7 @@
 #include "migration/vmstate.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
+#include "trace.h"
 
 /*
  * Sized per SoC by properties: "ports" config ports of 8 pins (K48 22, the
@@ -56,6 +57,7 @@ struct S5L8930GPIOState {
     MemoryRegion iomem;
     qemu_irq irq;
     qemu_irq out[GPIO_MAX_PINS];
+    qemu_irq pad[GPIO_MAX_PINS]; /* physical level, including released inputs */
     uint32_t ports, int_groups;
     bool pin_int_enable;
 
@@ -74,6 +76,19 @@ static bool pin_input(S5L8930GPIOState *s, unsigned pin)
 static unsigned pin_mode(S5L8930GPIOState *s, unsigned pin)
 {
     return s->cfg[pin] & GPIO_CFG_MODE;
+}
+
+static bool s5l8930_gpio_pad_level(S5L8930GPIOState *s, unsigned pin)
+{
+    unsigned mode = pin_mode(s, pin);
+
+    return mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT ?
+           !!(s->cfg[pin] & GPIO_CFG_DATA) : pin_input(s, pin);
+}
+
+static void s5l8930_gpio_update_pad(S5L8930GPIOState *s, unsigned pin)
+{
+    qemu_set_irq(s->pad[pin], s5l8930_gpio_pad_level(s, pin));
 }
 
 /* Level interrupts stay pending for as long as the level holds. */
@@ -105,6 +120,9 @@ static void s5l8930_gpio_set_input(void *opaque, int pin, int level)
     unsigned mode = pin_mode(s, pin);
 
     level = !!level;
+    if (level != old) {
+        trace_s5l8930_gpio_input(pin, old, level);
+    }
     if (level) {
         s->input[pin / 32] |= bit;
     } else {
@@ -116,6 +134,7 @@ static void s5l8930_gpio_set_input(void *opaque, int pin, int level)
          mode == GPIO_MODE_BOTH)) {
         s->status[pin / 32] |= bit;
     }
+    s5l8930_gpio_update_pad(s, pin);
     s5l8930_gpio_latch_level(s, pin);
     s5l8930_gpio_update(s);
 }
@@ -177,6 +196,8 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
     if (addr < s->ports * 8 * 4) {
         unsigned pin = addr / 4, mode;
 
+        trace_s5l8930_gpio_config(pin, s->cfg[pin], value);
+
         if (s->pin_int_enable) {
             /*
              * S5L8920: the pin's own config word masks its interrupt (bit
@@ -199,6 +220,7 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
             if (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) {
                 qemu_set_irq(s->out[pin], value & GPIO_CFG_DATA);
             }
+            s5l8930_gpio_update_pad(s, pin);
             s5l8930_gpio_latch_level(s, pin);
             s5l8930_gpio_update(s);
             return;
@@ -208,6 +230,7 @@ static void s5l8930_gpio_write(void *opaque, hwaddr addr, uint64_t value,
         if (mode == GPIO_MODE_OUT || mode == GPIO_MODE_OUT_ALT) {
             qemu_set_irq(s->out[pin], s->cfg[pin] & GPIO_CFG_DATA);
         }
+        s5l8930_gpio_update_pad(s, pin);
         s5l8930_gpio_latch_level(s, pin);
         s5l8930_gpio_update(s);
         return;
@@ -275,6 +298,7 @@ static void s5l8930_gpio_realize(DeviceState *dev, Error **errp)
     }
     qdev_init_gpio_in(dev, s5l8930_gpio_set_input, s->ports * 8);
     qdev_init_gpio_out(dev, s->out, s->ports * 8);
+    qdev_init_gpio_out_named(dev, s->pad, "pad", s->ports * 8);
 }
 
 /*
@@ -306,6 +330,9 @@ static void s5l8930_gpio_reset(DeviceState *dev)
     }
     for (unsigned g = 0; g < GPIO_GROUPS; g++) {
         s->input[g] &= ~s->rest_low[g];
+    }
+    for (unsigned pin = 0; pin < s->ports * 8; pin++) {
+        s5l8930_gpio_update_pad(s, pin);
     }
     memset(s->enabled, 0, sizeof(s->enabled));
     memset(s->status, 0, sizeof(s->status));
@@ -351,10 +378,21 @@ static const VMStateDescription vmstate_s5l8930_gpio_wide = {
     }
 };
 
+static int s5l8930_gpio_post_load(void *opaque, int version_id)
+{
+    S5L8930GPIOState *s = opaque;
+
+    for (unsigned pin = 0; pin < s->ports * 8; pin++) {
+        s5l8930_gpio_update_pad(s, pin);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_s5l8930_gpio = {
     .name = "s5l8930_gpio",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = s5l8930_gpio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_SUB_ARRAY(cfg, S5L8930GPIOState, 0, K48_PINS),
         VMSTATE_UINT32_SUB_ARRAY(input, S5L8930GPIOState, 0, K48_GROUPS),

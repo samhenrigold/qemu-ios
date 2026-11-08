@@ -7,6 +7,7 @@
  * SLICE hw/arm/ipod_touch_multitouch.c fn prepare_short_control_response
  */
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

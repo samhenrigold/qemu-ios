@@ -5,6 +5,7 @@
  * issue 126). Each draw here halves the red it finds, so a second draw reads the first one's result, not the first
  * copy; a shader without the extension is left as it came.
  *
+ * SLICE hw/arm/gles-framebuffer-fetch.h fn gles_extension_prefix_end
  * SLICE hw/arm/gles-host.c fn gles_es2_glsl gles_es2_fetch_glsl gles_es2_fetch_refresh
  * CFLAGS -Wno-deprecated-declarations -framework OpenGL
  * PKG glib-2.0
@@ -70,7 +71,7 @@ int main(void) {
                               "attribute highp vec4 Vertex;\n"
                               "void main() { gl_Position = Vertex; }\n"));
     glAttachShader(p, compile(GL_FRAGMENT_SHADER,
-                              "#extension GL_APPLE_shader_framebuffer_fetch : require\n"
+                              "#extension GL_APPLE_shader_framebuffer_fetch : require\n#extension GL_EXT_shader_texture_lod : enable\n"
                               "precision mediump float;\n"
                               "void main() { gl_FragColor = gl_LastFragData[0] * vec4(0.5, 1.0, 1.0, 1.0); }\n"));
     glBindAttribLocation(p, 0, "Vertex");

@@ -12,7 +12,9 @@
 typedef int SysBusDevice;
 typedef int DeviceState;
 #define ROUND_UP(n,d) (((n)+(d)-1)/(d)*(d))
-typedef int MemoryRegion;
+typedef struct { uint64_t addr; } MemoryRegion;
+#define trace_ipod_scaler_reg_write(...) ((void)0)
+#define trace_ipod_scaler_transfer(...) ((void)0)
 typedef uint64_t hwaddr;
 typedef int *qemu_irq;
 static uint8_t ram[0x100000];
@@ -80,7 +82,12 @@ int main(void)
     assert(!memcmp(ram+512,"\0\0\0\xff\xff\xff\xff\xff\0\0\xfe\xff",12));
     r[13]=0x10000000;assert(!scaler_convert(&s));
     r[13]=BASE+512;r[9]|=1;assert(!scaler_convert(&s));
-    r[9]&=~1u;r[16]++;assert(!scaler_convert(&s));
+    r[9]&=~1u;r[16]=0;assert(!scaler_convert(&s));
+    r[16]=(2<<16)|1;r[0x50/4]=r[0x54/4]=2<<16;
+    memset(ram+512,0xa5,128);
+    assert(scaler_convert(&s));
+    assert(!memcmp(ram+512,"\0\0\0\xff\0\0\xfe\xff",8));
+    for(unsigned i=520;i<640;i++)assert(ram[i]==0xa5);
     scaler_write(&s,4,2,4);assert(!irq);
     for(unsigned i=0;i<G_N_ELEMENTS(s.regs);i++) assert(!s.regs[i]);
     puts("PASS: NV12 matrix conversion, RGB565/BGRA, padding, DMA bounds, IRQ mask/ack and reset, completion after the transfer's time");

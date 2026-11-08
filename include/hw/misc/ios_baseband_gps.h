@@ -44,5 +44,10 @@ int ios_bb_gps_poll(IosBbGps *g, int64_t now_ms, char *line, size_t size);
 int64_t ios_bb_gps_next_due(const IosBbGps *g);
 /* The fix as one "+XLSR:" line's parameters (shape 2, point with altitude and uncertainty ellipsoid). */
 int ios_bb_gps_format(const IosBbGps *g, char *out, size_t size);
+/* One complete checksummed GGA or RMC sentence, including CRLF, at UTC unix_ms.
+ * Returns its length, or zero without a fix, for an unsupported sentence, or
+ * when the output cannot hold the complete sentence. Shared by GPS transports. */
+int ios_bb_gps_nmea(const IosBbGps *g, int64_t unix_ms, const char *sentence,
+                    char *out, size_t size);
 
 #endif

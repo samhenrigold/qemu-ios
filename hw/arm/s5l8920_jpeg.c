@@ -30,6 +30,7 @@
 #include "qemu/units.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/s5l8930.h"
 #include "system/address-spaces.h"
 #include "migration/vmstate.h"
@@ -64,7 +65,6 @@
 #define INT_CORRUPT     0x10
 #define INT_HEADER_DONE 0x08            /* a header pass (0x70 with mode bit 3) */
 #define INT_DEC_DONE    0x40            /* a decode (0x74) */
-#define JPEG_DART_SID   0
 
 #define TYPE_S5L8920_JPEG "s5l8920.jpeg"
 OBJECT_DECLARE_SIMPLE_TYPE(S5L8920JPEGState, S5L8920_JPEG)
@@ -76,6 +76,7 @@ struct S5L8920JPEGState {
     uint32_t regs[JPEG_SIZE / 4];
     hwaddr (*xlate)(void *opaque, unsigned sid, uint32_t va);
     void *xlate_opaque;
+    uint32_t dart_sid;
     QEMUTimer *done;
     uint32_t pending;               /* the status the running operation ends with */
     FILE *trace;
@@ -640,7 +641,7 @@ static bool jpeg_decode(const JpegFrame *f, uint8_t *planes[3])
 
 static hwaddr jpeg_pa(S5L8920JPEGState *s, uint32_t va)
 {
-    return s->xlate ? s->xlate(s->xlate_opaque, JPEG_DART_SID, va) : va;
+    return s->xlate ? s->xlate(s->xlate_opaque, s->dart_sid, va) : va;
 }
 
 static bool jpeg_dma(S5L8920JPEGState *s, uint32_t va, uint8_t *buf, size_t len, bool write)
@@ -650,9 +651,16 @@ static bool jpeg_dma(S5L8920JPEGState *s, uint32_t va, uint8_t *buf, size_t len,
         hwaddr pa = jpeg_pa(s, va);
 
         if (pa == (hwaddr)-1) {
+            if (s->trace) {
+                fprintf(s->trace, "DMA failed sid %u va %08x remaining %zu write %u\n",
+                        s->dart_sid, va, len, write);
+            }
             return false;
         }
-        address_space_rw(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, buf, n, write);
+        if (address_space_rw(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
+                             buf, n, write) != MEMTX_OK) {
+            return false;
+        }
         va += n;
         buf += n;
         len -= n;
@@ -968,11 +976,16 @@ static const VMStateDescription jpeg_vmstate = {
     },
 };
 
+static const Property jpeg_properties[] = {
+    DEFINE_PROP_UINT32("dart-sid", S5L8920JPEGState, dart_sid, 0),
+};
+
 static void jpeg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, jpeg_reset);
+    device_class_set_props(dc, jpeg_properties);
     dc->vmsd = &jpeg_vmstate;
     dc->desc = "S5L8920/A4 JPEG codec";
 }

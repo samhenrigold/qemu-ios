@@ -12,10 +12,10 @@
  * SLICE:types include/hw/arm/ipod_touch_mbx.h define MBX
  * SLICE:types include/hw/arm/ipod_touch_mbx.h typedef MBX2DSurface IPodTouchMBXState
  * SLICE hw/arm/ipod_touch_mbx.c fn ipod_touch_mbx_2d_block_len ipod_touch_mbx_post_load
- * SLICE:types hw/arm/s5l8920_vxd.c define MTX_RAM_WORDS|VXD_PENDING|VXD_TARGETS
- * SLICE:types hw/arm/s5l8920_vxd.c typedef VXDTarget
+ * SLICE:types hw/arm/s5l8920_vxd.c define MTX_RAM_WORDS|VXD_PENDING|VXD_TARGETS|VXD_STREAMS
+ * SLICE:types hw/arm/s5l8920_vxd.c typedef VXDTarget VXDStream
  * SLICE:vxd hw/arm/s5l8920_vxd.c range struct S5L8920VXDState { | \n};
- * SLICE hw/arm/s5l8920_vxd.c fn vxd_post_load
+ * SLICE hw/arm/s5l8920_vxd.c fn vxd_streams_clear vxd_post_load
  * SLICE:types hw/arm/s5l8930_bbspi.c define FRAME_MAX
  * SLICE:bbspi hw/arm/s5l8930_bbspi.c range struct IosBbSpiState { | \n};
  * SLICE hw/arm/s5l8930_bbspi.c fn bbspi_post_load
@@ -62,6 +62,7 @@ static int64_t qemu_clock_get_ms(int clock) { return 0; }
 static void pl192_update(PL192State *s) {}
 static void aes_custom_load(IPodTouchAESState *s) {}
 static void iosbb_vibrator_update(IosBasebandState *s) {}
+static void vxd_h264_free(VXDH264 *codec) { (void)codec; }
 #include "slice.h"
 
 /* Load `field = bad` into a copy of a good state: the load must fail. */

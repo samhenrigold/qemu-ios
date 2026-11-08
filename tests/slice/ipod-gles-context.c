@@ -11,6 +11,7 @@
  * SLICE:ops hw/arm/gles-host.c range static GHashTable *gles_contexts, *gles_groups; | #ifdef GLES_HOST_ANGLE\nstatic void gles_snapshot_register
  * SLICE:ops2 hw/arm/gles-host.c range /* A guest reboot cannot send destruction calls | #endif\n\nvoid gles_host_reset
  * SLICE:ops2 hw/arm/gles-host.c fn gles_host_reset
+ * SLICE:queryfree hw/arm/gles-queries.h fn gles_queries_free
  * SLICE:guestgc contrib/it-gles/mbxshim.c range typedef struct MapStorage MapStorage; | \nextern void *calloc
  * SLICE:sharegroup contrib/it-gles/mbxshim.c range static int GLESCreateSharegroup( | /*\n * The one that matters.
  * SLICE:sharegroup contrib/it-gles/mbxshim.c define GLES_N_SLOTS|GLES_N_HAND
@@ -36,6 +37,7 @@ static void migrate_del_blocker(Error **e) { g_clear_pointer(e,g_free); }
 #include "policy.h"
 /* The CGL backend's context create. */
 #include "create.h"
+#include "queryfree.h"
 #include "ops.h"
 static void gles_snapshot_register(void) {}
 #include "ops2.h"

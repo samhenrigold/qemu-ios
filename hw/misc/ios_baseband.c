@@ -43,6 +43,7 @@
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "hw/misc/ios_baseband.h"
+#include "trace.h"
 #include "hw/misc/ios_baseband_core.h"
 
 #define TYPE_CHARDEV_IOS_BB "chardev-ios-baseband"
@@ -180,6 +181,8 @@ static void iosbb_vibrator_update(IosBasebandState *s);
 static void iosbb_ctl(void *opaque, int n, int level)
 {
     IosBasebandState *s = opaque;
+
+    trace_ios_baseband_control(n, level, s->bb.now_ms, s->bb.camp_due_ms);
 
     if (getenv("IOS_BB_TRACE")) {
         fprintf(stderr, "%.3f ios-bb: %s %d\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e6,
@@ -404,6 +407,7 @@ static void iosbb_set_mcc_mnc_reg(Object *obj, const char *value, Error **errp)
     ios_bb_operator_changed(&IOS_BASEBAND(obj)->bb);
     iosbb_arm(IOS_BASEBAND(obj), qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + IOS_BB_LATENCY_MS);
 }
+STR_PROP(smsc, sca)
 STR_PROP(voicemail, voicemail)
 STR_PROP(imei, imei)
 STR_PROP(imsi, imsi)
@@ -1089,7 +1093,7 @@ static void iosbb_instance_init(Object *obj)
 {
     IosBasebandState *s = IOS_BASEBAND(obj);
 
-    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "Light Touch");
+    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "AT&T");
     snprintf(s->bb.plmn, sizeof(s->bb.plmn), "00101");
     snprintf(s->bb.imei, sizeof(s->bb.imei), "000000001234569");
     snprintf(s->bb.imsi, sizeof(s->bb.imsi), "001010000000001");
@@ -1108,6 +1112,7 @@ static void iosbb_instance_init(Object *obj)
     object_property_add_str(obj, "mcc-mnc", iosbb_get_mcc_mnc, iosbb_set_mcc_mnc_reg);
     object_property_set_description(obj, "mcc-mnc",
         "PLMN digits (MCC+MNC) of the fake home network");
+    object_property_add_str(obj, "smsc", iosbb_get_smsc, iosbb_set_smsc);
     object_property_add_str(obj, "voicemail", iosbb_get_voicemail,
                             iosbb_set_voicemail);
     object_property_add_str(obj, "imei", iosbb_get_imei, iosbb_set_imei);

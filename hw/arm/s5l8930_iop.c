@@ -184,7 +184,7 @@ bool s5l8930_iop_io_failed(void)
 #define FMI_ID_CES              16
 #define FMI_META_BYTES          10          /* bytes_per_meta, fw set_config */
 #define FMI_BOOTPAGE_BYTES      0x600       /* kext c04e92b6 */
-#define FMI_MAX_PAGE            0x4000
+#define FMI_MAX_PAGE            0x8800 /* includes data and spare on 16 KiB PPN parts */
 #define FMI_MAX_MULTI           0x200       /* 0x800-byte CE/page arrays */
 
 #define SDIO_OP_PING            1

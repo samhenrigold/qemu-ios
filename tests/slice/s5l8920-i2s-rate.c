@@ -21,11 +21,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+static unsigned ctpop32(uint32_t x) { return __builtin_popcount(x); }
 typedef unsigned Clock;
 static unsigned clock_get_hz(Clock *clock) { return clock ? *clock : 0; }
 typedef struct S5L8930I2SState {
     uint32_t regs[0x400];
     bool ctrl_run;
+    bool mca;
+    uint32_t frame_rate;
     Clock *lrclk;
     uint64_t nco_base;
     uint32_t nco_ref_hz;

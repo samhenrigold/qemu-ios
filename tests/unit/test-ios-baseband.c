@@ -973,6 +973,23 @@ static void test_gps(void)
 
     /* Apple Park, walking east at 1.4 m/s: one report a second on the session's DLCI. */
     CHECK(ios_bb_gps_set(&bb.gps, "37.3349,-122.009,30,1.4,90,5"));
+    char nmea[200];
+    CHECK(ios_bb_gps_nmea(&bb.gps, 123, "RMC", nmea, sizeof(nmea)) > 0);
+    CHECK(strstr(nmea, "$GPRMC,000000.123,A,3720.094000,N,12200.540000,W,2.72,90.0,010170,,,A*") == nmea);
+    char *star = strchr(nmea, '*');
+    unsigned checksum = 0;
+    CHECK(star != NULL);
+    if (star) {
+        for (char *p = nmea + 1; p < star; p++) {
+            checksum ^= (unsigned char)*p;
+        }
+        CHECK(strtoul(star + 1, NULL, 16) == checksum);
+        CHECK(!strcmp(star + 3, "\r\n"));
+    }
+    CHECK(ios_bb_gps_nmea(&bb.gps, 0, "GGA", nmea, sizeof(nmea)) > 0);
+    CHECK(strstr(nmea, ",30.00,M,0.0,M,,*") != NULL);
+    CHECK(!ios_bb_gps_nmea(&bb.gps, 0, "RMC", nmea, 12) && !nmea[0]);
+    CHECK(!ios_bb_gps_nmea(&bb.gps, 0, "INVALID", nmea, sizeof(nmea)));
     tick_to(tnow + 1000);
     if (expect_xlsr(f, 16)) {
         check_str(f[0], "2", "shape: point with altitude and uncertainty ellipsoid");
@@ -1778,9 +1795,371 @@ static void test_sim_pin(void)
     rmdir(dir);
 }
 
+/* Captured original 10A405 ETL SYNC; independent CRC and length encoder. */
+static uint16_t user_crc(const uint8_t *p, unsigned n)
+{
+    unsigned c = 0xffff;
+    while (n--) {
+        c ^= *p++;
+        for (int i = 0; i < 8; i++) {
+            c = c & 1 ? (c >> 1) ^ 0x8408 : c >> 1;
+        }
+    }
+    return c ^ 0xffff;
+}
+
+static void user_input(IosBbCore *core, uint8_t hdr, uint8_t type,
+                       const uint8_t *payload, unsigned len)
+{
+    uint8_t p[1606], wire[3214];
+    unsigned n = 4 + len, w = 0;
+    p[0] = hdr;
+    p[1] = type | ((len >> 8) << 4);
+    p[2] = len;
+    p[3] = ~(p[0] + p[1] + p[2]);
+    memcpy(p + 4, payload, len);
+    uint16_t c = user_crc(p, n);
+    p[n++] = c;
+    p[n++] = c >> 8;
+    wire[w++] = 0xc0;
+    for (unsigned i = 0; i < n; i++) {
+        if (p[i] == 0xc0 || p[i] == 0xdb) {
+            wire[w++] = 0xdb;
+            wire[w++] = p[i] == 0xc0 ? 0xdc : 0xdd;
+        } else {
+            wire[w++] = p[i];
+        }
+    }
+    wire[w++] = 0xc0;
+    for (unsigned i = 0; i < w; i++) {
+        ios_bb_h5_input(core, wire + i, 1);
+    }
+}
+
+static uint8_t user_payload[2048];
+static unsigned user_payload_len;
+static void user_out(void *opaque, const uint8_t *p, size_t n)
+{
+    CHECK(user_payload_len + n <= sizeof(user_payload));
+    memcpy(user_payload + user_payload_len, p, n);
+    user_payload_len += n;
+}
+
+static void user_out_restart(void *opaque, const uint8_t *p, size_t n)
+{
+    user_out(NULL, p, n);
+    ios_bb_h5_restart(opaque);
+}
+
+static void test_h5_restart_ack(void)
+{
+    IosBbCore core = {0};
+    uint8_t config[] = {3, 0xfc, 0x17};
+    uint8_t payload[] = {0x42};
+
+    ios_bb_init(&core, core_out, NULL);
+    core.h5_userspace = true;
+    core.h5_data_type = 1;
+    core.h5_wire_out = core_out;
+    core.h5_payload_out = user_out;
+    core.h5_opaque = &core;
+    user_payload_len = 0;
+    user_input(&core, 0x40, 15, config, sizeof(config));
+    user_input(&core, 0xc0, 1, payload, sizeof(payload));
+
+    /* The baud-change consumer restarts the link inside the reliable
+     * sequence1 payload callback. Acknowledge receipt (next=2) first,
+     * otherwise the peer retries sequence1 against a fresh next=0. */
+    core.h5_payload_out = user_out_restart;
+    outlen = 0;
+    user_input(&core, 0xc1, 1, payload, sizeof(payload));
+    CHECK(user_payload_len == 2);
+    CHECK(outlen == 8);
+    CHECK(outbuf[0] == 0xc0 && outbuf[1] == 0x50);
+    CHECK(!core.h5_rx_next && !core.h5_tx_seq && !core.h5_need_ack);
+    outlen = 0;
+}
+
+static void test_h5_userspace(void)
+{
+    IosBbCore core = {0};
+    const uint8_t sync[] = {0xc0, 0x40, 0x0f, 0x02, 0xae, 1, 0x7e, 0x39, 0x3a, 0xc0};
+    uint8_t response[] = {0xc0, 0x40, 0x0f, 0x02, 0xae, 2, 0x7d, 0, 0, 0xc0};
+    uint16_t crc = user_crc(response + 1, 6);
+    response[7] = crc; response[8] = crc >> 8;
+    ios_bb_init(&core, core_out, NULL);
+    core.h5_userspace = true;
+    core.h5_data_type = 1;
+    core.h5_wire_out = core_out;
+    core.h5_payload_out = user_out;
+    ios_bb_reset(&core);
+    outlen = 0;
+    ios_bb_h5_input(&core, sync, sizeof(sync));
+    CHECK(outlen == sizeof(response));
+    CHECK(!memcmp(outbuf, response, sizeof(response)));
+    outlen = 0;
+    uint8_t config[] = {3, 0xfc, 0x37};
+    user_input(&core, 0x40, 15, config, sizeof(config));
+    CHECK(core.h5_active);
+    uint8_t payload[300];
+    for (unsigned i = 0; i < sizeof(payload); i++) { payload[i] = i; }
+    user_payload_len = 0;
+    user_input(&core, 0xc0, 1, payload, sizeof(payload));
+    CHECK(user_payload_len == sizeof(payload));
+    CHECK(!memcmp(user_payload, payload, sizeof(payload)));
+    CHECK(core.h5_rx_next == 1 && !core.h5_need_ack);
+    user_input(&core, 0xc0, 1, payload, sizeof(payload));
+    CHECK(user_payload_len == sizeof(payload)); /* duplicate only ACKed */
+    outlen = 0;
+    uint8_t large[2500] = {0};
+    CHECK(ios_bb_h5_send(&core, large, sizeof(large)));
+    CHECK(core.h5_nunacked == 3);
+    CHECK(core.h5_unacked[2].len == 452);
+    CHECK(!ios_bb_h5_send(&core, large, 9000));
+    size_t before = outlen;
+    ios_bb_h5_tick(&core, 250);
+    CHECK(outlen > before);
+    ios_bb_h5_restart(&core);
+    CHECK(core.h5_active && !core.h5_nunacked && !core.h5_txq_len);
+    CHECK(!core.h5_rx_next && !core.h5_tx_seq);
+    user_payload_len = 0;
+    user_input(&core, 0xc0, 1, payload, sizeof(payload));
+    CHECK(user_payload_len == sizeof(payload));
+    ios_bb_reset(&core);
+    CHECK(core.h5_userspace && core.h5_data_type == 1 &&
+          core.h5_payload_out == user_out);
+    CHECK(!core.h5_active && !core.h5_nunacked && !core.h5_txq_len);
+    /* iOS7 offers extended sequence headers. Negotiate the implemented
+     * legacy sequence space instead of making a false capability claim. */
+    outlen = 0;
+    config[2] = 0x57;
+    user_input(&core, 0x40, 15, config, sizeof(config));
+    CHECK(core.h5_active && outlen == 11 && outbuf[7] == 0x17);
+    user_payload_len = 0;
+    user_input(&core, 0xc0, 1, payload, sizeof(payload));
+    CHECK(user_payload_len == sizeof(payload) && core.h5_rx_next == 1);
+    outlen = 0;
+}
+
+static void test_sim_files(void)
+{
+    IosBbCore core = { .sim_present = true };
+    uint8_t data[32];
+    strcpy(core.imsi, "001010000000001");
+    strcpy(core.iccid, "89001010000000000001");
+    strcpy(core.operator_long, "Light Touch");
+    strcpy(core.plmn, "00101");
+    const uint8_t imsi[] = {8, 9, 0x10, 0x10, 0, 0, 0, 0, 0x10};
+    CHECK(ios_bb_sim_read_file(&core, 0x6f07, data, sizeof(data)) == 9);
+    CHECK(!memcmp(data, imsi, sizeof(imsi)));
+    CHECK(ios_bb_sim_read_file(&core, 0x2fe2, data, sizeof(data)) == 10);
+    CHECK(data[0] == 0x98 && data[1] == 0 && data[9] == 0x10);
+    CHECK(ios_bb_sim_read_file(&core, 0x6fad, data, sizeof(data)) == 4 && data[3] == 2);
+    strcpy(core.plmn, "310260");
+    CHECK(ios_bb_sim_read_file(&core, 0x6fad, data, sizeof(data)) == 4 && data[3] == 3);
+    CHECK(ios_bb_sim_read_file(&core, 0x6f38, data, sizeof(data)) == 4 && data[0] == 0xff);
+    CHECK(ios_bb_sim_read_file(&core, 0x6f46, data, sizeof(data)) == 17);
+    CHECK(!memcmp(data+1, "Light Touch", 11));
+    CHECK(!ios_bb_sim_read_file(&core, 0x6f07, data, 8));
+    CHECK(!ios_bb_sim_read_file(&core, 0x6f3e, data, sizeof(data)));
+    core.sim_present = false;
+    CHECK(!ios_bb_sim_read_file(&core, 0x2fe2, data, sizeof(data)));
+}
+
+static void test_network_query(void)
+{
+    IosBbCore core = { .sim_present = true, .registered = true,
+                      .pin_left = 3, .puk_left = 10 };
+    ios_bb_init(&core, core_out, NULL);
+    strcpy(core.plmn, "00101");
+    outlen = 0;
+    CHECK(ios_bb_network_registration(&core, 1000) == 2);
+    CHECK(ios_bb_network_registration(&core, 9000) == 1);
+    CHECK(!outlen); /* network query emits no AT bytes */
+    core.pin_on = true;
+    CHECK(ios_bb_network_registration(&core, 10000) == 0);
+    core.pin_ok = true;
+    CHECK(ios_bb_network_registration(&core, 11000) == 2);
+    core.sim_present = false;
+    CHECK(ios_bb_network_registration(&core, 20000) == 0);
+    core.off = true;
+    CHECK(ios_bb_network_registration(&core, 21000) == 0);
+}
+
+static void test_sms_submit_api(void)
+{
+    IosBbCore core = {.registered=true, .sim_present=true,
+                      .pin_left=3, .puk_left=10};
+    uint8_t pdu[] = {0,1,0,11,0x81,0x41,0x51,0x55,5,1,0xf0,0,0,2,0xc8,0x34};
+    uint8_t ref;
+    ios_bb_init(&core, core_out, NULL);
+    outlen=0;
+    CHECK(ios_bb_submit_sms_pdu(&core,pdu,sizeof(pdu),&ref));
+    CHECK(ref==1 && core.mo_count==1 && !outlen);
+    check_str(core.last_mo_num,"14155550100","binary SMS destination");
+    check_str(core.last_mo_text,"Hi","binary SMS text");
+    pdu[5]=0x98;
+    CHECK(ios_bb_submit_sms_pdu(&core,pdu,sizeof(pdu),&ref));
+    CHECK(ref==2 && core.mo_count==2 && !outlen);
+    check_str(core.last_mo_num,"89155550100","unlisted destination accepted");
+    CHECK(!ios_bb_submit_sms_pdu(&core,pdu,4,&ref));
+    CHECK(core.mo_count==2);
+    core.sim_present=false;
+    CHECK(!ios_bb_submit_sms_pdu(&core,pdu,sizeof(pdu),&ref));
+    core.sim_present=true;core.registered=false;
+    CHECK(!ios_bb_submit_sms_pdu(&core,pdu,sizeof(pdu),&ref));
+    CHECK(core.mo_count==2);
+}
+
+typedef struct SmsObserver {
+    IosBbCore *core;
+    unsigned events, slot;
+    IosBbSms message;
+} SmsObserver;
+
+static void binary_sms_event(void *opaque, unsigned slot)
+{
+    SmsObserver *observer = opaque;
+    CHECK(slot < IOS_BB_SMS_STORE);
+    CHECK(observer->core->store[slot].used);
+    observer->slot = slot;
+    observer->message = observer->core->store[slot];
+    observer->events++;
+}
+
+static void test_sms_receive_api(void)
+{
+    IosBbCore core = {.registered=true, .sim_present=true,
+                      .pin_left=3, .puk_left=10};
+    SmsObserver observer = {.core=&core};
+    ios_bb_init(&core, core_out, NULL);
+    outlen = 0;
+    CHECK(!core.ch[core.sms_ch].open);
+    CHECK(!ios_bb_incoming_sms(&core, "14155550100", "Hi"));
+    core.sms_event = binary_sms_event;
+    core.sms_opaque = &observer;
+    CHECK(ios_bb_incoming_sms(&core, "+14155550100", "Hi"));
+    CHECK(observer.events == 1 && observer.slot == 0);
+    CHECK(!strcmp(observer.message.num, "14155550100"));
+    /* Same SMS-DELIVER encoder as the golden AT test: the sender, DCS and
+     * packed user data must not change with the transport. SCTS varies. */
+    CHECK(!strncmp(observer.message.pdu, "00040B914151550501F00000", 22));
+    CHECK(!strcmp(observer.message.pdu + 38, "02C834"));
+    for (unsigned i = 1; i <= IOS_BB_SMS_STORE; i++) {
+        CHECK(ios_bb_incoming_sms(&core, "5550100", "Hello"));
+        CHECK(observer.slot == i % IOS_BB_SMS_STORE);
+    }
+    /* The SMSC prefix is a type-of-address marker, not a BCD digit. */
+    strcpy(core.sca, "+10000000000");
+    CHECK(ios_bb_incoming_sms(&core, "5550100", "Hello"));
+    CHECK(!strncmp(observer.message.pdu, "07910100000000F004", 18));
+    strcpy(core.sca, "10000000000");
+    CHECK(ios_bb_incoming_sms(&core, "5550100", "Hello"));
+    CHECK(!strncmp(observer.message.pdu, "07910100000000F004", 18));
+    CHECK(!outlen); /* Binary clients must never get unsolicited AT bytes. */
+    unsigned events = observer.events;
+    CHECK(!ios_bb_incoming_sms(&core, "bad sender", "Hi"));
+    CHECK(!ios_bb_incoming_sms(&core, "5550100", ""));
+    core.sim_present = false;
+    CHECK(!ios_bb_incoming_sms(&core, "5550100", "Hi"));
+    core.sim_present = true;
+    core.registered = false;
+    CHECK(!ios_bb_incoming_sms(&core, "5550100", "Hi"));
+    core.registered = true;
+    core.off = true;
+    CHECK(!ios_bb_incoming_sms(&core, "5550100", "Hi"));
+    CHECK(observer.events == events);
+    ios_bb_reset(&core);
+    CHECK(core.sms_event == binary_sms_event && core.sms_opaque == &observer);
+    for (unsigned i = 0; i < IOS_BB_SMS_STORE; i++) {
+        CHECK(!core.store[i].used);
+    }
+}
+
+static IosBbCall binary_call;
+static unsigned binary_events;
+static void binary_call_event(void *opaque, const IosBbCall *call)
+{
+    CHECK(opaque == &binary_events);
+    binary_call = *call;
+    binary_events++;
+}
+
+static void test_call_api(void)
+{
+    IosBbCore core = {.registered=true, .sim_present=true,
+                      .pin_left=3, .puk_left=10, .answer_delay_ms=1000};
+    ios_bb_init(&core, core_out, NULL);
+    core.call_event = binary_call_event;
+    core.call_opaque = &binary_events;
+    binary_events = 0;
+    outlen = 0;
+    int id = ios_bb_dial(&core, "+14155550100");
+    CHECK(id > 0 && binary_events == 1);
+    CHECK(binary_call.stat == IOS_BB_CALL_DIALING);
+    ios_bb_calls_tick(&core, 2000);
+    CHECK(binary_call.stat == IOS_BB_CALL_ALERTING);
+    ios_bb_calls_tick(&core, 3000);
+    CHECK(binary_call.stat == IOS_BB_CALL_ACTIVE);
+    unsigned events = binary_events;
+    ios_bb_calls_tick(&core, 600000);
+    CHECK(binary_events == events);
+    CHECK(!strcmp(ios_bb_call_state(&core), "active"));
+    CHECK(ios_bb_hangup(&core, id));
+    CHECK(binary_call.stat == IOS_BB_CALL_RELEASED && binary_call.used);
+    CHECK(!strcmp(ios_bb_call_state(&core), "idle"));
+    CHECK(!ios_bb_hangup(&core, id));
+    CHECK(!outlen);
+    /* A QMI peer has no AT call channel. Incoming state must still reach its
+     * callback once, without AT RING traffic or periodic ring events. */
+    CHECK(!core.ch[core.call_ch].open);
+    CHECK(ios_bb_incoming_call(&core, "14155550199"));
+    int incoming_id = binary_call.id;
+    CHECK(binary_call.mt && binary_call.stat == IOS_BB_CALL_INCOMING);
+    CHECK(!strcmp(binary_call.number, "+14155550199"));
+    events = binary_events;
+    ios_bb_calls_tick(&core, 900000);
+    CHECK(binary_events == events && !outlen);
+    CHECK(!ios_bb_answer(&core, 256));
+    CHECK(ios_bb_answer(&core, incoming_id));
+    CHECK(binary_call.stat == IOS_BB_CALL_ACTIVE);
+    CHECK(!ios_bb_answer(&core, incoming_id));
+    CHECK(ios_bb_hangup(&core, incoming_id));
+    CHECK(!strcmp(ios_bb_call_state(&core), "idle") && !outlen);
+    CHECK(ios_bb_dial(&core, "8675309") > 0);
+    CHECK(ios_bb_release_active(&core));
+    CHECK(!strcmp(ios_bb_call_state(&core), "idle"));
+    CHECK(!ios_bb_release_active(&core));
+    core.calls[0] = (IosBbCall){.used=true,.id=10,.stat=IOS_BB_CALL_ACTIVE};
+    core.calls[1] = (IosBbCall){.used=true,.id=11,.stat=IOS_BB_CALL_HELD};
+    CHECK(ios_bb_release_active(&core));
+    CHECK(!core.calls[0].used && core.calls[1].stat == IOS_BB_CALL_ACTIVE);
+    CHECK(ios_bb_dial(&core, "8675309") > 0);
+    ios_bb_reset(&core);
+    CHECK(core.call_event == binary_call_event && core.call_opaque == &binary_events);
+    CHECK(!strcmp(ios_bb_call_state(&core), "idle"));
+    core.registered = false;
+    CHECK(ios_bb_dial(&core, "8675309") == -1);
+    core.registered = true;
+    core.sim_present = false;
+    CHECK(ios_bb_dial(&core, "911") > 0);
+    CHECK(!ios_bb_incoming_call(&core, "14155550199"));
+    core.off = true;
+    CHECK(ios_bb_dial(&core, "911") == -1);
+    CHECK(!ios_bb_incoming_call(&core, "14155550199"));
+    CHECK(!outlen);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/baseband/call-api", test_call_api);
+    g_test_add_func("/baseband/sms-submit-api", test_sms_submit_api);
+    g_test_add_func("/baseband/sms-receive-api", test_sms_receive_api);
+    g_test_add_func("/baseband/network-query", test_network_query);
+    g_test_add_func("/baseband/sim-files", test_sim_files);
+    g_test_add_func("/baseband/h5-userspace", test_h5_userspace);
+    g_test_add_func("/baseband/h5-restart-ack", test_h5_restart_ack);
     g_test_add_func("/baseband/chain", test_chain);
     g_test_add_func("/baseband/ifx", test_ifx);
     g_test_add_func("/baseband/h5-link-1.0", test_h5_link_1_0);
