@@ -5,7 +5,7 @@
 #   build.sh [OUT]     default contrib/gles-public/OpenGLES
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-export LEGACY_LINK="${LEGACY_LINK:-1}" ARMV6_SDK="${ARMV6_SDK:-$HOME/Developer/ipod2g-re/OldSDK/iPhoneOS3.1.3.sdk}"
+export LEGACY_LINK=1 ARMV6_SDK="${ARMV6_SDK:-$HOME/Developer/ipod2g-re/OldSDK/iPhoneOS3.1.3.sdk}"
 . "$HERE/../armv6-toolchain/armv6.sh"
 OUT="${1:-$HERE/OpenGLES}"
 GEN="$(mktemp -d /tmp/gles-public.XXXXXX)"
