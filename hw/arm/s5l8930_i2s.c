@@ -184,6 +184,40 @@ static bool i2s_frame_master(S5L8930I2SState *s)
                        : !(s->regs[I2S_TXCON >> 2] & I2S_TXCON_EXT_CLK);
 }
 
+/*
+ * The A6 MCA's frame rate. Its clock comes from outside (the speaker port's NCO is never programmed and the CS42L65's
+ * writes are the same at every rate), so the one place the guest's rate reaches the port is its FIFO watermarks:
+ * 14G61 AppleAE2MCA (810c0f90, written at 810bfe5e/810bfe72) sets +0x20 (TX) and +0x34 (RX) bits 16-31 to one less
+ * than (rate * channels / 2000 + 3) & ~3, so 44 (0x2b) for stereo 44.1 kHz and 48 (0x2f) for 48 kHz, as the Bedtime
+ * wake sounds play. The first standard rate both programmed watermarks agree with, 44.1 kHz first where they can't
+ * tell (mono TX: 24 for both); frame-rate until the guest has programmed one, or if none fits.
+ */
+static unsigned i2s_mca_rate(S5L8930I2SState *s)
+{
+    static const unsigned rates[] = {44100, 48000, 8000, 16000, 32000, 22050, 24000, 11025, 12000, 88200, 96000};
+    static const unsigned config[] = {0x20, 0x34};
+    bool programmed = false;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(rates); i++) {
+        bool fits = true;
+
+        for (unsigned d = 0; d < ARRAY_SIZE(config); d++) {
+            uint32_t v = s->regs[config[d] >> 2];
+            unsigned mark = (rates[i] * i2s_channels(s, d) / 2000 + 3) & ~3u;
+
+            programmed |= v != 0;
+            fits &= !v || (v >> 16) + 1 == mark;
+        }
+        if (!programmed) {
+            break;
+        }
+        if (fits) {
+            return rates[i];
+        }
+    }
+    return s->frame_rate;
+}
+
 unsigned s5l8930_i2s_rate(unsigned port)
 {
     S5L8930I2SState *s;
@@ -198,7 +232,7 @@ unsigned s5l8930_i2s_rate(unsigned port)
     }
     if (s->mca) {
         unsigned hz = clock_get_hz(s->lrclk);
-        return hz ? hz : s->frame_rate;
+        return hz ? hz : i2s_mca_rate(s);
     }
     if (!i2s_frame_master(s) || s->nco_ref_hz) {
         /* ponytail: no clock connected or none driven yet plays at 44.1 kHz, where the hardware would stall.
