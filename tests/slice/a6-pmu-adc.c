@@ -252,6 +252,17 @@ int main(void)
         unsigned expected = channel == 10                    ? 256
                             : channel >= 11 && channel <= 14 ? 800
                                                              : 0xabc;
+        /* Channel 6, the USB data lines: a host's pull-downs (0 V) while
+         * VBUS is up; the analog fixture without a cable. */
+        if (channel == 6) {
+            s.usb_power = true;
+            a6_pmu_adc_complete(&s);
+            assert((s.regs[0x49] | (s.regs[0x4a] << 4)) == 0);
+            s.usb_power = false;
+            s.regs[0x48] = 0x20 | channel;
+            a6_pmu_adc_complete(&s);
+            raw = s.regs[0x49] | (s.regs[0x4a] << 4);
+        }
         assert(raw == expected);
         assert(!(s.regs[0x48] & 0x20));
         assert(s.regs[2] & 0x20);
