@@ -29,6 +29,7 @@ typedef struct EHCIQueue {
 struct EHCIState {
     uint32_t usbsts;
     int state;
+    bool skip_idle_periodic_qh;
     EHCIQueue queue;
     EHCIqh memory;
 };
@@ -75,10 +76,11 @@ static void ehci_clear_usbsts(EHCIState *s, uint32_t bits)
     s->usbsts &= ~bits;
 }
 #include "slice.h"
+static bool skip = true;
 static int dispatch(int async, uint32_t epchar, uint32_t mask, uint32_t token,
                     uint32_t current)
 {
-    EHCIState s = {.memory = {.next = 1,
+    EHCIState s = {.skip_idle_periodic_qh = skip, .memory = {.next = 1,
                               .epchar = epchar,
                               .epcap = 0x40000000 | mask,
                               .next_qtd = 0,
@@ -103,6 +105,9 @@ int main(void)
     /* Split endpoint state and ordinary halt behavior remain unchanged. */
     assert(dispatch(0, 0x00080f00, 0, 0, 0) == EST_ADVANCEQUEUE);
     assert(dispatch(1, 0x00406000, 0, QTD_TOKEN_HALT, 0) == EST_HORIZONTALQH);
+    /* Off (every board but the A6), the anchor is fetched as it always was. */
+    skip = false;
+    assert(dispatch(0, 0x00082f00, 0, 0, 0) == EST_ADVANCEQUEUE);
     puts(
         "PASS: native zero-mask periodic anchors skip qTD fetch; real periodic/async work preserved");
 }

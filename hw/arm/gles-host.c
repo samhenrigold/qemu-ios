@@ -736,6 +736,20 @@ int gles_host_context_count(void)
 
 static GLESHost gh_legacy;
 static GLESHost *gh_current = &gh_legacy;
+/* The A6's renderer features (s5l8950.c, gles_host_set_a6): framebuffer fetch reported to the shim, CoreAnimation
+ * layers in native shared renderbuffers. Off, every other board renders as it was qualified. One flag for both
+ * builds of this file: the ANGLE one (gles-host-angle.c) reads the CGL one's. */
+#ifndef GLES_HOST_ANGLE
+bool gles_host_a6;
+
+void gles_host_set_a6(bool on)
+{
+    gles_host_a6 = on;
+}
+#else
+extern bool gles_host_a6;
+#endif
+#define gles_a6 gles_host_a6
 #define gh (*gh_current)
 
 
@@ -7030,11 +7044,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
     case GLES_OP_CAPABILITIES:
-        return gles_fetch_capabilities();
+        return gles_a6 ? gles_fetch_capabilities() : 0;
     case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
         return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
     case GLES_OP_DRAWABLE_STORAGE:
-        return argc == 2 ? gles_layer_storage(a[0], a[1]) : -1;
+        return argc == 2 ? (gles_a6 ? gles_layer_storage : gles_drawable_storage)(a[0], a[1]) : -1;
 
     case GLES_OP_PRESENT: {
         uint64_t t0 = gles_t();
@@ -9074,7 +9088,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (gles_is_drawable(gh.bound_framebuffer)) {
             /* Keep the native named attachment too, so a later allocation
              * of this shared renderbuffer can stop using the surrogate. */
-            gles_record_drawable_attachment(a);
+            if (gles_a6) {
+                gles_record_drawable_attachment(a);
+            }
             return 0;
         }
         glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, attach,
@@ -9203,7 +9219,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (!gh.bound_framebuffer) {
             return gles_reject(GL_INVALID_OPERATION);
         }
-        if (a[0] == GL_FRAMEBUFFER_EXT && a[1] == GL_COLOR_ATTACHMENT0_EXT &&
+        if (gles_a6 && a[0] == GL_FRAMEBUFFER_EXT && a[1] == GL_COLOR_ATTACHMENT0_EXT &&
             gles_is_drawable(gh.bound_framebuffer)) {
             /* The host drawable is a private texture, while EAGL attached a
              * guest renderbuffer. Report that attachment, independent of the
@@ -9484,7 +9500,9 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
     }
 
     gles_platform_make_current();
-    gles_refresh_drawable_binding();
+    if (gles_a6) {
+        gles_refresh_drawable_binding();
+    }
 
     gh.calls++;
     gles_cur_ctx = ctx;

@@ -1383,6 +1383,7 @@ static void a6_init(MachineState *machine)
     MemoryRegion *memory = get_system_memory();
     DeviceState *modem_uart = NULL;
     s->restore_fd = -1;
+    gles_host_set_a6(true);
     if (s->restore_image) {
         struct stat st;
         s->restore_fd = open(s->restore_image, O_RDONLY | O_CLOEXEC);
@@ -2031,9 +2032,18 @@ static void a6_set_button_home(Object *obj, bool value, Error **errp)
     s5l8950_press_button(IPOD_TOUCH_BUTTON_HOME, value);
 }
 
+/* The shared models' A6 behavior, on this machine only: every other board keeps what it was qualified with. */
+static GlobalProperty a6_device_defaults[] = {
+    { "exynos4210.uart", "a6-serial", "on" },
+    { TYPE_S5L8930_CDMA, "a6", "on" },
+    { "s5l8920.vxd", "a6", "on" },
+    { TYPE_EXYNOS4210_EHCI, "skip-idle-periodic-qh", "on" },
+};
+
 static void a6_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
+    compat_props_add(mc->compat_props, a6_device_defaults, G_N_ELEMENTS(a6_device_defaults));
     gles_host_class_init(klass);
     mc->desc = "iPhone 5 (N42AP, S5L8950/A6)";
     mc->init = a6_init;

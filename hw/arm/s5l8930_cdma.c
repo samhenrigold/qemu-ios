@@ -155,6 +155,7 @@ struct S5L8930CDMAState {
     uint64_t uart_base;
     uint32_t uart_ports;
     uint32_t num_channels;
+    bool a6;                    /* "a6": the A6's run, hold and UART-ring semantics (s5l8950.c); off, as qualified */
     Error *migration_blocker;
     MemoryRegion cdma_mem;
     MemoryRegion aes_mem;
@@ -519,11 +520,13 @@ static void cdma_fifo_xfer(uint32_t fifo, uint32_t width, uint8_t *buf,
 
 static void cdma_run(S5L8930CDMAState *s, int ch)
 {
-    if (s->in_run[ch]) {
-        qemu_bh_schedule(s->kick_bh);
-        return;
+    if (s->a6) {
+        if (s->in_run[ch]) {
+            qemu_bh_schedule(s->kick_bh);
+            return;
+        }
+        s->in_run[ch] = true;
     }
-    s->in_run[ch] = true;
     CDMAChannel *c = &s->ch[ch];
     int ctx = CTRL_AES_CTX(c->ctrl);
     uint32_t dev = c->fifo;
@@ -539,7 +542,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
     bool feeds = aes != NULL;                   /* memory -> AES engine */
     bool drains = !feeds && !c->fifo && !c->settings;   /* engine -> memory */
     bool to_device = feeds || (c->settings & SET_TO_DEVICE);
-    bool uart_counter = s->version >= 2 && cdma_waits_for_uart(s, c);
+    bool uart_counter = s->a6 && cdma_waits_for_uart(s, c);
     uint32_t width = 1u << ((c->settings >> 2) & 3);
     uint32_t error = 0;
 
@@ -568,7 +571,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
             if (!bound) {
                 bound = aes_for_channel(s, ch);
             }
-            if (bound) {
+            if (s->a6 && bound) {
                 if (dma_memory_read(&address_space_memory, c->desc + 16,
                         iv_words, sizeof(iv_words), MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
                     error = 1;
@@ -654,7 +657,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
              * not every FIFO-sized burst. A zero-room stall has transferred
              * nothing yet, even though the channel is marked as resumed. */
             bool restart_crypto = (flags & DESC_AES_RESTART) &&
-                                  c->remain == le32_to_cpu(d[3]);
+                                  (!s->a6 || c->remain == le32_to_cpu(d[3]));
 
             /* The backing store omits the base NAND-media AES-128 layer.
              * Native content protection adds a distinct custom AES-256 file
@@ -675,7 +678,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
             bool crypt = (flags & DESC_AES) && (!dev_fifo || file_layer);
 
             if (crypt) {
-                aes = bound;
+                aes = s->a6 ? bound : aes ? aes : aes_for_channel(s, ch);
                 if (!aes) {
                     error = 3;
                     break;
@@ -702,7 +705,13 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                      * (the FMI already in write mode), which drains the FIFO
                      * before this run gets to wait for that. */
                     s->sink_early[ch] = false;
+                    if (!s->a6) {
+                        s->in_run[ch] = true;   /* the A6 holds it for the whole run */
+                    }
                     cdma_fifo_xfer(dev, width, buf, len, true);
+                    if (!s->a6) {
+                        s->in_run[ch] = false;
+                    }
                 }
             } else {
                 if (drains) {
@@ -718,7 +727,7 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
                     cdma_fifo_xfer(dev, width, buf, len, false);
                 }
                 if (crypt) {
-                    ok = aes_apply(s, aes, buf, len, restart_crypto);
+                    ok = aes_apply(s, aes, buf, len, restart_crypto && (s->a6 || !resume));
                 }
                 dma_memory_write(&address_space_memory, c->addr, buf, len,
                                  MEMTXATTRS_UNSPECIFIED);
@@ -763,7 +772,9 @@ static void cdma_run(S5L8930CDMAState *s, int ch)
     c->ctrl |= ST_DONE;
     cdma_update_irq(s, ch);
 out:
-    s->in_run[ch] = false;
+    if (s->a6) {
+        s->in_run[ch] = false;
+    }
 }
 
 void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size)
@@ -1078,7 +1089,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
          * HOLD|ABORT, samples MAR/BC, then restores the original CSR without
          * GO. This is a pause/flush of the active transfer, not cancellation
          * of its descriptor. An unheld ABORT remains a terminal stop. */
-        bool pause = s->version >= 2 && (v & CTRL_HOLD) &&
+        bool pause = s->a6 && (v & CTRL_HOLD) &&
                      (c->ctrl & ST_RUNNING);
 
         if ((v & CTRL_ABORT) && !pause) {
@@ -1105,7 +1116,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
                 dma_memory_read(&address_space_memory, c->desc, d, sizeof(d),
                                 MEMTXATTRS_UNSPECIFIED);
                 c->addr = le32_to_cpu(d[2]);
-                if (s->version < 2) {
+                if (!s->a6) {
                     c->remain = le32_to_cpu(d[3]);
                 }
                 c->ctrl |= ST_RUNNING;
@@ -1113,7 +1124,7 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
                 cdma_run(s, ch);
             }
         }
-        if (was_held && !(c->ctrl & CTRL_HOLD) &&
+        if (s->a6 && was_held && !(c->ctrl & CTRL_HOLD) &&
             (c->ctrl & ST_RUNNING)) {
             qemu_bh_schedule(s->kick_bh);
         }
@@ -1168,12 +1179,12 @@ void s5l8930_cdma_kick(DeviceState *dev)
         /* A FIFO can free space while its current push/pop is still on the
          * stack. Resume after the descriptor address and remaining byte count
          * have been committed, never recursively against their old values. */
-        if (s->in_run[ch]) {
+        if (s->a6 && s->in_run[ch]) {
             qemu_bh_schedule(s->kick_bh);
             continue;
         }
         if ((s->ch[ch].ctrl & ST_RUNNING) && s->ch[ch].in_seg &&
-            !(s->ch[ch].ctrl & CTRL_HOLD)) {
+            !(s->a6 && (s->ch[ch].ctrl & CTRL_HOLD))) {
             cdma_run(s, ch);
         }
     }
@@ -1536,6 +1547,7 @@ static const Property s5l8930_cdma_properties[] = {
     DEFINE_PROP_UINT32("uart-ports", S5L8930CDMAState, uart_ports, 6),
     DEFINE_PROP_UINT32("num-channels", S5L8930CDMAState, num_channels, CDMA_LEGACY_CHANNELS),
     DEFINE_PROP_UINT8("version", S5L8930CDMAState, version, 2),
+    DEFINE_PROP_BOOL("a6", S5L8930CDMAState, a6, false),
     DEFINE_PROP_BOOL("skg-probe", S5L8930CDMAState, skg_probe, false),
     /* Legacy page-store images omit all inline NAND encryption. A6's native
      * protected images retain their additional encrypted-file layer. */

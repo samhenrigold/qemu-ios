@@ -21,6 +21,7 @@ typedef struct {
     bool compact[16];
     int64_t due[16], busy_until;
     void *done;
+    bool a6;
 } S5L8920VXDState;
 static bool armed;
 static int64_t deadline;
@@ -47,7 +48,7 @@ static bool vxd_rw(uint32_t ptd, uint32_t addr, void *out, unsigned n,
     return false;
 }
 /* The parser and codec have separate tests; here exercise message ownership. */
-static bool vxd_parse_render(uint32_t ptd, uint32_t addr, void *out)
+static bool vxd_parse_render(uint32_t ptd, uint32_t addr, void *out, bool a6)
 {
     return false;
 }
@@ -62,8 +63,13 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, void *render)
 #include "slice.h"
 int main(void)
 {
-    S5L8920VXDState s = {0};
     uint32_t init[] = {0x8014, 0x1000, 0x101000, 0x400100, 0x12340000};
+    /* AppleVXD375's boards ("a6" off) complete every message as before, INIT included (fence word 4) */
+    S5L8920VXDState old = {0};
+    vxd_message(&old, init, G_N_ELEMENTS(init));
+    assert(old.pending == 1 && old.fence[0] == 0x12340000 && !old.compact[0]);
+    armed = false;
+    S5L8920VXDState s = {.a6 = true};
     vxd_message(&s, init, G_N_ELEMENTS(init));
     assert(!s.pending && !armed && !s.busy_until);
     uint32_t legacy_init[8] = {0x8020};

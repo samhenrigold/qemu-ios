@@ -12,7 +12,7 @@
 typedef uint64_t hwaddr;
 #define MIN(a,b) ((a)<(b)?(a):(b))
 typedef struct {unsigned size,sp,rp;} FIFO;
-typedef struct {uint32_t reg[32]; FIFO rx,tx; unsigned channel; bool s5l8720_irq,rx_since_timeout; int dmairq,rxdmareq,irq,chr; int *fifo_timeout_timer, *tx_done_timer; uint32_t wordtime, tx_char_ns;} Exynos4210UartState;
+typedef struct {uint32_t reg[32]; FIFO rx,tx; unsigned channel; bool s5l8720_irq,a6_serial,rx_since_timeout; int dmairq,rxdmareq,irq,chr; int *fifo_timeout_timer, *tx_done_timer; uint32_t wordtime, tx_char_ns;} Exynos4210UartState;
 static unsigned levels[4],pulses;
 #define CHR_IOCTL_SERIAL_SET_BREAK 1
 static unsigned break_count;
@@ -124,8 +124,11 @@ int main(void){
  s.reg[I_(UINTSP)]=UINTSP_RXD;exynos4210_uart_update_irq(&s);
  assert(levels[3]);
  exynos4210_uart_write(&s,UINTP,UINTSP_RXD,4);assert(!levels[3]);
- /* BREAK transitions reach the connected shared-wire backend once each. */
+ /* Every port but the A6's ("a6-serial") keeps BREAK in UCON, as before; the A6's sends each transition once. */
+ exynos4210_uart_write(&s,UCON,0x115c95,4);
+ exynos4210_uart_write(&s,UCON,0x115c85,4);
  assert(!break_count);
+ s.a6_serial=true;
  exynos4210_uart_write(&s,UCON,0x115c95,4);
  exynos4210_uart_write(&s,UCON,0x115c95,4);
  exynos4210_uart_write(&s,UCON,0x115c85,4);

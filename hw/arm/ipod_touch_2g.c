@@ -1789,7 +1789,7 @@ static void ipod_touch_instance_init(Object *obj)
 
     /* On by default: the emulated device is effectively tethered to the host. */
     IPOD_TOUCH_MACHINE(obj)->usb_attached = true;
-    IPOD_TOUCH_MACHINE(obj)->battery_adc = pcf50633_adc_for_level(100);
+    IPOD_TOUCH_MACHINE(obj)->battery_adc = 850;
     object_property_add(obj, "battery-adc", "int", ipod_touch_get_battery_adc,
                         ipod_touch_set_battery_adc, NULL, NULL);
     object_property_add(obj, "battery-level", "int", ipod_touch_get_battery_level,

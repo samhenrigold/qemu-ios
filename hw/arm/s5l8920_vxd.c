@@ -19,6 +19,7 @@
 #include "qom/object.h"
 #include "qemu/bswap.h"
 #include "migration/vmstate.h"
+#include "hw/core/qdev-properties.h"
 #include "s5l8920_vxd_h264.h"
 
 #define TYPE_S5L8920_VXD "s5l8920.vxd"
@@ -116,6 +117,7 @@ struct S5L8920VXDState {
     int64_t due[VXD_PENDING];
     int64_t busy_until;               /* when the last of them ends */
     FILE *trace;
+    bool a6;                          /* "a6": AppleVXD390's messages, streams and strides (s5l8950.c) */
 };
 
 static void vxd_streams_clear(S5L8920VXDState *s)
@@ -229,8 +231,9 @@ typedef struct VXDRender {
 #define CMDS_CHROMA_RECONSTRUCTED 0x1010
 #define CMDS_EXTENDED_ROW_STRIDE  0x1040
 
+/* a6: the commands AppleVXD390 adds (extended header, inline rendec, context transfer); off, AppleVXD375's. */
 static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
-                                unsigned words, VXDRender *r, bool packed)
+                                unsigned words, VXDRender *r, bool packed, bool a6)
 {
     uint32_t d[8];
     if (!words || words > 0xffff) return false;
@@ -246,6 +249,7 @@ static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
             i += 5;
             break;
         case CMD_HEADER_EXT:
+            if (!a6) { i++; break; }
             if (words - i < 8) return false;
             i += 8;
             break;
@@ -292,6 +296,7 @@ static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
             i += 1 + n;
             break;
         case CMD_RENDEC_INLINE: {
+            if (!a6) { i++; break; }
             /* A6 packs the register and count into the command itself. */
             unsigned count = (c[i] >> 16) & 0xfff;
             unsigned reg = packed ? c[i] & 0xffff : (c[i] & 0xffff) >> 2;
@@ -349,7 +354,7 @@ static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
             i++;
             break;
         case 0xe: /* Packed firmware-context transfer: count, then IOVA. */
-            if (!packed) { i++; break; }
+            if (!packed || !a6) { i++; break; }
             if (words - i < 2) return false;
             i += 2; /* The host decoder retains the reconstruction state. */
             break;
@@ -364,11 +369,11 @@ static bool vxd_parse_commands(uint32_t ptd, uint32_t commands,
     return r->bs_va && r->luma;
 }
 
-static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r)
+static bool vxd_parse_render(uint32_t ptd, uint32_t lldma, VXDRender *r, bool a6)
 {
     uint32_t d[8];
     if (!vxd_rw(ptd, lldma, d, sizeof(d), false) || d[2] != 0x350) return false;
-    return vxd_parse_commands(ptd, d[6], d[1] & 0xffff, r, false);
+    return vxd_parse_commands(ptd, d[6], d[1] & 0xffff, r, false, a6);
 }
 
 static bool vxd_parse_packed(uint32_t ptd, uint32_t commands, unsigned words, VXDRender *r)
@@ -376,7 +381,7 @@ static bool vxd_parse_packed(uint32_t ptd, uint32_t commands, unsigned words, VX
     uint32_t first;
     return vxd_rw(ptd, commands, &first, sizeof(first), false) &&
         first == ((uint32_t)CMD_HEADER_EXT << 28) &&
-        vxd_parse_commands(ptd, commands, words, r, true);
+        vxd_parse_commands(ptd, commands, words, r, true, true);
 }
 
 /* A coded slice's NAL header byte: forbidden bit clear, type 1 or 5. */
@@ -459,8 +464,9 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
         .sps0 = r->fe[0], .pps0 = r->fe[1], .pic0 = r->fe[2], .slice0 = r->fe[3], .slice1 = r->fe[4],
         .last = last,
     };
-    VXDStream *stream = vxd_stream(s, ptd);
-    unsigned stride = r->mode & (1u << 28) ? r->row_stride : strides[(r->mode >> 24) & 7];
+    /* AppleVXD375 boards decode one stream, as they were qualified with */
+    VXDStream *stream = vxd_stream(s, s->a6 ? ptd : 0);
+    unsigned stride = s->a6 && (r->mode & (1u << 28)) ? r->row_stride : strides[(r->mode >> 24) & 7];
     if (!stride || stride > 16320) return -1;
     if (last) {
         stream->seq++;
@@ -479,8 +485,8 @@ static int vxd_decode(S5L8920VXDState *s, uint32_t ptd, const VXDRender *r)
             VXD_LOG(s, "picture %" PRId64 " has no buffer\n", pic.tag);
             continue;
         }
-        if (t->stride < (unsigned)pic.width) return -1;
-        unsigned w = pic.width, hgt = pic.height;
+        if (s->a6 && t->stride < (unsigned)pic.width) return -1;
+        unsigned w = s->a6 ? pic.width : MIN((unsigned)pic.width, t->stride), hgt = pic.height;
         g_autofree uint8_t *row = g_malloc(w);
         for (unsigned y = 0; y < hgt; y++) {
             vxd_rw(t->ptd, t->luma + y * t->stride, (void *)(pic.plane[0] + y * pic.stride[0]), w, true);
@@ -562,11 +568,11 @@ static void vxd_message(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
      * Neither submits a picture or owns a decode fence. A synthetic
      * CMD_COMPLETED for fence zero can retire the native client's first job
      * early, or leave an unclaimed reply holding its interrupt asserted. */
-    if (id == MSG_PADDING || id == MSG_INIT) {
+    if (s->a6 && (id == MSG_PADDING || id == MSG_INIT)) {
         VXD_LOG(s, "message %02x: no picture completion\n", id);
         return;
     }
-    bool compact = words == 5 && id == MSG_RENDER;
+    bool compact = s->a6 && words == 5 && id == MSG_RENDER;
     uint32_t fence = compact ? msg[0] >> 16 : words > 4 ? msg[4] : 0;
     uint32_t flags = compact ? msg[1] & 0xffff : words > 7 ? msg[7] : 0;
     uint32_t ptd = compact ? msg[3] : words > 1 ? msg[1] : 0;
@@ -585,7 +591,7 @@ static void vxd_message(S5L8920VXDState *s, const uint32_t *msg, unsigned words)
     }
     VXDRender r = {0};
     bool parsed = id == MSG_RENDER && words >= 3 &&
-        vxd_parse_render(ptd, msg[2], &r);
+        vxd_parse_render(ptd, msg[2], &r, s->a6);
     if (!parsed && compact && id == MSG_RENDER)
         parsed = vxd_parse_packed(ptd, msg[2], msg[1] >> 16, &r);
     if (compact && !r.mode) r.mode = msg[4];
@@ -836,12 +842,17 @@ static const VMStateDescription vxd_vmstate = {
     },
 };
 
+static const Property vxd_properties[] = {
+    DEFINE_PROP_BOOL("a6", S5L8920VXDState, a6, false),
+};
+
 static void vxd_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, vxd_reset);
     dc->vmsd = &vxd_vmstate;
+    device_class_set_props(dc, vxd_properties);
     dc->desc = "S5L8920/A4 VXD (MSVDX) H.264 decoder";
 }
 

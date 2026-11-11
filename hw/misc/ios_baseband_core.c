@@ -313,7 +313,11 @@ static void h5_rx_pkt(IosBbCore *bb, const uint8_t *p, unsigned n)
     }
     if (seq == bb->h5_rx_next) {
         bb->h5_rx_next = (seq + 1) & 7;
-        bb->h5_need_ack = true;
+        /* The userspace transport (dev-mdm9x15.c) acks every reliable packet; the kernel link keeps the
+         * acknowledgement it was qualified with, on its replies. */
+        if (bb->h5_payload_out) {
+            bb->h5_need_ack = true;
+        }
         h5_rx_payload(bb, p + 4, len);
     } else {
         /* Retransmission of something we already have: just re-ack. */
@@ -1433,8 +1437,8 @@ bool ios_bb_incoming_call(IosBbCore *bb, const char *number)
 {
     IosBbCall *c;
 
-    if (bb->off || !bb->sim_present ||
-        (!bb->call_event && !bb->ch[bb->call_ch].open) ||
+    /* A binary transport has no call channel; it, not the AT modems, refuses a powered-off or SIM-less radio. */
+    if ((bb->call_event ? bb->off || !bb->sim_present : !bb->ch[bb->call_ch].open) ||
         !service_ok(bb) || !number[0]) {
         return false;
     }
@@ -2050,12 +2054,11 @@ static void cmgs_prompt_commit(IosBbCore *bb, int ch, bool send)
         return;
     }
     n = hex_nibbles(c->line, pdu, sizeof(pdu));
-    uint8_t reference;
-    if (!ios_bb_submit_sms_pdu(bb, pdu, n, &reference)) {
-        at_error(bb, ch);
-        return;
-    }
-    chan_printf(bb, ch, "\r\n+CMGS: %d\r\n", reference);
+    /* The AT modems accept every PDU, as their guests were qualified with; only QMI's ios_bb_submit_sms_pdu
+     * refuses one without service or that does not parse. */
+    sms_parse_submit(bb, pdu, n);
+    bb->sms_mr = (bb->sms_mr + 1) & 0xff;
+    chan_printf(bb, ch, "\r\n+CMGS: %d\r\n", bb->sms_mr);
     at_ok(bb, ch);
 }
 
@@ -2109,8 +2112,7 @@ bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text)
     unsigned n, tpdu;
     IosBbSms *slot;
 
-    if ((!bb->sms_event && !bb->ch[bb->sms_ch].open) ||
-        bb->off || !bb->sim_present || !service_ok(bb) ||
+    if ((bb->sms_event ? bb->off || !bb->sim_present : !bb->ch[bb->sms_ch].open) || !service_ok(bb) ||
         !ios_bb_sms_sender_ok(number) || !text[0]) {
         return false;
     }

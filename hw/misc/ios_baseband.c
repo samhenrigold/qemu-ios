@@ -1093,7 +1093,7 @@ static void iosbb_instance_init(Object *obj)
 {
     IosBasebandState *s = IOS_BASEBAND(obj);
 
-    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "AT&T");
+    snprintf(s->bb.operator_long, sizeof(s->bb.operator_long), "Light Touch");
     snprintf(s->bb.plmn, sizeof(s->bb.plmn), "00101");
     snprintf(s->bb.imei, sizeof(s->bb.imei), "000000001234569");
     snprintf(s->bb.imsi, sizeof(s->bb.imsi), "001010000000001");

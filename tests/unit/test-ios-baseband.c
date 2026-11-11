@@ -1122,6 +1122,18 @@ static void test_outgoing_sms(void)
     check_str(ios_bb_last_mo_sms_text(&bb), "Hi", "MO text");
     CHECK(bb.mo_count == 1);                     /* mo-sms-count: the host sees each send */
 
+    /* The AT modems answer +CMGS for a PDU that does not parse too, as their guests were qualified with; only
+     * QMI's ios_bb_submit_sms_pdu (sms-submit-api) refuses one. */
+    c_mux_str(3, "at+cmgs=1\r");
+    pump();
+    expect_frame(3, "\r\n> ");
+    c_mux_str(3, "00");
+    c_mux(3, (const uint8_t[]){ 0x1a }, 1);
+    pump();
+    expect_frame(3, "\r\n+CMGS: 2\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    CHECK(bb.mo_count == 1);
+
     /* The host panel's network fields, validated as the modem's setters do. */
     CHECK(ios_bb_plmn_ok("00101") && ios_bb_plmn_ok("310410") && !ios_bb_plmn_ok("0010") &&
           !ios_bb_plmn_ok("0010123") && !ios_bb_plmn_ok("00a01") && !ios_bb_plmn_ok(""));

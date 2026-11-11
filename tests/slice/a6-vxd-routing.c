@@ -32,6 +32,7 @@ typedef struct {
     VXDStream streams[VXD_STREAMS];
     uint64_t stream_clock;
     FILE *trace;
+    bool a6;
 } S5L8920VXDState;
 static uint8_t ram[65536], y[8], u[2] = {80, 80}, v[2] = {90, 90};
 static bool vxd_rw(uint32_t ptd, uint32_t va, void *p, size_t n, bool write)
@@ -79,7 +80,7 @@ int vxd_h264_next(VXDH264 *h, VXDPicture *p)
 #include "slice.h"
 int main(void)
 {
-    S5L8920VXDState s = {0};
+    S5L8920VXDState s = {.a6 = true};   /* streams by context and the extended stride are AppleVXD390's */
     memset(ram, 0xa5, sizeof(ram));
     VXDRender a = {.bs_va = 0x400,
                    .bs_len = 1,

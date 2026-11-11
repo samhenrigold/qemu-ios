@@ -51,3 +51,4 @@ void gles_host_class_init(ObjectClass *oc)
 {
     object_class_property_add_str(oc, "gl-renderer", gles_get_renderer, gles_set_renderer);
 }
+void gles_host_set_a6(bool on) { }

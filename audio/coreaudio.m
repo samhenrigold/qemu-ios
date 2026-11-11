@@ -1160,7 +1160,9 @@ static void audio_coreaudio_class_init(ObjectClass *klass, const void *data)
     AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_CLASS(klass);
 
     k->max_voices_out = 1;
-    k->max_voices_in = 1;
+    /* Off: every board opens a capture voice, and the app has no microphone usage description. Turn it on with
+     * that string and qualified capture (docs/n42/README.md, Known limitations). */
+    k->max_voices_in = 0;
     k->voice_size_out = sizeof(CoreaudioVoiceOut);
     k->voice_size_in = sizeof(CoreaudioVoiceIn);
     k->init_in = coreaudio_init_in;

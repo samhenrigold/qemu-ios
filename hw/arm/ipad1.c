@@ -2453,7 +2453,7 @@ static void ipad1_instance_init(Object *obj)
     object_property_add_str(obj, "gles-rejects", ipad1_get_gles_rejects, NULL);
     object_property_set_description(obj, "gles-rejects",
         "Every refusal the GL bridge made so far, one NAME<tab>COUNT per line");
-    IPAD1_MACHINE(obj)->battery_level = 100;
+    IPAD1_MACHINE(obj)->battery_level = 80;
     IPAD1_MACHINE(obj)->usb_charger = true;
 }
 

@@ -456,6 +456,8 @@ uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len);
  * boot takes where the build has it and ANGLE opens (else it says so and stays on CGL). Set before the
  * machine's first reset; every board's class adds it. */
 void gles_host_class_init(struct ObjectClass *oc);
+/* The A6's renderer features, on the machine that calls it (s5l8950.c) */
+void gles_host_set_a6(bool on);
 #endif
 
 #endif /* HW_ARM_GUEST_SERVICES_GLES_H */

@@ -175,7 +175,7 @@ static uint32_t protected_avail(void *opaque, hwaddr addr, bool td) {
 static void check_protected_resume(bool zero_first, bool to_device) {
     S5L8930CDMAState *state=calloc(1,sizeof *state);
     state->num_channels=S5L8930_CDMA_CHANNELS;
-    state->nand_file_aes=true;
+    state->nand_file_aes=true;state->a6=true;
     AESContext *aes=&state->aes[2];
     aes->setup=(1<<8)|AES_ENABLE|AES_KEY_CUSTOM|(2<<18)|(to_device?AES_ENCRYPT:0);
     uint8_t initial_iv[16];
@@ -208,18 +208,20 @@ static void check_protected_resume(bool zero_first, bool to_device) {
     assert((state->ch[1].ctrl&ST_DONE) && !(state->ch[1].ctrl&ST_ERROR));
     record_ivs=false;fifo_write_hook=NULL;bh_scheduled=false;free(state);
 }
+/* a6: the A6's ring byte counter and pause (s5l8950.c sets "a6"); off, every board keeps its abort and BC. */
 static void check_uart_receive(uint64_t base, unsigned ports, unsigned port,
-                               unsigned version)
+                               unsigned version, bool a6)
 {
     S5L8930CDMAState *s = calloc(1, sizeof *s);
     const unsigned ch = 16;
     const size_t dst_offset = DST - S5L8930_DRAM_BASE;
     uint32_t rx = base + ((uint64_t)port << 20) + 0x24;
-    uint32_t budget = version < 2 ? 64 : 0x40000000;
+    uint32_t budget = a6 ? 0x40000000 : 64;
     s->num_channels = 44;
     s->uart_base = base;
     s->uart_ports = ports;
     s->version = version;
+    s->a6 = a6;
     for (unsigned i = 0; i < 44; i++) { s->irq[i] = i; }
     irq_level[ch] = 0;
     memset(DRAM + dst_offset, 0xa5, 64);
@@ -242,7 +244,7 @@ static void check_uart_receive(uint64_t base, unsigned ports, unsigned port,
     /* Native v2+ position snapshot pauses, then restores CSR without GO. */
     uint32_t saved_csr = cdma_read(s, CHREG(ch, CH_CTRL), 4);
     cdma_write(s, CHREG(ch, CH_CTRL), 0x18 | CTRL_HOLD | CTRL_ABORT, 4);
-    if (version >= 2) {
+    if (a6) {
         assert((s->ch[ch].ctrl & (ST_RUNNING | ST_HELD)) == (ST_RUNNING | ST_HELD));
         assert(!(s->ch[ch].ctrl & ST_ABORTED));
     } else {
@@ -252,7 +254,7 @@ static void check_uart_receive(uint64_t base, unsigned ports, unsigned port,
     assert(cdma_read(s, CHREG(ch, CH_REMAIN), 4) == budget);
     assert(cdma_read(s, CHREG(ch, CH_ADDR), 4) == DST);
     assert(cdma_read(s, CHREG(ch, CH_DESC), 4) == DESC);
-    if (version >= 2) {
+    if (a6) {
         cdma_write(s, CHREG(ch, CH_CTRL), saved_csr, 4);
         assert((s->ch[ch].ctrl & ST_RUNNING) && !(s->ch[ch].ctrl & ST_HELD));
     }
@@ -276,9 +278,9 @@ static void check_uart_receive(uint64_t base, unsigned ports, unsigned port,
 }
 
 int main(void) {
-    check_uart_receive(S5L8930_UART_BASE(0), 6, 0, 1);
-    check_uart_receive(S5L8930_UART_BASE(0), 6, 0, 2);
-    check_uart_receive(0x32500000, 7, 3, 5); /* native N42 UART3 / CDMA16 */
+    check_uart_receive(S5L8930_UART_BASE(0), 6, 0, 1, false);
+    check_uart_receive(S5L8930_UART_BASE(0), 6, 0, 2, false);
+    check_uart_receive(0x32500000, 7, 3, 5, true); /* native N42 UART3 / CDMA16 */
     check_protected_resume(false,true);
     check_protected_resume(true,true);
     check_protected_resume(false,false);
@@ -326,6 +328,7 @@ int main(void) {
     S5L8930CDMAState *file_crypto = calloc(1, sizeof *file_crypto);
     file_crypto->num_channels = S5L8930_CDMA_CHANNELS;
     file_crypto->nand_file_aes = true;
+    file_crypto->a6 = true;   /* IV descriptors load the context on the A6 only */
     AESContext *file_aes = &file_crypto->aes[2];
     file_aes->setup = (5 << 8) | AES_ENABLE | AES_KEY_CUSTOM | (2 << 18);
     wr32(DESC, DESC + 32); wr32(DESC + 4, DESC_IV);
@@ -427,6 +430,7 @@ int main(void) {
      * descriptor progress is committed, without duplicating either burst. */
     S5L8930CDMAState *s4 = calloc(1, sizeof *s4);
     s4->num_channels = S5L8930_CDMA_CHANNELS;
+    s4->a6 = true;   /* the deferred resume is the A6's ("a6"); other boards keep their run */
     resume_state = s4;
     s5l8930_cdma_set_source((DeviceState *)s4, FIFO_A, 4, burst_avail, NULL);
     for (unsigned i = 0; i < 4096; i++) DRAM[SRC - S5L8930_DRAM_BASE + i] = (i * 71) ^ (i >> 8);
@@ -487,7 +491,7 @@ int main(void) {
      * Empty FIFO, a partial descriptor, and crossing to the next one must
      * consume exactly the bytes read, rather than replace BC with800. */
     S5L8930CDMAState *s7 = calloc(1, sizeof *s7);
-    s7->num_channels = 44; s7->version = 5;
+    s7->num_channels = 44; s7->version = 5; s7->a6 = true;
     s7->uart_base = 0x32500000; s7->uart_ports = 7;
     for (int i = 0; i < CDMA_CHANNELS; i++) s7->irq[i] = i;
     s5l8930_cdma_set_source((DeviceState *)s7, 0x32600024, 4, uart_avail, NULL);

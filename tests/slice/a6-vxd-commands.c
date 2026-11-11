@@ -49,8 +49,8 @@ int main(void)
     mem[0x900 / 4 + 6] = 0x100;
     VXDRender a = {0}, b = {0};
     assert(
-        vxd_parse_commands(0x123000, 0x100, G_N_ELEMENTS(commands), &a, false));
-    assert(vxd_parse_render(0x123000, 0x900, &b));
+        vxd_parse_commands(0x123000, 0x100, G_N_ELEMENTS(commands), &a, false, false));
+    assert(vxd_parse_render(0x123000, 0x900, &b, false));
     assert(a.row_stride == 1920);
     assert(!memcmp(&a, &b, sizeof(a)));
     assert(a.fe[0] == 0xfeed && a.sr_offset == 7);
@@ -83,8 +83,12 @@ int main(void)
                      CMD_COMPLETION << 28};
     memcpy((char *)mem + 0x100, a6, sizeof(a6));
     mem[0x900 / 4 + 1] = G_N_ELEMENTS(a6);
-    assert(vxd_parse_render(0x123000, 0x900, &b));
+    assert(vxd_parse_render(0x123000, 0x900, &b, true));
     assert(!memcmp(&a, &b, sizeof(a)));
+    /* AppleVXD375's boards ("a6" off) step over the commands only AppleVXD390 sends, as they always did */
+    VXDRender old = {0};
+    vxd_parse_render(0x123000, 0x900, &old, false);
+    assert(memcmp(&a, &old, sizeof(a)));
     uint32_t packed[] = {CMD_HEADER_EXT << 28,
                          0x1009,
                          0,
@@ -123,15 +127,15 @@ int main(void)
     assert(!vxd_parse_packed(0x123000, 0x900, 8,
                              &b)); /* an LLDMA is not a packed header */
     assert(!vxd_parse_commands(0x123000, 0x100, 7, &b,
-                               false)); /* truncated extended header */
+                               false, true)); /* truncated extended header */
     assert(!vxd_parse_commands(0x123000, 0x100, 13, &b,
-                               false)); /* truncated inline registers */
-    assert(!vxd_parse_commands(0x123000, 0x100, 0, &a, false));
-    assert(!vxd_parse_commands(0x123000, 0x100, 0x10000, &a, false));
-    assert(!vxd_parse_commands(0x999000, 0x100, 5, &a, false));
-    assert(!vxd_parse_commands(0x123000, sizeof(mem) - 4, 5, &a, false));
+                               false, true)); /* truncated inline registers */
+    assert(!vxd_parse_commands(0x123000, 0x100, 0, &a, false, false));
+    assert(!vxd_parse_commands(0x123000, 0x100, 0x10000, &a, false, false));
+    assert(!vxd_parse_commands(0x999000, 0x100, 5, &a, false, false));
+    assert(!vxd_parse_commands(0x123000, sizeof(mem) - 4, 5, &a, false, false));
     mem[0x900 / 4 + 2] = 0;
-    assert(!vxd_parse_render(0x123000, 0x900, &a));
+    assert(!vxd_parse_render(0x123000, 0x900, &a, false));
     puts(
         "ok: legacy, A6 LLDMA and packed DEVA command streams, extended stride");
 }

@@ -1689,7 +1689,8 @@ static EHCIQueue *ehci_state_fetchqh(EHCIState *ehci, int async)
      * that inactive overlay: interpreting address zero as a transfer can
      * spuriously reset the entire HC and strand valid asynchronous work. */
     if ((q->qh.token & QTD_TOKEN_HALT) ||
-        (!async && get_field(q->qh.epchar, QH_EPCHAR_EPS) == EHCI_QH_EPS_HIGH &&
+        (ehci->skip_idle_periodic_qh && !async &&
+         get_field(q->qh.epchar, QH_EPCHAR_EPS) == EHCI_QH_EPS_HIGH &&
          !(q->qh.epcap & QH_EPCAP_SMASK_MASK))) {
         ehci_set_state(ehci, async, EST_HORIZONTALQH);
 

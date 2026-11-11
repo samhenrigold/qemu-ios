@@ -1031,6 +1031,14 @@ static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
     h->bound_framebuffer = sr32(r);
     if (!h->fbo_drawable) h->fbo_drawable = g_hash_table_new(g_direct_hash, g_direct_equal);
     snap_get_map(r, h->fbo_drawable, 0, 0);
+    if (version < 5) {
+        /* Before 5 the map was a set (each value its own key): which renderbuffer a drawable has is unknown, 0. */
+        GHashTableIter it;
+        g_hash_table_iter_init(&it, h->fbo_drawable);
+        while (g_hash_table_iter_next(&it, NULL, NULL)) {
+            g_hash_table_iter_replace(&it, NULL);
+        }
+    }
     h->unpack_alignment = sr32(r);
     h->unpack_row_bytes = sr32(r);
     h->pack_alignment = sr32(r);
