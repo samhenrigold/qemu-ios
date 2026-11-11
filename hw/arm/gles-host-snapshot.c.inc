@@ -23,7 +23,7 @@
  */
 
 #define SNAP_MAGIC   0x534c4731u     /* "1GLS" */
-#define SNAP_VERSION 6
+#define SNAP_VERSION 7                /* 7: surfaces' page lists; 3 to 6 load without them */
 #define SNAP_SCAN_GAP 256            /* names probed past the last live one */
 
 static uint32_t gles_group_handle(GLESGroup *group);
@@ -1059,19 +1059,89 @@ static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
 
 /* ---- sections ------------------------------------------------------------- */
 
+/*
+ * Each surface's page list, after the tables (v5). Without it a restored surface wrote its frames
+ * back through the MMU of whatever process flushed them, until a bind found its pages again, and
+ * CoreAnimation binds the surfaces it composites into once: the iPod touch 2G's restored screen kept
+ * the frame it was saved with while SpringBoard went on drawing (LightTouchMac's sessions resume).
+ * The pages are RAM offsets, which a snapshot restores on the same machine.
+ */
+static void snap_put_pages(SnapW *w, GHashTable *surfaces)
+{
+    GHashTableIter it;
+    gpointer k, v;
+    sw32(w, surfaces ? g_hash_table_size(surfaces) : 0);
+    if (!surfaces) return;
+    g_hash_table_iter_init(&it, surfaces);
+    while (g_hash_table_iter_next(&it, &k, &v)) {
+        GLESSurface *s = v;
+        sw32(w, GPOINTER_TO_UINT(k));
+        swbytes(w, s->pages, s->npages * sizeof(ram_addr_t));
+    }
+}
+
+/* Whether [ram, ram + page) is RAM; its region is then logged as a bind logs it. */
+static bool snap_page_ram(ram_addr_t ram)
+{
+    RAMBlock *block;
+
+    if (ram & ~TARGET_PAGE_MASK) return false;
+    RCU_READ_LOCK_GUARD();
+    RAMBLOCK_FOREACH(block) {
+        if (ram >= block->offset && ram - block->offset + TARGET_PAGE_SIZE <= block->used_length) {
+            gles_log_region(block->mr);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Gives each surface in `surfaces` its saved pages: as many as its rows span, each in RAM. */
+static void snap_get_pages(SnapR *r, GHashTable *surfaces)
+{
+    uint32_t n = sr32(r);
+    for (uint32_t i = 0; i < n && !r->bad; i++) {
+        uint32_t k = sr32(r), len;
+        const uint8_t *p = srbytes(r, &len);
+        GLESSurface *s = g_hash_table_lookup(surfaces, GUINT_TO_POINTER(k));
+        unsigned count = len / sizeof(ram_addr_t);
+        if (!p || !s || len % sizeof(ram_addr_t)) {
+            r->bad = true;
+            break;
+        }
+        if (!count) continue;
+        bool nv12 = s->format == 0x34323076 || s->format == 0x34323066;
+        if (count != gles_surface_npages(s->base, s->stride, s->width, s->height,
+                                         gles_surface_bpp(s->format), nv12)) {
+            r->bad = true;
+            break;
+        }
+        GLESSurface *with = g_realloc(s, sizeof(GLESSurface) + len);
+        memcpy(with->pages, p, len);
+        with->npages = count;
+        for (unsigned j = 0; j < count && !r->bad; j++) {
+            if (!snap_page_ram(with->pages[j])) r->bad = true;
+        }
+        if (r->bad) with->npages = 0;
+        g_hash_table_steal(surfaces, GUINT_TO_POINTER(k));
+        g_hash_table_insert(surfaces, GUINT_TO_POINTER(k), with);
+    }
+}
+
 /* The namespace-wide tables of a group, or of a context with no group. */
 static void snap_put_tables(SnapW *w, GHashTable *buffers, GHashTable *surfaces,
                             GHashTable *rb_sized, GHashTable *pvrtc, uint32_t next_buffer)
 {
     sw32(w, next_buffer);
     snap_put_buffers(w, buffers);
-    snap_put_map(w, surfaces, GLES_SURFACE_SNAP_BYTES);    /* not the page list: re-read at the next bind */
+    snap_put_map(w, surfaces, GLES_SURFACE_SNAP_BYTES);
     snap_put_map(w, rb_sized, 0);
     snap_put_map(w, pvrtc, sizeof(GLESPVRTC));
+    snap_put_pages(w, surfaces);
 }
 
-/* A surface gles_bind_surface would have accepted. Its page list is not saved:
- * npages 0 re-reads it through the MMU at the next bind. */
+/* A surface gles_bind_surface would have accepted, its page list still to come (npages 0, as a
+ * v3 or v4 snapshot leaves it: re-read through the MMU until the next bind). */
 static bool snap_surface_ok(GLESSurface *s)
 {
     bool nv12 = s->format == 0x34323076 || s->format == 0x34323066;
@@ -1097,6 +1167,7 @@ static uint32_t snap_get_tables(SnapR *r, GHashTable *buffers, GHashTable *surfa
     }
     snap_get_map(r, rb_sized, 0, 0);
     snap_get_map(r, pvrtc, version >= 5 ? sizeof(GLESPVRTC) : offsetof(GLESPVRTC, immutable_levels), sizeof(GLESPVRTC));
+    if (version >= 7) snap_get_pages(r, surfaces);
     return next;
 }
 
