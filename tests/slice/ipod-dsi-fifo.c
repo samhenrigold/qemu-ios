@@ -30,6 +30,16 @@ typedef IPodTouchMIPIDSIState DeviceState;
 int main(void) {
     IPodTouchMIPIDSIState s={.lanes=2,.panel_id=0x00a1d13c,.panel_id_len=3}; /* the properties' defaults: the iPod 2G panel */
     assert(!RD(REG_RXFIFO) && !RD(REG_INTSRC));
+    /* N42's native driver uses read/modify/write to request the HS clock.
+     * Preserve divider/enable fields while toggling the request, and keep
+     * STATUS consistent with the resulting clock state. */
+    WR(REG_CLKCTRL, 0x00f01234);
+    WR(REG_CLKCTRL, RD(REG_CLKCTRL) | rDSIM_CLKCTRL_TxRequestHsClk);
+    assert(RD(REG_CLKCTRL) == 0x80f01234);
+    assert(RD(REG_STATUS) & rDSIM_STATUS_TxReadyHsClk);
+    WR(REG_CLKCTRL, RD(REG_CLKCTRL) & ~rDSIM_CLKCTRL_TxRequestHsClk);
+    assert(RD(REG_CLKCTRL) == 0x00f01234);
+    assert(!(RD(REG_STATUS) & rDSIM_STATUS_TxReadyHsClk));
     for (unsigned direct=0; direct<2; direct++) {
         (void)direct;
         ipod_touch_mipi_dsi_reset(&s);

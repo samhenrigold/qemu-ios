@@ -12,7 +12,7 @@
  * SLICE hw/arm/gles-host.c range /* The ES half-float type | /* ---------------------------------------------------------------- refusals
  * SLICE hw/arm/gles-host.c range static const uint8_t *gles_zeroed( | /*\n * Report a draw the host rejected
  * SLICE hw/arm/gles-host.c range static GLESPVRTC *gles_pvrtc_texture( | static int64_t gles_pvrtc_upload(
- * SLICE hw/arm/gles-host.c fn gles_texture_object gles_texparam_nparams
+ * SLICE hw/arm/gles-host.c fn gles_texture_object gles_texparam_nparams gles_tex_storage_2d
  * SLICE:cases hw/arm/gles-host.c range case GLES_SLOT_TEX_IMAGE_2D: { | case GLES_SLOT_TEX_SUB_IMAGE_2D: {
  * CFLAGS -I$ROOT/include -Wno-pointer-to-int-cast -Wno-pointer-bool-conversion -framework OpenGL -framework VideoToolbox -framework CoreVideo -framework CoreMedia -framework CoreFoundation
  * PKG glib-2.0
@@ -116,6 +116,29 @@ int main(void) {
     minified(p);
     printf("GL_GENERATE_MIPMAP, re-upload: %d,%d,%d\n", p[0], p[1], p[2]);
     assert(abs(p[0] - 128) <= 8 && p[1] == 255 && abs(p[2] - 128) <= 8);
+
+    /* Immutable storage allocates the complete declared chain. Uploading
+     * texels and generating its mips must keep that chain's declared limit. */
+    GLuint immutable;
+    glGenTextures(1, &immutable); glBindTexture(GL_TEXTURE_2D, immutable);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    uint32_t storage[5] = {GL_TEXTURE_2D, 4, GL_RGBA8, 8, 8};
+    assert(!gles_tex_storage_2d(storage) && !gh.error);
+    for (unsigned level = 0; level < 4; level++) {
+        GLint width;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &width);
+        assert(width == (8 >> level));
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, guest);
+    assert(!gles_generate_mipmap(GL_TEXTURE_2D) && !gh.error);
+    GLint cap; glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &cap); assert(cap == 3);
+    minified(p); assert(abs(p[0] - 128) <= 8 && p[1] == 255 && abs(p[2] - 128) <= 8);
+    assert(dispatch(GLES_SLOT_TEX_IMAGE_2D, a) != 0 && gh.error == GL_INVALID_OPERATION);
+    gh.error = 0;
+    assert(gles_tex_storage_2d(storage) != 0 && gh.error == GL_INVALID_OPERATION);
+    gh.error = 0;
+    puts("PASS: immutable 2D storage allocates all levels, accepts subimages and rejects redefinition");
 
     assert(glGetError() == GL_NO_ERROR);
     CGLSetCurrentContext(NULL);

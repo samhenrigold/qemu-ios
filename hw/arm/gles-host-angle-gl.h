@@ -100,6 +100,7 @@
     F(glGetRenderbufferParameteriv) \
     F(glGetRenderbufferParameterivOES) \
     F(glGetShaderInfoLog) \
+    F(glGetShaderSource) \
     F(glGetShaderiv) \
     F(glGetString) \
     F(glGetTexEnvfv) \
@@ -107,6 +108,9 @@
     F(glGetTexParameterfv) \
     F(glGetTexParameteriv) \
     F(glGetUniformLocation) \
+    F(glGetUniformfv) \
+    F(glGetVertexAttribPointerv) \
+    F(glGetVertexAttribfv) \
     F(glGetVertexAttribiv) \
     F(glIsEnabled) \
     F(glIsFenceNV) \
@@ -300,6 +304,7 @@ GLES_ANGLE_FUNCTIONS(GLES_ANGLE_DECLARE)
 #define glGetRenderbufferParameteriv (*gles_angle_fn_glGetRenderbufferParameteriv)
 #define glGetRenderbufferParameterivOES (*gles_angle_fn_glGetRenderbufferParameterivOES)
 #define glGetShaderInfoLog (*gles_angle_fn_glGetShaderInfoLog)
+#define glGetShaderSource (*gles_angle_fn_glGetShaderSource)
 #define glGetShaderiv (*gles_angle_fn_glGetShaderiv)
 #define glGetString (*gles_angle_fn_glGetString)
 #define glGetTexEnvfv (*gles_angle_fn_glGetTexEnvfv)
@@ -307,6 +312,9 @@ GLES_ANGLE_FUNCTIONS(GLES_ANGLE_DECLARE)
 #define glGetTexParameterfv (*gles_angle_fn_glGetTexParameterfv)
 #define glGetTexParameteriv (*gles_angle_fn_glGetTexParameteriv)
 #define glGetUniformLocation (*gles_angle_fn_glGetUniformLocation)
+#define glGetUniformfv (*gles_angle_fn_glGetUniformfv)
+#define glGetVertexAttribPointerv (*gles_angle_fn_glGetVertexAttribPointerv)
+#define glGetVertexAttribfv (*gles_angle_fn_glGetVertexAttribfv)
 #define glGetVertexAttribiv (*gles_angle_fn_glGetVertexAttribiv)
 #define glIsEnabled (*gles_angle_fn_glIsEnabled)
 #define glIsFenceNV (*gles_angle_fn_glIsFenceNV)

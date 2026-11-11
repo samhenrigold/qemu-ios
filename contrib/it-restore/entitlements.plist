@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <!-- Our restore helper needs native disk access in the restore sandbox. -->
+    <key>com.apple.private.security.disk-device-access</key>
+    <true/>
+</dict>
+</plist>

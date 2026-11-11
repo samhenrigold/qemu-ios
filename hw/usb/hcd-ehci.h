@@ -261,6 +261,7 @@ struct EHCIState {
     MemoryRegion mem_ports;
     int companion_count;
     bool companion_enable;
+    bool skip_idle_periodic_qh;   /* "skip-idle-periodic-qh": the A6's (s5l8950.c); off, as every board was qualified */
     uint16_t capsbase;
     uint16_t opregbase;
     uint16_t portscbase;

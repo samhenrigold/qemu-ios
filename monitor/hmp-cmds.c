@@ -263,6 +263,14 @@ void hmp_logfile(Monitor *mon, const QDict *qdict)
     }
 }
 
+void hmp_logfilter(Monitor *mon, const QDict *qdict)
+{
+    Error *err = NULL;
+
+    qemu_set_dfilter_ranges(qdict_get_str(qdict, "ranges"), &err);
+    hmp_handle_error(mon, err);
+}
+
 void hmp_log(Monitor *mon, const QDict *qdict)
 {
     int mask;

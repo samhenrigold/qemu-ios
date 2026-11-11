@@ -7,6 +7,7 @@
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
 #include "qemu/timer.h"
+#include "trace.h"
 
 /* 7E18 AppleM2ScalerCSCDriver: 0xc0732388 programs formats, 0xc07323f0
  * source geometry, 0xc073246c destination geometry, 0xc0730288 acknowledges
@@ -257,23 +258,25 @@ static bool scaler_convert(IPodScalerState *s)
 {
     uint32_t *r = s->regs;
     unsigned w = (r[0x24 / 4] >> 16) & 0x1fff, h = r[0x24 / 4] & 0x1fff;
+    unsigned dw = (r[0x40 / 4] >> 16) & 0x1fff, dh = r[0x40 / 4] & 0x1fff;
     unsigned ys = r[0x1c / 4] & 0xffff, uvs = r[0x1c / 4] >> 16;
     unsigned fmt = r[0x30 / 4] & 7, bpp = fmt == 4 ? 2 : 4;
     unsigned ds = (r[0x3c / 4] & 0xffff) * bpp;
     uint32_t ybase = r[0x14 / 4], uvbase = r[0x18 / 4], dest = r[0x34 / 4];
     bool stiled = r[0x10 / 4] & 0x400, dtiled = r[0x30 / 4] & 0x400;
-    /* ponytail: implement the observed unscaled NV12-to-RGB movie path first;
-     * scaling needs the programmed polyphase filters, not guessed sampling.
-     * Either side tiled or linear (+0x10/+0x30 bit 10), addressed as scaler_rgb's. */
-    if (!w || !h || w > 2048 || h > 2048 || (w | h) & 1 ||
+    /* Match the existing RGB/NV12 nearest-sample scaling approximation.
+     * Both planes retain their independent strides and tiling. Native Photos
+     * uses this path to fit decoded camera images to the screen. */
+    if (!w || !h || w > 4096 || h > 4096 || (w | h) & 1 ||
+        !dw || !dh || dw > 4096 || dh > 4096 ||
         (r[0x10 / 4] & ~0x400u) || (fmt != 4 && fmt != 6) || (r[0x30 / 4] & ~0x407u) ||
-        r[0x20 / 4] || r[0x24 / 4] != r[0x40 / 4] || ys < w || uvs < w || ds < w * bpp ||
+        r[0x20 / 4] || ((r[0x58 / 4] & 3) && (w != dw || h != dh)) || ys < w || uvs < w || ds < dw * bpp ||
         (!s->xlate && (!scaler_range(ybase, ys, h, w) ||
                        !scaler_range(uvbase, uvs, h / 2, w) ||
-                       !scaler_range(dest, ds, h, w * bpp)))) return false;
+                       !scaler_range(dest, ds, dh, dw * bpp)))) return false;
     g_autofree uint8_t *yplane = g_malloc((size_t)w * h);
     g_autofree uint8_t *uvplane = g_malloc((size_t)w * h / 2);
-    g_autofree uint8_t *row = g_malloc(w * bpp);
+    g_autofree uint8_t *row = g_malloc(dw * bpp);
     /* Snapshot sources before writing: IOSurface transfers may alias. Through the DART on the S5L8920 (3GS). */
     for (unsigned y = 0; y < h; y++) {
         if (!scaler_read_bus(s, scaler_row(ybase, y, ys, ROUND_UP(w, 256), stiled), yplane + y * w, w) ||
@@ -287,11 +290,18 @@ static bool scaler_convert(IPodScalerState *s)
         unsigned v = r[0x220 / 4 + i] & 0xfff;
         matrix[i] = (v ^ 0x800) - 0x800;
     }
-    for (unsigned y = 0; y < h; y++) {
-        for (unsigned x = 0; x < w; x++) {
-            int in[] = { yplane[y * w + x] - ((r[1] & 0x200) ? 16 : 0),
-                         uvplane[(y / 2) * w + (x & ~1u)] - 128,
-                         uvplane[(y / 2) * w + (x & ~1u) + 1] - 128 };
+    /* A scaled turn (+0x58 bits 0-1, which scaler_rgb honors) is refused above, as every scaled transfer was
+     * before scaling came in; a 1:1 one is converted unturned, as the movie path always did. An unscaled side
+     * steps by one whatever +0x50/+0x54 hold. */
+    uint32_t sx = w == dw ? 0x10000 : r[0x50 / 4] ? r[0x50 / 4] : ((uint64_t)w << 16) / dw;
+    uint32_t sy = h == dh ? 0x10000 : r[0x54 / 4] ? r[0x54 / 4] : ((uint64_t)h << 16) / dh;
+    for (unsigned y = 0; y < dh; y++) {
+        unsigned v = MIN(((uint64_t)y * sy) >> 16, h - 1);
+        for (unsigned x = 0; x < dw; x++) {
+            unsigned u = MIN(((uint64_t)x * sx) >> 16, w - 1);
+            int in[] = { yplane[v * w + u] - ((r[1] & 0x200) ? 16 : 0),
+                         uvplane[(v / 2) * w + (u & ~1u)] - 128,
+                         uvplane[(v / 2) * w + (u & ~1u) + 1] - 128 };
             unsigned rgb[3];
             for (unsigned c = 0; c < 3; c++) {
                 int v = (matrix[c * 3] * in[0] + matrix[c * 3 + 1] * in[1] +
@@ -306,7 +316,7 @@ static bool scaler_convert(IPodScalerState *s)
                 row[x * 4 + 2] = rgb[0]; row[x * 4 + 3] = 255;
             }
         }
-        if (!scaler_write_bus(s, scaler_row(dest, y, ds, ROUND_UP(w * bpp, 256), dtiled), row, w * bpp)) {
+        if (!scaler_write_bus(s, scaler_row(dest, y, ds, ROUND_UP(dw * bpp, 256), dtiled), row, dw * bpp)) {
             return false;
         }
     }
@@ -346,6 +356,7 @@ static void scaler_complete(void *opaque)
 static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     IPodScalerState *s = opaque;
+    trace_ipod_scaler_reg_write(s->iomem.addr, off, value);
     if (off == 0xc) s->regs[3] &= ~value;
     else s->regs[off / 4] = value;
     if (off == 4 && (value & 2)) {
@@ -359,7 +370,11 @@ static void scaler_write(void *opaque, hwaddr off, uint64_t value, unsigned size
             timer_del(s->done);
             s->regs[3] |= 1;
         }
-        if (!scaler_convert(s) && !scaler_rgb(s) && !scaler_nv12(s)) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
+        bool converted = scaler_convert(s) || scaler_rgb(s) || scaler_nv12(s);
+        trace_ipod_scaler_transfer(s->iomem.addr, s->sid, s->regs[4], s->regs[5],
+                                  s->regs[9], s->regs[12], s->regs[13],
+                                  s->regs[16], converted);
+        if (!converted) error_report("scaler: unsupported or invalid transfer %08x -> %08x geometry %08x -> %08x",
             s->regs[4], s->regs[12], s->regs[9], s->regs[16]);
         timer_mod(s->done, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MAX(20000, pixels));
     }

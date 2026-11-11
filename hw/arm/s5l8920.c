@@ -14,6 +14,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/arm/ios-boot-args.h"
 #include "hw/arm/machines-qom.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -303,6 +304,7 @@ struct S5L8920MachineState {
     bool usb_attached;                   /* usb-attached (default on) */
     int battery_level;                   /* battery-level, -1 = the PMU model's own */
     unsigned battery_charging;           /* battery-charging: 0 auto, 1 on, 2 off */
+    bool quiet_boot;                    /* omit -v in the RAM boot handoff */
     bool baseband_on;                    /* baseband=on: the fake modem behind spi2 */
     char *imei;                          /* the unit's IMEI, for that modem to report */
     DeviceState *bb_modem;
@@ -413,6 +415,11 @@ static void s5l8920_cpu_reset(void *opaque)
     if (image_len > size - KBOOT_TRAILER_LEN || load_pa < S5L8920_DRAM_BASE ||
         (uint64_t)load_pa + image_len > S5L8920_DRAM_BASE + s->board->dram_size) {
         error_report("s5l8920: kboot bundle does not fit in DRAM");
+        exit(1);
+    }
+    if (s->quiet_boot && !ios_boot_args_quiet((uint8_t *)data, image_len,
+                                             load_pa, bootargs_pa)) {
+        error_report("quiet-boot: invalid ARM32 boot command line");
         exit(1);
     }
     if (s->bb_modem) {
@@ -1560,8 +1567,20 @@ static void s5l8920_set_battery_charging(Object *obj, const char *value, Error *
     error_setg(errp, "battery-charging must be auto, on or off");
 }
 
+static bool s5l8920_get_quiet_boot(Object *obj, Error **errp)
+{
+    return S5L8920_MACHINE(obj)->quiet_boot;
+}
+
+static void s5l8920_set_quiet_boot(Object *obj, bool value, Error **errp)
+{
+    S5L8920_MACHINE(obj)->quiet_boot = value;
+}
+
 static void s5l8920_instance_init(Object *obj)
 {
+    object_property_add_bool(obj, "quiet-boot", s5l8920_get_quiet_boot,
+                             s5l8920_set_quiet_boot);
     S5L8920MachineState *s = S5L8920_MACHINE(obj);
 
     s->wifi = true;

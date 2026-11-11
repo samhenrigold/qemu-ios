@@ -284,6 +284,19 @@ SRST
 ERST
 
     {
+        .name       = "logfilter",
+        .args_type  = "ranges:s",
+        .params     = "ranges",
+        .help       = "set CPU log address ranges using the -dfilter syntax",
+        .cmd        = hmp_logfilter,
+    },
+
+SRST
+``logfilter`` *ranges*
+  Set CPU log address ranges using the same syntax as ``-dfilter``.
+ERST
+
+    {
         .name       = "trace-event",
         .args_type  = "name:s,option:b,vcpu:i?",
         .params     = "name on|off [vcpu]",

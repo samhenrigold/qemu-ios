@@ -12,6 +12,9 @@
 #include <stdlib.h>
 extern long write(int, const void *, unsigned long);
 extern int unlink(const char *);
+extern int rmdir(const char *);
+extern char *mkdtemp(char *);
+extern CFDataRef CFPropertyListCreateData(CFAllocatorRef, CFTypeRef, long, unsigned long, void *);
 
 extern CFTypeRef CFDictionaryGetValue(CFDictionaryRef, const void *);
 const CFStringRef kMISValidationInfoValidatedByProfile =
@@ -128,6 +131,38 @@ int main(void) {
     CFDictionaryRef e = (CFDictionaryRef)CFDictionaryGetValue(six, entitlements_key);
     assert(e && CFDictionaryGetValue(e, __builtin___CFStringMakeConstantString("get-task-allow")) == kCFBooleanTrue);
     CFRelease(six);
+    // Modern installers pass the bundle directory, with XML or binary Info.
+    char bundle[] = "/tmp/appsync-bundle.XXXXXX";
+    assert(mkdtemp(bundle));
+    char exe[1200], infofile[1200];
+    snprintf(exe, sizeof exe, "%s/Test", bundle);
+    snprintf(infofile, sizeof infofile, "%s/Info.plist", bundle);
+    fd = open(exe, 0x601, 0700); // O_WRONLY|O_CREAT|O_TRUNC
+    assert(fd >= 0 && write(fd, m, sizeof m) == sizeof m); close(fd);
+    static const char plist[] = "<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Test</string></dict></plist>";
+    fd = open(infofile, 0x601, 0600);
+    assert(fd >= 0 && write(fd, plist, sizeof plist - 1) == sizeof plist - 1); close(fd);
+    CFStringRef bp = CFStringCreateWithCString(0, bundle, 0x08000100);
+    CFStringRef bi = 0; CFTypeRef be = 0;
+    signature_info(bp, &bi, &be);
+    assert(bi && be && CFStringGetCString(bi, got, sizeof got, 0x08000100));
+    assert(!strcmp(got, "com.example.harness"));
+    assert(CFDictionaryGetValue((CFDictionaryRef)be, __builtin___CFStringMakeConstantString("get-task-allow")) == kCFBooleanTrue);
+    CFRelease((CFTypeRef)bi); CFRelease(be);
+    // Binary bundle plists use the same bounded metadata resolution.
+    CFDataRef xml = CFDataCreate(0, (const unsigned char *)plist, sizeof plist - 1);
+    CFTypeRef parsed = CFPropertyListCreateFromXMLData(0, xml, 0, 0);
+    CFDataRef binary = CFPropertyListCreateData(0, parsed, 200, 0, 0);
+    assert(binary); fd = open(infofile, 0x401);
+    assert(write(fd, CFDataGetBytePtr(binary), CFDataGetLength(binary)) == CFDataGetLength(binary)); close(fd);
+    bi = 0; be = 0; signature_info(bp, &bi, &be); assert(bi && be);
+    CFRelease((CFTypeRef)bi); CFRelease(be);
+    CFRelease((CFTypeRef)binary); CFRelease(parsed); CFRelease((CFTypeRef)xml);
+    // Traversal is rejected even when it could resolve an executable outside.
+    static const char invalid[] = "<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>../Test</string></dict></plist>";
+    fd = open(infofile, 0x401); assert(write(fd, invalid, sizeof invalid - 1) == sizeof invalid - 1); close(fd);
+    bi = 0; be = 0; signature_info(bp, &bi, &be); assert(!bi && !be);
+    CFRelease((CFTypeRef)bp); unlink(infofile); unlink(exe); rmdir(bundle);
     // Load commands past the first 4 KiB (Chrome 21's are 4556 bytes, its signature's last).
     static unsigned char big[8192];
     unsigned *bw = (unsigned *)big;

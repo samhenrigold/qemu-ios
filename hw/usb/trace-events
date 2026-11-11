@@ -368,3 +368,9 @@ canokey_handle_data_out(uint8_t ep_out, uint32_t out_len) "ep %d len %d"
 canokey_handle_data_in(uint8_t ep_in, uint32_t in_len) "ep %d len %d"
 canokey_realize(void)
 canokey_unrealize(void)
+
+# dev-mdm9x15.c
+usb_mdm9x15_serial_reset(bool reliable_link) "reliable_link %d"
+usb_mdm9x15_uart(bool transmit, size_t len, const char *bytes) "tx %d len %zu bytes %s"
+usb_mdm9x15_qmi(unsigned iface, int outcome, size_t len, const char *bytes) "iface %u outcome %d len %zu bytes %s"
+usb_mdm9x15_registration(int status, int64_t now, int64_t due, int cfun, unsigned flags, int pin_left) "status %d now %" PRId64 " due %" PRId64 " cfun %d flags 0x%x pin_left %d"

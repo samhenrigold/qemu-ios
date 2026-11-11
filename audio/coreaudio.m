@@ -24,6 +24,7 @@
 
 #include "qemu/osdep.h"
 #include <CoreAudio/CoreAudio.h>
+#include <AudioToolbox/AudioQueue.h>
 #include <pthread.h>            /* pthread_X */
 
 #include "qemu/main-loop.h"
@@ -1030,14 +1031,144 @@ static void coreaudio_enable_out(HWVoiceOut *hw, bool enable)
     update_out_device_playback_state(core);
 }
 
+typedef struct CoreaudioVoiceIn {
+    HWVoiceIn hw;
+    AudioQueueRef queue;
+    AudioQueueBufferRef buffers[3];
+    pthread_mutex_t mutex;
+    uint8_t *ring;
+    size_t capacity, head, tail, level;
+    bool enabled;
+} CoreaudioVoiceIn;
+
+static void coreaudio_capture(void *opaque, AudioQueueRef queue,
+                             AudioQueueBufferRef buffer,
+                             const AudioTimeStamp *time,
+                             UInt32 packets, const AudioStreamPacketDescription *descs)
+{
+    CoreaudioVoiceIn *core = opaque;
+    const uint8_t *source = buffer->mAudioData;
+    size_t left = buffer->mAudioDataByteSize;
+
+    pthread_mutex_lock(&core->mutex);
+    while (core->enabled && left && core->level < core->capacity) {
+        size_t count = MIN(left, MIN(core->capacity - core->level,
+                                    core->capacity - core->head));
+        memcpy(core->ring + core->head, source, count);
+        core->head = (core->head + count) % core->capacity;
+        core->level += count;
+        source += count;
+        left -= count;
+    }
+    pthread_mutex_unlock(&core->mutex);
+    /* AudioQueue owns conversion from the host device to this PCM format.
+     * Keep buffers queued across pause/resume; never allocate on its callback. */
+    AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+}
+
+static size_t coreaudio_read(HWVoiceIn *hw, void *buffer, size_t size)
+{
+    CoreaudioVoiceIn *core = (CoreaudioVoiceIn *)hw;
+    uint8_t *destination = buffer;
+    size_t done = 0;
+
+    pthread_mutex_lock(&core->mutex);
+    while (done < size && core->level) {
+        size_t count = MIN(size - done, MIN(core->level, core->capacity - core->tail));
+        memcpy(destination + done, core->ring + core->tail, count);
+        core->tail = (core->tail + count) % core->capacity;
+        core->level -= count;
+        done += count;
+    }
+    pthread_mutex_unlock(&core->mutex);
+    return done;
+}
+
+static int coreaudio_init_in(HWVoiceIn *hw, audsettings *requested)
+{
+    CoreaudioVoiceIn *core = (CoreaudioVoiceIn *)hw;
+    audsettings settings = *requested;
+    settings.fmt = AUDIO_FORMAT_S16;
+    settings.big_endian = false;
+    if (settings.nchannels < 1 || settings.nchannels > 2 || settings.freq <= 0) {
+        return -1;
+    }
+    AudioStreamBasicDescription format = {
+        .mSampleRate = settings.freq,
+        .mFormatID = kAudioFormatLinearPCM,
+        .mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+        .mBytesPerPacket = settings.nchannels * 2,
+        .mFramesPerPacket = 1,
+        .mBytesPerFrame = settings.nchannels * 2,
+        .mChannelsPerFrame = settings.nchannels,
+        .mBitsPerChannel = 16,
+    };
+    if (pthread_mutex_init(&core->mutex, NULL)) {
+        return -1;
+    }
+    core->capacity = 4096 * format.mBytesPerFrame;
+    core->ring = g_malloc(core->capacity);
+    OSStatus status = AudioQueueNewInput(&format, coreaudio_capture, core,
+                                         NULL, NULL, 0, &core->queue);
+    for (unsigned i = 0; !status && i < ARRAY_SIZE(core->buffers); i++) {
+        status = AudioQueueAllocateBuffer(core->queue, 512 * format.mBytesPerFrame,
+                                           &core->buffers[i]);
+        if (!status) {
+            status = AudioQueueEnqueueBuffer(core->queue, core->buffers[i], 0, NULL);
+        }
+    }
+    if (status) {
+        error_report("coreaudio: Could not initialize microphone (status %d)", (int)status);
+        if (core->queue) {
+            AudioQueueDispose(core->queue, true);
+        }
+        core->queue = NULL;
+        g_free(core->ring);
+        pthread_mutex_destroy(&core->mutex);
+        return -1;
+    }
+    audio_pcm_init_info(&hw->info, &settings);
+    hw->samples = 4096;
+    return 0;
+}
+
+static void coreaudio_enable_in(HWVoiceIn *hw, bool enabled)
+{
+    CoreaudioVoiceIn *core = (CoreaudioVoiceIn *)hw;
+    pthread_mutex_lock(&core->mutex);
+    core->enabled = enabled;
+    core->head = core->tail = core->level = 0;
+    pthread_mutex_unlock(&core->mutex);
+    OSStatus status = enabled ? AudioQueueStart(core->queue, NULL) : AudioQueuePause(core->queue);
+    if (status) {
+        error_report("coreaudio: Could not %s microphone (status %d)",
+                     enabled ? "start" : "pause", (int)status);
+    }
+}
+
+static void coreaudio_fini_in(HWVoiceIn *hw)
+{
+    CoreaudioVoiceIn *core = (CoreaudioVoiceIn *)hw;
+    /* Synchronous disposal retires callbacks before their ring/lock is freed. */
+    AudioQueueDispose(core->queue, true);
+    pthread_mutex_destroy(&core->mutex);
+    g_free(core->ring);
+}
+
 static void audio_coreaudio_class_init(ObjectClass *klass, const void *data)
 {
     AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_CLASS(klass);
 
     k->max_voices_out = 1;
+    /* Off: every board opens a capture voice, and the app has no microphone usage description. Turn it on with
+     * that string and qualified capture (docs/n42/README.md, Known limitations). */
     k->max_voices_in = 0;
     k->voice_size_out = sizeof(CoreaudioVoiceOut);
-    k->voice_size_in = 0;
+    k->voice_size_in = sizeof(CoreaudioVoiceIn);
+    k->init_in = coreaudio_init_in;
+    k->fini_in = coreaudio_fini_in;
+    k->read = coreaudio_read;
+    k->enable_in = coreaudio_enable_in;
 
     k->init_out = coreaudio_init_out;
     k->fini_out = coreaudio_fini_out;

@@ -35,10 +35,14 @@ typedef struct {
     bool next_frame_changes, frame_owed, touch_down;
     QEMUTimer *touch_timer, *touch_end_timer;
     MTFingerState fingers[MT_MAX_FINGERS];
+    const MTSensorProfile *profile;
     float touch_x, touch_y, prev_touch_x, prev_touch_y;
     int64_t last_motion_ns;
     uint32_t report_hz;
+    bool hold_atn;
+    int atn;
 } IPodTouchMultitouchState;
+static void qemu_irq_raise(int irq) { (void)irq; }
 static int atn;   /* ATN pulses: one per report, the frame new or kept */
 static void ipod_touch_multitouch_inform_frame_ready(IPodTouchMultitouchState *s) { atn++; }
 /* A frame is the finger events it carries: S start, M moved, E ended, F the gesture's end. */
@@ -147,5 +151,11 @@ int main(void)
     touch.at = -1;
     touch_timer_tick(&s);
     assert(atn == before + 1);
+    reset();
+    ipod_touch_multitouch_set_finger(&s,0,0,.5f,true);assert(s.fingers[0].contact_flags==1);
+    now+=20000000;ipod_touch_multitouch_set_finger(&s,0,.5f,.5f,true);assert(s.fingers[0].contact_flags==1);
+    ipod_touch_multitouch_set_finger(&s,0,.5f,.5f,false);assert(!s.fingers[0].contact_flags);
+    reset();ipod_touch_multitouch_set_finger(&s,0,.5f,.5f,true);assert(!s.fingers[0].contact_flags);
+    reset();ipod_touch_multitouch_set_finger(&s,0,1,1,true);assert(s.fingers[0].contact_flags==4);
     puts("PASS: a tap released before the guest's read arrives whole (start, end, gesture end); motion still coalesces");
 }

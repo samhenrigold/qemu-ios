@@ -5,6 +5,10 @@
  * and this model answers exactly what that driver uses. Pages come from the
  * IOP's page store, so iBoot and the kernel see the same flash.
  *
+ * The optional PPN mode adds A5/A6 package commands and the 32-bit FMISS
+ * sequencer used by the original N42 IOP firmware. Its bring-up remains
+ * incomplete; unsupported instructions stall and are logged.
+ *
  * Each interface has three 4 KiB windows (DT flash-controller0 reg): FMI at
  * +0, FMC (the NAND bus sequencer) at +0x40000, ECC at +0x80000. Register
  * roles, from iBoot 7B500 (addresses are iBoot VAs):
@@ -90,7 +94,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 #define NAND_READY      0xe0            /* ready, ready, not write-protected */
 #define META_BYTES      10              /* what the store keeps per page */
 
-typedef enum { MODE_NONE, MODE_ID, MODE_PAGE } H2FMIMode;
+typedef enum { MODE_NONE, MODE_ID, MODE_PAGE, MODE_PPN_FEATURE_WRITE, MODE_PPN_AUX_READ } H2FMIMode;
 
 typedef struct H2FMIBus {
     struct S5L8930H2FMIState *s;
@@ -105,6 +109,23 @@ typedef struct H2FMIBus {
     uint32_t ecc_q[H2FMI_QUEUE];
     uint32_t ecc_n, ecc_reads;
     uint32_t mode;                      /* H2FMIMode */
+    uint32_t ppn_features[0x10000];
+    uint8_t ppn_opcode;
+    uint8_t ppn_status;
+    uint32_t ppn_aux_off;
+    uint32_t ppn_column;
+    /* PPN 07/0A reads are pipelined. Status and DATA_OUT consume the oldest
+     * request, even after subsequent commands have addressed another page. */
+    uint32_t ppn_read_row[8 * 128], ppn_read_column[8 * 128];
+    uint32_t ppn_read_status[8 * 128], ppn_read_count[8];
+    unsigned ppn_queries;
+    /* A5/A6 flash microsequencer: uploaded program RAM, instruction and
+     * operand FIFOs, and the MMIO-read result FIFO. Decoded from the original
+     * N42 IOP firmware; unsupported instructions stop rather than complete. */
+    uint32_t seq_ram[256], seq_code[1024], seq_data[32], seq_result[32];
+    uint32_t seq_code_n, seq_data_n, seq_result_n;
+    uint32_t seq_regs[0x40 / 4], seq_page_off;
+    bool seq_running;
     uint8_t id_pos;                     /* next READ ID byte for a byte-wide read (go 0x10) */
     uint32_t row;
     bool read_pending; /* new NAND read awaits its first FMI transfer */
@@ -119,7 +140,7 @@ typedef struct H2FMIBus {
     uint32_t page_row[8];
     uint8_t page[8][H2FMI_BUF];
     uint32_t stride;
-    uint8_t data[H2FMI_QUEUE * H2FMI_BUF], meta[H2FMI_QUEUE * META_BYTES];
+    uint8_t data[H2FMI_QUEUE * H2FMI_BUF], meta[H2FMI_QUEUE * 64];
     uint32_t data_len, meta_len;        /* bytes waiting, from data_off / meta_off on */
     uint32_t data_off, meta_off;        /* what the CDMA has taken of the front: pops are O(1) */
     /* Program path (the IOP firmware): cmd 0x80 + address, the CDMA fills the
@@ -149,6 +170,8 @@ struct S5L8930H2FMIState {
      * +0x400/+0x800, inside the DT's 4 KiB window.
      */
     uint32_t fmc_off, ecc_off;
+    uint64_t mmio_base;
+    bool ppn;
     uint32_t ecc_blank_summary;
     /*
      * The S5L8920's firmware starts every transfer with a control write of its
@@ -231,6 +254,77 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         b->mode = MODE_NONE;
     }
     switch (cmd) {
+    case 0x0a:
+    case 0x07:
+        if (s->ppn) { b->ppn_opcode = cmd; break; }
+        qemu_log_mask(LOG_UNIMP, "h2fmi: PPN READ on non-PPN part\n");
+        break;
+    case 0xee:
+    case 0x92:
+        if (s->ppn) {
+            b->ppn_opcode = cmd;
+            b->ppn_status = 0x40;
+            b->ppn_aux_off = 0;
+            b->mode = MODE_PPN_AUX_READ;
+            break;
+        }
+        qemu_log_mask(LOG_UNIMP, "h2fmi: PPN query on non-PPN part\n");
+        break;
+    case 0x7a:
+        if (s->ppn) {
+            int ce = h2fmi_ce(b);
+            if (s->iop && ce >= 0 && b->ppn_read_count[ce & 7]) {
+                unsigned slot = (ce & 7) * 128;
+                uint32_t id, pb; uint8_t mask;
+                s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
+                int per_bus = MAX(ctpop8(mask), 1);
+                int cs = (ce & 7) * H2FMI_BUSES + b->n;
+                b->page_row[ce & 7] = b->ppn_read_row[slot];
+                b->ppn_column = b->ppn_read_column[slot];
+                b->page_ok[ce & 7] = s5l8930_iop_nand_read(s->iop,
+                    cs / per_bus, cs % per_bus, b->page_row[ce & 7],
+                    b->page[ce & 7], &b->stride);
+                unsigned n = --b->ppn_read_count[ce & 7];
+                memmove(b->ppn_read_row + slot, b->ppn_read_row + slot + 1, n * 4);
+                memmove(b->ppn_read_column + slot, b->ppn_read_column + slot + 1, n * 4);
+                memmove(b->ppn_read_status + slot, b->ppn_read_status + slot + 1, n * 4);
+            }
+            b->read_pending = true;
+            break;
+        }
+        qemu_log_mask(LOG_UNIMP, "h2fmi: PPN DATA_OUT on non-PPN part\n");
+        break;
+    case 0xb8:
+    case 0x79:
+    case 0x97:
+    case 0x77:
+    case 0x7d:
+    case 0xe7:
+        if (s->ppn) {
+            int ce = h2fmi_ce(b);
+            if (cmd == 0x7d && ce >= 0 && b->ppn_read_count[ce & 7])
+                b->ppn_status = b->ppn_read_status[(ce & 7) * 128];
+            b->fmc[FMC_NAND_STATUS / 4] = b->ppn_status;
+            break;
+        }
+        qemu_log_mask(LOG_UNIMP, "h2fmi: PPN operation on non-PPN part\n");
+        break;
+    case 0xb0: /* PPN sequenced management-data input; B8 commits it. */
+        if (!s->ppn) break;
+        b->seq_page_off = 0;
+        b->ppn_status = 0x40;
+        b->mode = MODE_PPN_FEATURE_WRITE;
+        /* CDMA may prefill this command's bytes before the sequencer issues it. */
+        break;
+    case 0xef:
+        if (s->ppn) {
+            b->ppn_status = 0x40;
+            b->mode = MODE_PPN_FEATURE_WRITE;
+            b->wdata_len = b->wmeta_len = 0;
+            break;
+        }
+        qemu_log_mask(LOG_UNIMP, "h2fmi: SET_FEATURE on non-PPN part\n");
+        break;
     case 0x90:
         b->mode = MODE_ID;
         b->id_pos = 0;
@@ -239,6 +333,8 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         b->read_pending = true;
         break;
     case 0xff:
+        memset(b->ppn_read_count, 0, sizeof(b->ppn_read_count));
+        b->ppn_status = 0x40;
         b->fmc[FMC_NAND_STATUS / 4] = NAND_READY;
         b->mode = MODE_NONE;
         b->read_pending = false;
@@ -250,10 +346,20 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     case 0x70:              /* status, then 0x00 back to the page register */
     case 0x00:
         break;
+    case 0x87:              /* PPN queued page-data input. */
+    case 0x8a:              /* PPN boot/SLC page program. */
+        if (!s->ppn) break;
+        b->seq_page_off = 0;
+        b->mode = MODE_PAGE;
+        if (h2fmi_ce(b) >= 0) b->wpage_len[h2fmi_ce(b) & 7] = 0;
+        /* fall through */
     case 0x80:              /* page program: address follows, data through the FIFOs */
     case 0x81:              /* the next page of a cache program */
         b->writing = true;
         break;
+    case 0x17:              /* PPN boot/SLC program confirm. */
+        if (!s->ppn) break;
+        /* fall through */
     case 0x10:              /* program: the chip's page register goes to the flash */
     case 0x11: {            /* cache program: the same, the next page follows */
         int ce = h2fmi_ce(b);
@@ -269,15 +375,25 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
             int per_bus = MAX(ctpop8(mask), 1);
             int cs = (ce & 7) * H2FMI_BUSES + b->n;
             result = s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
-                                     b->wpage[ce & 7], b->wpage_len[ce & 7], b->wpmeta[ce & 7]);
+                                     b->wpage[ce & 7], b->wpage_len[ce & 7],
+                                     s->ppn ? NULL : b->wpmeta[ce & 7]);
             b->wpage_len[ce & 7] = 0;
         }
         b->writing = false;
-        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY | (result == 1 ? 0 : NAND_FAIL);
+        b->fmc[FMC_NAND_STATUS / 4] = (s->ppn ? 0x40 : NAND_READY) | (result == 1 ? 0 : NAND_FAIL);
+        if (s->ppn) b->ppn_status = b->fmc[FMC_NAND_STATUS / 4];
         break;
     }
+    case 0x67:              /* PPN normal erase, address completes it. */
+        break;
+    case 0x6a:              /* PPN SLC erase setup. */
+        if (!s->ppn) break;
+        /* fall through */
     case 0x60:              /* block erase: address follows, 0xd0 confirms */
         break;
+    case 0xd7:              /* PPN SLC erase confirm. */
+        if (!s->ppn) break;
+        /* fall through */
     case 0xd0: {
         int ce = h2fmi_ce(b);
         uint32_t id, pb;
@@ -290,9 +406,14 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
             int cs = (ce & 7) * H2FMI_BUSES + b->n;
             result = s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
         }
-        b->fmc[FMC_NAND_STATUS / 4] = NAND_READY | (result == 1 ? 0 : NAND_FAIL);
+        b->fmc[FMC_NAND_STATUS / 4] = (s->ppn ? 0x40 : NAND_READY) | (result == 1 ? 0 : NAND_FAIL);
+        if (s->ppn) b->ppn_status = b->fmc[FMC_NAND_STATUS / 4];
         break;
     }
+    case 0x37:
+        if (!s->ppn) break;
+        /* PPN confirms the addressed page with 0x37. */
+        /* fall through */
     case 0x30: {
         int ce = h2fmi_ce(b);
         /*
@@ -330,6 +451,20 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
                                                cs % per_bus, b->row, b->page[ce & 7],
                                                &b->stride);
         }
+        if (s->ppn) {
+            b->ppn_status = ce >= 0 && b->page_ok[ce & 7] ? 0x40 : 0x49;
+            b->fmc[FMC_NAND_STATUS / 4] = b->ppn_status;
+            if (b->seq_running && ce >= 0) {
+                unsigned c = ce & 7, n = b->ppn_read_count[c];
+                if (n < 128) {
+                    unsigned slot = c * 128 + n;
+                    b->ppn_read_row[slot] = b->row;
+                    b->ppn_read_column[slot] = b->ppn_column;
+                    b->ppn_read_status[slot] = b->ppn_status;
+                    b->ppn_read_count[c]++;
+                } else qemu_log_mask(LOG_GUEST_ERROR, "PPN read queue overflow\n");
+            }
+        }
         break;
     }
     default:
@@ -343,8 +478,8 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
 {
     uint32_t cmds = b->fmc[FMC_CMD / 4];
 
-    HT("h%d go 0x%x cmds 0x%x a0 0x%x a1 0x%x ce 0x%x dl %u ml %u\n", b->n, go, cmds, b->fmc[FMC_ADDR0 / 4],
-       b->fmc[FMC_ADDR1 / 4], b->fmc[FMC_CE / 4], b->data_len, b->meta_len);
+    HT("h%d go 0x%x cmds 0x%x a0 0x%x a1 0x%x ce 0x%x dl %u ml %u count%u\n", b->n, go, cmds, b->fmc[FMC_ADDR0 / 4],
+       b->fmc[FMC_ADDR1 / 4], b->fmc[FMC_CE / 4], b->data_len, b->meta_len, b->fmc[0x20 / 4]);
 
     if (go & 1) {
         h2fmi_command(b, cmds & 0xff);
@@ -358,6 +493,19 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
                         b->fmc[FMC_ADDR0 / 4], b->fmc[FMC_ADDR1 / 4], b->fmc[0x20 / 4]);
             }
             b->row = b->fmc[FMC_ADDR0 / 4] & 0xffffff;
+        } else if (b->s->ppn && ((cmds & 0xff) == 0x0a || (cmds & 0xff) == 0x07 ||
+                                  (cmds & 0xff) == 0x8a || (cmds & 0xff) == 0x87 || (cmds & 0xff) == 0x6a || (cmds & 0xff) == 0x67)) {
+            /* Multi-read's eight address bytes include its status/column
+             * fields first; the packed PPN row is the second word. */
+            /* bounded: the index selects only FMC_ADDR0 or FMC_ADDR1. */
+            uint32_t row = b->fmc[((b->fmc[0x20 / 4] == 7) ? FMC_ADDR1 : FMC_ADDR0) / 4] & 0x7fffff;
+            uint32_t page = row & 0xff;
+            uint32_t block = (row >> 8) & 0x7ff;
+            uint32_t cau = (row >> 19) & 0xf;
+            b->row = (cau * 1064 + block) * 256 + page;
+            if ((cmds & 0xff) == 0x0a || (cmds & 0xff) == 0x07)
+                b->ppn_column = b->fmc[0x20 / 4] == 7 ? b->fmc[FMC_ADDR0 / 4] >> 16 : 0;
+            if ((cmds & 0xff) == 0x67) h2fmi_command(b, 0xd7);
         } else {
             b->row = (b->fmc[FMC_ADDR0 / 4] >> 16) |
                      ((b->fmc[FMC_ADDR1 / 4] & 0xff) << 16);
@@ -388,7 +536,7 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
     }
     if (go & 0x40) {
         /* Ready is immediate, but polling must preserve the last failure. */
-        b->fmc[FMC_NAND_STATUS / 4] |= NAND_READY;
+        b->fmc[FMC_NAND_STATUS / 4] |= b->s->ppn ? 0x40 : NAND_READY;
         h2fmi_fmc_events(b, (go & 0xb) | FMC_EV_STATUS);
         return;
     }
@@ -446,10 +594,54 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         s5l8930_iop_nand_info(s->iop, &id, &ce_mask, &page_bytes);
     }
     transfer_bytes = h2fmi_read_bytes(b, page_bytes);
-    if (b->mode == MODE_ID) {
+    if (s->ppn && b->mode == MODE_PPN_AUX_READ) {
+        uint8_t payload[512] = {0};
+        uint32_t bytes = MIN((h2fmi_format(b) >> 8) & 0xffff, sizeof(payload));
+        if (b->ppn_opcode == 0x92) {
+            memcpy(payload, "PPN Device Info", 15);
+            const uint32_t info[] = {2, 4, 1064, 11, 256, 128, 8, 1, 2, 16448};
+            for (unsigned i = 0; i < ARRAY_SIZE(info); i++) stl_le_p(payload + 0x10 + 4 * i, info[i]);
+            const uint8_t timings[] = {50, 20, 10, 15, 60, 15, 25, 0, 50, 15, 25};
+            memcpy(payload + 0xa0, timings, sizeof(timings));
+            stl_le_p(payload + 0xe0, 8);
+            stl_le_p(payload + 0xe4, 8);
+            stl_le_p(payload + 0xe8, 8);
+            /* Preparation entries, not a timing value. The original IOP
+             * bounds a write batch against this field (11A465 offset
+             * 9a80..9a8a); the A6 handoff permits 128 physical pages per
+             * transaction. Advertise that supported virtual capacity,
+             * rather than the initial eight-entry bring-up placeholder.
+             * The matching physical Hynix part's value is unqualified. */
+            stl_le_p(payload + 0xec, 128);
+            stl_le_p(payload + 0xf0, 5);
+            stl_le_p(payload + 0xf4, 5);
+            stl_le_p(payload + 0xf8, 5);
+            stl_le_p(payload + 0xfc, 100);
+        } else {
+            uint32_t feature = b->fmc[FMC_ADDR0 / 4] & 0xffff;
+            if (b->ppn_queries++ < 64) qemu_log_mask(LOG_UNIMP,
+                "PPN bus%d GET_FEATURE 0x%04x bytes %u\n", b->n, feature, bytes);
+            if (feature == 0x9080) memcpy(payload, "040472P_HYNIX_B_", 15);
+            else if ((feature & 0xff) == 0x84) {
+                /* Factory-good block bitmap, one bit per block in this CAU. */
+                memset(payload, 0xff, sizeof(payload));
+            }
+            else stl_le_p(payload, b->ppn_features[feature]);
+        }
+        uint32_t offset = MIN(b->ppn_aux_off, sizeof(payload));
+        uint32_t available = MIN(bytes, sizeof(payload) - offset);
+        memset(b->data, 0xff, bytes);
+        memcpy(b->data, payload + offset, available);
+        b->ppn_aux_off += available;
+        b->data_off = 0; b->data_len = bytes;
+    } else if (b->mode == MODE_ID) {
         uint8_t idb[8] = { 0 };
         if (ce >= 0 && (ce_mask & (1u << ce))) {
             stl_le_p(idb, id);
+        }
+        if (s->ppn) {
+            const uint8_t ppn_id[8] = {0x50, 0x50, 0x4e, 1, 5, 5, 0, 0};
+            memcpy(idb, ppn_id, sizeof(idb));
         }
         memcpy(b->data, idb, sizeof(idb));
         b->data_len = sizeof(idb);
@@ -521,27 +713,57 @@ static uint32_t h2fmi_meta_per_page(H2FMIBus *b)
  * for its own chain (EmbeddedIOP h2fmi_write_multi waits for both: "Timeout waiting for CDMA during
  * successful NAND write operation").
  */
+static void h2fmi_seq_run(H2FMIBus *b);
+
 static void h2fmi_write_check(H2FMIBus *b)
 {
     uint32_t page_bytes = 0, id = 0, mper = h2fmi_meta_per_page(b);
     uint8_t mask;
-    hwaddr base = S5L8930_H2FMI_BASE + b->n * H2FMI_WINDOW;
+    hwaddr base = b->s->mmio_base + b->n * H2FMI_WINDOW;
 
+    if (b->s->ppn && b->mode == MODE_PPN_FEATURE_WRITE &&
+        (b->fmi[FMI_CONTROL / 4] & 7) == 5) {
+        uint32_t bytes = (h2fmi_format(b) >> 8) & 0xffff;
+        if (bytes && bytes <= 4 && b->wdata_len >= bytes) {
+            uint32_t feature = b->fmc[FMC_ADDR0 / 4] & 0xffff;
+            uint32_t value = 0;
+            memcpy(&value, b->wdata, bytes);
+            b->ppn_features[feature] = le32_to_cpu(value);
+            b->wdata_len = 0;
+            b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+            h2fmi_update_irq(b);
+        }
+        return;
+    }
+    if (b->s->ppn && (b->fmi[FMI_CONTROL / 4] & 7) == 4) {
+        h2fmi_seq_run(b);
+        return;
+    }
     if ((b->fmi[FMI_CONTROL / 4] & 7) != 5 || (b->s->explicit_start && !b->write_armed)) {
         return;
     }
     if (b->s->iop) {
         s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
     }
+    bool ppn_boot = b->s->ppn && h2fmi_raw_read(b);
+    if (ppn_boot) {
+        /* The PPN boot path uses FMI's byte-count format and generated BCH,
+         * not the ordinary 4 KiB+metadata task. Original IOP 6660 programs
+         * three 512-byte phases (FORMAT=0x20001) before one NAND confirm. */
+        page_bytes = (h2fmi_format(b) >> 8) & 0xffff;
+        mper = 0;
+    }
     if (page_bytes && b->wdata_len >= page_bytes && b->wmeta_len >= mper &&
         !(b->fmi[FMI_STATUS / 4] & FMI_ST_DONE)) {
         int ce = h2fmi_ce(b);
 
         if (ce >= 0) {
-            memcpy(b->wpage[ce & 7], b->wdata, page_bytes);
+            uint32_t offset = ppn_boot ? b->wpage_len[ce & 7] : 0;
+            if (offset > H2FMI_BUF || page_bytes > H2FMI_BUF - offset) return;
+            memcpy(b->wpage[ce & 7] + offset, b->wdata, page_bytes);
             memset(b->wpmeta[ce & 7], 0, META_BYTES);
             memcpy(b->wpmeta[ce & 7], b->wmeta, MIN(mper, META_BYTES));
-            b->wpage_len[ce & 7] = page_bytes;
+            b->wpage_len[ce & 7] = offset + page_bytes;
         }
         memmove(b->wdata, b->wdata + page_bytes, b->wdata_len - page_bytes);
         b->wdata_len -= page_bytes;
@@ -586,7 +808,7 @@ static uint32_t fifo_pop(uint8_t *buf, uint32_t *off, uint32_t *len, unsigned si
     unsigned n = MIN(size, *len);
 
     for (unsigned i = 0; i < n; i++) {
-        v |= buf[*off + i] << (8 * i);
+        v |= (uint32_t)buf[*off + i] << (8 * i);
     }
     *off += n;
     *len -= n;
@@ -620,10 +842,190 @@ static uint32_t h2fmi_ecc_sector(H2FMIBus *b)
     return v;
 }
 
+static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size);
+static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size);
+
+/* One FMI DMA task is a logical page. PPN places its metadata after the
+ * first 1024 bytes, before the remaining data bytes of that logical page. */
+static bool h2fmi_seq_task(H2FMIBus *b)
+{
+    uint32_t bytes = (h2fmi_format(b) & 0xff) * 1024;
+    uint32_t meta = (h2fmi_format(b) >> 19) & 0x3f;
+    int ce = h2fmi_ce(b);
+    if (b->mode == MODE_PPN_FEATURE_WRITE) {
+        uint32_t count = (h2fmi_format(b) >> 8) & 0xffff;
+        if (!count || count > sizeof(b->wdata) || b->wdata_len < count) return false;
+        uint32_t feature = b->fmc[FMC_ADDR0 / 4] & 0xffff;
+        if (count >= 4) b->ppn_features[feature] = ldl_le_p(b->wdata);
+        b->wdata_len -= count;
+        memmove(b->wdata, b->wdata + count, b->wdata_len);
+        b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+        if (b->s->cdma && !b->wdata_len)
+            s5l8930_cdma_sink_done(b->s->cdma,
+                                 b->s->mmio_base + b->n * H2FMI_WINDOW + FMI_DATA, 4);
+        h2fmi_update_irq(b);
+        return true;
+    }
+    if (!bytes || bytes < 1024 || ce < 0 ||
+        b->seq_page_off + bytes + meta > H2FMI_BUF) {
+        return false;
+    }
+    if (b->writing) {
+        if (b->wdata_len < bytes || b->wmeta_len < meta) return false;
+        uint8_t *p = b->wpage[ce & 7] + b->seq_page_off;
+        memcpy(p, b->wdata, 1024);
+        memcpy(p + 1024, b->wmeta, meta);
+        memcpy(p + 1024 + meta, b->wdata + 1024, bytes - 1024);
+        b->seq_page_off += bytes + meta;
+        b->wpage_len[ce & 7] = b->seq_page_off;
+        b->wdata_len -= bytes;
+        b->wmeta_len -= meta;
+        memmove(b->wdata, b->wdata + bytes, b->wdata_len);
+        memmove(b->wmeta, b->wmeta + meta, b->wmeta_len);
+        b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+        if (b->s->cdma) {
+            hwaddr base = b->s->mmio_base + b->n * H2FMI_WINDOW;
+            if (!b->wdata_len) s5l8930_cdma_sink_done(b->s->cdma, base + FMI_DATA, 4);
+            if (!b->wmeta_len) s5l8930_cdma_sink_done(b->s->cdma, base + FMI_META, 4);
+            s5l8930_cdma_kick(b->s->cdma);
+        }
+        return true;
+    }
+    fifo_compact(b->data, &b->data_off, b->data_len, sizeof(b->data), bytes);
+    fifo_compact(b->meta, &b->meta_off, b->meta_len, sizeof(b->meta), meta);
+    if (b->data_off + b->data_len + bytes > sizeof(b->data) ||
+        b->meta_off + b->meta_len + meta > sizeof(b->meta)) {
+        return false;
+    }
+    uint8_t *d = b->data + b->data_off + b->data_len;
+    uint8_t *m = b->meta + b->meta_off + b->meta_len;
+    const uint8_t *page = b->page[ce & 7] + b->seq_page_off;
+    if (b->page_ok[ce & 7]) {
+        memcpy(d, page, 1024);
+        memcpy(m, page + 1024, meta);
+        memcpy(d + 1024, page + 1024 + meta, bytes - 1024);
+    } else {
+        memset(d, 0xff, bytes);
+        memset(m, 0xff, meta);
+    }
+    b->seq_page_off += bytes + meta;
+    b->data_len += bytes;
+    b->meta_len += meta;
+    HT("h%d PPN read row%x off%x bytes%u meta%u ok%d data%08x tag%08x\n",
+       b->n, b->page_row[ce & 7], b->seq_page_off - bytes - meta,
+       bytes, meta, b->page_ok[ce & 7], ldl_le_p(d),
+       meta >= 4 ? ldl_le_p(m) : 0);
+    b->fmi[FMI_STATUS / 4] |= FMI_ST_DONE;
+    if (b->s->cdma) {
+        s5l8930_cdma_kick(b->s->cdma);
+    }
+    h2fmi_update_irq(b);
+    return true;
+}
+
+static void h2fmi_seq_run(H2FMIBus *b)
+{
+    if (b->seq_running) {
+        return;
+    }
+    b->seq_running = true;
+    for (unsigned budget = 0; b->seq_code_n && budget < 4096; budget++) {
+        uint32_t insn = b->seq_code[0], op = insn >> 24;
+        uint32_t arg = insn & 0xffffff, consume = 1;
+        HT("h%d FMISS %08x operands%u results%u pageoff%u writing%d mode%u wd%u wm%u fmt%x\n",
+           b->n, insn, b->seq_data_n, b->seq_result_n, b->seq_page_off, b->writing,
+           b->mode, b->wdata_len, b->wmeta_len, h2fmi_format(b));
+        switch (op) {
+        case 0x08: /* Direct NAND command. */
+            h2fmi_command(b, arg & 0xff);
+            if ((arg & 0xff) == 0x7a) b->seq_page_off = b->ppn_column;
+            break;
+        case 0x09: /* Chip enables. */
+            b->fmc[FMC_CE / 4] = arg;
+            break;
+        case 0x0a: /* Poll NAND status: mask in byte1, expected in byte0. */
+            if ((b->fmc[FMC_NAND_STATUS / 4] & ((arg >> 8) & 0xff)) !=
+                (arg & 0xff)) goto stalled;
+            break;
+        case 0x0b: /* Execute one FMI DMA task. */
+            if (!h2fmi_seq_task(b)) goto stalled;
+            break;
+        case 0x0c: /* Sequencer notification record (tag in bits16..23). */
+            if (b->seq_regs[0x20 / 4] & 1) goto stalled;
+            b->seq_regs[0x10 / 4] = arg;
+            b->seq_regs[0x20 / 4] |= 1;
+            b->fmi[FMI_STATUS / 4] |= 0x10000000;
+            h2fmi_update_irq(b);
+            break;
+        case 0x0d: /* End of an uploaded macro; RAM slices are expanded inline. */
+            break;
+        case 0x0e: /* Delay in controller clock ticks; operations finish synchronously. */
+            break;
+        case 0x0f: /* Write immediate to controller-relative MMIO. */
+            if (b->seq_code_n < 2) goto stalled;
+            h2fmi_write(b, arg, b->seq_code[1], 4);
+            consume = 2;
+            break;
+        case 0x10: /* Write next operand to controller-relative MMIO. */
+            if (!b->seq_data_n) goto stalled;
+            h2fmi_write(b, arg, b->seq_data[0], 4);
+            memmove(b->seq_data, b->seq_data + 1,
+                    --b->seq_data_n * sizeof(uint32_t));
+            break;
+        case 0x11: { /* Program-RAM slice: word start in bits8..23, count in0..7. */
+            uint32_t start = arg >> 8, count = arg & 0xff;
+            if (start + count > ARRAY_SIZE(b->seq_ram) ||
+                b->seq_code_n - 1 + count > ARRAY_SIZE(b->seq_code)) goto stalled;
+            memmove(b->seq_code + count, b->seq_code + 1,
+                    (b->seq_code_n - 1) * sizeof(uint32_t));
+            memcpy(b->seq_code, b->seq_ram + start, count * sizeof(uint32_t));
+            b->seq_code_n += count - 1;
+            continue;
+        }
+        case 0x12: /* Poll MMIO against following mask and expected words. */
+            if (b->seq_code_n < 3 ||
+                (h2fmi_read(b, arg, 4) & b->seq_code[1]) != b->seq_code[2])
+                goto stalled;
+            consume = 3;
+            break;
+        case 0x14: /* Read MMIO into the result FIFO. */
+            if (b->seq_result_n == ARRAY_SIZE(b->seq_result)) goto stalled;
+            b->seq_result[b->seq_result_n++] = h2fmi_read(b, arg, 4);
+            break;
+        default:
+            qemu_log_mask(LOG_UNIMP, "h2fmi%d FMISS unsupported instruction %08x\n",
+                          b->n, insn);
+            goto stalled;
+        }
+        b->seq_code_n -= consume;
+        memmove(b->seq_code, b->seq_code + consume,
+                b->seq_code_n * sizeof(uint32_t));
+    }
+ stalled:
+    b->seq_running = false;
+}
+
 static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size)
 {
     H2FMIBus *b = opaque;
 
+    if (b->s->ppn && off >= 0xc0000 && off < 0xc0040) {
+        h2fmi_seq_run(b);
+        switch (off) {
+        case 0xc0004: return MIN(b->seq_code_n, 32);
+        case 0xc0018: return b->seq_data_n;
+        case 0xc0034: return b->seq_result_n;
+        case 0xc0030: {
+            uint32_t v = b->seq_result_n ? b->seq_result[0] : 0;
+            if (b->seq_result_n) memmove(b->seq_result, b->seq_result + 1,
+                                       --b->seq_result_n * sizeof(uint32_t));
+            return v;
+        }
+        default: return b->seq_regs[(off & 0x3f) / 4];
+        }
+    }
+    if (b->s->ppn && off >= 0xc1000 && off < 0xc1400)
+        return b->seq_ram[(off - 0xc1000) / 4];
     if (off < sizeof(b->fmi)) {
         switch (off) {
         case FMI_DATA: {
@@ -637,6 +1039,8 @@ static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size)
             return v;
         }
         case FMI_LEVEL:
+            if (b->s->ppn && (b->fmi[FMI_CONTROL / 4] & 7) == 5 &&
+                b->wdata_len < sizeof(b->wdata)) return 0x18;
             return b->data_len ? 0x18 : 0;
         case FMI_STATUS:
             return h2fmi_status(b);
@@ -665,11 +1069,37 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
     H2FMIBus *b = opaque;
     uint32_t v = val;
 
+    if (b->s->ppn && off >= 0xc1000 && off < 0xc1400) {
+        b->seq_ram[(off - 0xc1000) / 4] = v;
+        return;
+    }
+    if (b->s->ppn && off >= 0xc0000 && off < 0xc0040) {
+        switch (off) {
+        case 0xc0000:
+            if (b->seq_code_n < ARRAY_SIZE(b->seq_code))
+                b->seq_code[b->seq_code_n++] = v;
+            break;
+        case 0xc0014:
+            if (b->seq_data_n < ARRAY_SIZE(b->seq_data))
+                b->seq_data[b->seq_data_n++] = v;
+            break;
+        case 0xc0020: b->seq_regs[0x20 / 4] &= ~v; break;
+        default: b->seq_regs[(off & 0x3f) / 4] = v; break;
+        }
+        h2fmi_seq_run(b);
+        return;
+    }
     if (off < sizeof(b->fmi)) {
         switch (off) {
         case FMI_CONTROL:
             HT("h%d ctl 0x%x prev 0x%x dl %u ml %u ecc %u/%u pend %u fmt 0x%x\n", b->n, v, b->fmi[off / 4],
                b->data_len, b->meta_len, b->ecc_n, b->ecc_reads, b->pending_n, h2fmi_format(b));
+            if (b->s->ppn && (v == 6 || (v & 0x800))) {
+                memset(b->ppn_read_count, 0, sizeof(b->ppn_read_count));
+                b->data_len = b->meta_len = b->data_off = b->meta_off = 0;
+                b->pending_n = b->ecc_n = b->ecc_reads = 0;
+                b->fmi[FMI_STATUS / 4] &= ~FMI_ST_DONE;
+            }
             /*
              * A read transfer starts when a write enters read mode (bits 0-1
              * become 3), follows a new NAND read command (raw reads retain
@@ -696,7 +1126,8 @@ static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
             }
             int ce = h2fmi_ce(b);
             bool unread = b->s->explicit_start && ce >= 0 && (b->unread >> (ce & 7)) & 1;
-            if ((v & 3) == 3 && (b->read_pending || unread || (prev & 3) != 3 ||
+            if ((v & 3) == 3 && (b->read_pending || unread ||
+                                 (b->s->ppn && b->mode == MODE_PPN_AUX_READ) || (prev & 3) != 3 ||
                                  ((v & 0x80) && !(prev & 0x80)))) {
                 if (!(b->fmi[off / 4] & 0x80)) {
                     b->ecc_n = b->ecc_reads = 0;
@@ -793,8 +1224,8 @@ static const MemoryRegionOps h2fmi_ops = {
 static uint32_t h2fmi_fifo_avail(void *opaque, hwaddr addr, bool to_device)
 {
     S5L8930H2FMIState *s = opaque;
-    H2FMIBus *b = &s->bus[(addr - S5L8930_H2FMI_BASE) / H2FMI_WINDOW % H2FMI_BUSES];
-    hwaddr reg = (addr - S5L8930_H2FMI_BASE) % H2FMI_WINDOW;
+    H2FMIBus *b = &s->bus[(addr - s->mmio_base) / H2FMI_WINDOW % H2FMI_BUSES];
+    hwaddr reg = (addr - s->mmio_base) % H2FMI_WINDOW;
 
     if (to_device) {    /* room for a write */
         return reg == FMI_DATA ? sizeof(b->wdata) - b->wdata_len
@@ -813,6 +1244,16 @@ static void s5l8930_h2fmi_reset(DeviceState *dev)
         memset(b->fmc, 0, sizeof(b->fmc));
         b->ecc_summary = b->ecc_n = b->ecc_reads = 0;
         b->mode = MODE_NONE;
+        memset(b->seq_ram, 0, sizeof(b->seq_ram));
+        memset(b->seq_regs, 0, sizeof(b->seq_regs));
+        memset(b->ppn_features, 0, sizeof(b->ppn_features));
+        b->seq_code_n = b->seq_data_n = b->seq_result_n = 0;
+        b->seq_page_off = 0;
+        b->seq_running = false;
+        b->ppn_queries = 0;
+        b->ppn_status = 0x40;
+        b->ppn_aux_off = b->ppn_column = 0;
+        memset(b->ppn_read_count, 0, sizeof(b->ppn_read_count));
         b->read_pending = false;
         b->read_format = 0;
         b->unread = 0;
@@ -828,7 +1269,7 @@ static void s5l8930_h2fmi_realize(DeviceState *dev, Error **errp)
     S5L8930H2FMIState *s = S5L8930_H2FMI(dev);
 
     if (s->cdma) {
-        s5l8930_cdma_set_source(s->cdma, S5L8930_H2FMI_BASE,
+        s5l8930_cdma_set_source(s->cdma, s->mmio_base,
                                 H2FMI_BUSES * H2FMI_WINDOW, h2fmi_fifo_avail, s);
     }
 }
@@ -958,12 +1399,19 @@ static int h2fmi_post_load(void *opaque, int version_id)
         if (b->data_len > sizeof(b->data) || b->meta_len > sizeof(b->meta) ||
             b->wdata_len > sizeof(b->wdata) || b->wmeta_len > sizeof(b->wmeta) ||
             b->ecc_n > H2FMI_QUEUE || b->pending_n > ARRAY_SIZE(b->pending_ce) ||
-            b->stride > H2FMI_BUF) {                /* a raw read copies stride bytes of page[] */
+            b->stride > H2FMI_BUF || b->seq_code_n > ARRAY_SIZE(b->seq_code) ||
+            b->seq_data_n > ARRAY_SIZE(b->seq_data) ||
+            b->seq_result_n > ARRAY_SIZE(b->seq_result) ||
+            b->seq_page_off > H2FMI_BUF || b->ppn_column > H2FMI_BUF || b->ppn_aux_off > 512) {                /* a raw read copies stride bytes of page[] */
             return -EINVAL;
         }
         for (unsigned ce = 0; ce < ARRAY_SIZE(b->wpage_len); ce++) {
-            if (b->wpage_len[ce] > H2FMI_BUF) {     /* programmed from wpage[ce] */
+            if (b->wpage_len[ce] > H2FMI_BUF || b->ppn_read_count[ce] > 128) {
                 return -EINVAL;
+            }
+            for (unsigned j = 0; j < b->ppn_read_count[ce]; j++) {
+                if (b->ppn_read_column[ce * 128 + j] > H2FMI_BUF)
+                    return -EINVAL;
             }
         }
     }
@@ -1014,6 +1462,50 @@ static const VMStateDescription vmstate_h2fmi_explicit_start = {
     },
 };
 
+static const VMStateDescription vmstate_h2fmi_ppn_bus = {
+    .name = "h2fmi-ppn-bus",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(ppn_features, H2FMIBus, 0x10000),
+        VMSTATE_UINT8(ppn_opcode, H2FMIBus),
+        VMSTATE_UINT8(ppn_status, H2FMIBus),
+        VMSTATE_UINT32(ppn_aux_off, H2FMIBus),
+        VMSTATE_UINT32(ppn_column, H2FMIBus),
+        VMSTATE_UINT32_ARRAY(ppn_read_row, H2FMIBus, 8 * 128),
+        VMSTATE_UINT32_ARRAY(ppn_read_column, H2FMIBus, 8 * 128),
+        VMSTATE_UINT32_ARRAY(ppn_read_status, H2FMIBus, 8 * 128),
+        VMSTATE_UINT32_ARRAY(ppn_read_count, H2FMIBus, 8),
+        VMSTATE_UINT32_ARRAY(seq_ram, H2FMIBus, 256),
+        VMSTATE_UINT32_ARRAY(seq_code, H2FMIBus, 1024),
+        VMSTATE_UINT32_ARRAY(seq_data, H2FMIBus, 32),
+        VMSTATE_UINT32_ARRAY(seq_result, H2FMIBus, 32),
+        VMSTATE_UINT32_ARRAY(seq_regs, H2FMIBus, 16),
+        VMSTATE_UINT32(seq_code_n, H2FMIBus),
+        VMSTATE_UINT32(seq_data_n, H2FMIBus),
+        VMSTATE_UINT32(seq_result_n, H2FMIBus),
+        VMSTATE_UINT32(seq_page_off, H2FMIBus),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool h2fmi_ppn_needed(void *opaque)
+{
+    return S5L8930_H2FMI(opaque)->ppn;
+}
+
+static const VMStateDescription vmstate_h2fmi_ppn = {
+    .name = TYPE_S5L8930_H2FMI "/ppn",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = h2fmi_ppn_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(bus, S5L8930H2FMIState, H2FMI_BUSES, 1,
+                             vmstate_h2fmi_ppn_bus, H2FMIBus),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .name = TYPE_S5L8930_H2FMI,
     .version_id = 1,
@@ -1024,6 +1516,7 @@ static const VMStateDescription vmstate_s5l8930_h2fmi = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_h2fmi_read_pending,
         &vmstate_h2fmi_explicit_start,
+        &vmstate_h2fmi_ppn,
         NULL
     },
     .fields = (const VMStateField[]) {
@@ -1035,9 +1528,11 @@ static const VMStateDescription vmstate_s5l8930_h2fmi = {
 static const Property s5l8930_h2fmi_props[] = {
     DEFINE_PROP_LINK("iop", S5L8930H2FMIState, iop, TYPE_DEVICE, DeviceState *),
     DEFINE_PROP_LINK("cdma", S5L8930H2FMIState, cdma, TYPE_DEVICE, DeviceState *),
+    DEFINE_PROP_UINT64("mmio-base", S5L8930H2FMIState, mmio_base, S5L8930_H2FMI_BASE),
     DEFINE_PROP_UINT32("fmc-offset", S5L8930H2FMIState, fmc_off, 0x40000),
     DEFINE_PROP_UINT32("ecc-offset", S5L8930H2FMIState, ecc_off, 0x80000),
     DEFINE_PROP_UINT32("ecc-blank-summary", S5L8930H2FMIState, ecc_blank_summary, 0),
+    DEFINE_PROP_BOOL("ppn", S5L8930H2FMIState, ppn, false),
     DEFINE_PROP_BOOL("explicit-start", S5L8930H2FMIState, explicit_start, false),
     DEFINE_PROP_BOOL("cfg-v0", S5L8930H2FMIState, cfg_v0, false),
 };

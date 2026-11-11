@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>com.apple.private.security.disk-device-access</key>
+    <true/>
+    <!-- iOS 9 dyld otherwise ignores DYLD_SHARED_REGION=private. This
+         entitlement belongs only to our temporary preparation worker. -->
+    <key>get-task-allow</key>
+    <true/>
+</dict>
+</plist>

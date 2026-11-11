@@ -171,4 +171,29 @@ ipod_touch_pwroff_log(const char *msg) "%s"
 ipod_touch_amc_log(const char *msg) "%s"
 gles_context_log(const char *msg) "%s"
 gles_surface_log(const char *msg) "%s"
+gles_draw_log(const char *msg) "%s"
+gles_call_log(const char *msg) "%s"
+ipod_scaler_transfer(uint64_t base, unsigned sid, uint32_t src_format, uint32_t src, uint32_t src_geometry, uint32_t dst_format, uint32_t dst, uint32_t dst_geometry, bool success) "base=0x%" PRIx64 " sid=%u src=%08x:%08x:%08x dst=%08x:%08x:%08x success=%d"
+ipod_scaler_reg_write(uint64_t base, uint64_t offset, uint64_t value) "base=0x%" PRIx64 " offset=0x%" PRIx64 " value=0x%" PRIx64
 gles_obj_log(const char *msg) "%s"
+
+# Native content-protection qualification; fingerprints only, no key/plaintext dumps.
+s5l8930_aes_transfer(int context, uint32_t setup, uint32_t length, bool restart, uint32_t key_tag, uint32_t iv_tag, uint32_t input_tag, uint32_t output_tag) "ctx=%d setup=%08x bytes=%u restart=%d key=%08x iv=%08x input=%08x output=%08x"
+s5l8930_cdma_iv(int channel, bool device_fifo, uint32_t descriptor, uint32_t fifo, int context, uint32_t setup, uint32_t key_tag, uint32_t iv_tag) "ch=%d device_fifo=%d desc=%08x fifo=%08x ctx=%d setup=%08x key=%08x iv=%08x"
+
+# A6 virtual video encoder command transport.
+a6_vxe_command(uint32_t command, uint32_t buffer, uint32_t writeback, uint32_t ticket) "cmd=%08x buffer=%08x wb=%08x ticket=%08x"
+a6_vxe_control(uint32_t kind, uint32_t value) "kind=%u value=%08x"
+a6_vxe_buffer(uint32_t kind, uint32_t index, uint32_t address, uint32_t extra) "kind=%u index=%08x address=%08x extra=%08x"
+a6_vxe_source(uint32_t frame, bool idr, uint32_t y, uint32_t uv, uint32_t first_y, uint32_t first_uv) "frame=%u idr=%u y=%08x uv=%08x first=%08x/%08x"
+# A6 native storage IOP software doorbell (IRQ 3).
+a6_iop_doorbell_log(bool iop, uint32_t offset, uint32_t value, uint32_t software, uint32_t mask, uint32_t level, uint32_t destination) "iop=%d offset=%04x value=%08x software=%08x mask=%08x level=%08x dest3=%x"
+a6_iop_timer_log(uint32_t control, uint32_t reload, uint32_t status, uint32_t mask) "control=%x reload=%u status=%x other-mask=%x"
+
+# GPIO configuration and peripheral power/reset wiring.
+s5l8930_gpio_config(unsigned pin, uint32_t old, uint32_t value) "pin=%u old=%04x value=%04x"
+s5l8930_gpio_input(unsigned pin, bool old, bool value) "pin=%u old=%d value=%d"
+a6_pmu_gpio(unsigned pin, uint8_t old, uint8_t value) "pin=%u old=%02x value=%02x"
+a6_pmu_register(bool write, uint8_t reg, uint8_t value, uint64_t pc) "write=%d reg=%02x value=%02x pc=%" PRIx64
+s5l8930_cdma_uart(unsigned channel, const char *action, uint32_t control, uint32_t budget, uint32_t address, uint32_t descriptor, uint32_t value) "ch=%u %s ctrl=%08x budget=%08x addr=%08x desc=%08x value=%08x"
+s5l8930_cdma_register(unsigned channel, uint32_t offset, uint32_t value) "ch=%u offset=%02x value=%08x"

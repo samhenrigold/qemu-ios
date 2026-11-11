@@ -57,6 +57,52 @@ int ios_bb_gps_format(const IosBbGps *g, char *out, size_t size)
                     GPS_CONFIDENCE, g->speed * 3.6 / 1.852, course);
 }
 
+int ios_bb_gps_nmea(const IosBbGps *g, int64_t unix_ms, const char *sentence,
+                    char *out, size_t size)
+{
+    char lat[24], lon[24], body[160], course[16] = "";
+    struct tm utc;
+    time_t seconds = unix_ms / 1000;
+    int len;
+    uint8_t checksum = 0;
+
+    if (size) {
+        out[0] = 0;
+    }
+    if (!g->present || !g->fix || unix_ms < 0 || !gmtime_r(&seconds, &utc)) {
+        return 0;
+    }
+    nmea_coord(g->lat, 2, lat, sizeof(lat));
+    nmea_coord(g->lon, 3, lon, sizeof(lon));
+    if (g->course >= 0) {
+        snprintf(course, sizeof(course), "%.1f", g->course);
+    }
+    if (!strcmp(sentence, "GGA")) {
+        /* The virtual receiver uses zero geoid separation. The shared model's
+         * altitude is above the ellipsoid, so the two altitudes coincide. */
+        len = snprintf(body, sizeof(body),
+                       "GPGGA,%02d%02d%02d.%03d,%s,%c,%s,%c,1,08,1.0,%.2f,M,0.0,M,,",
+                       utc.tm_hour, utc.tm_min, utc.tm_sec, (int)(unix_ms % 1000),
+                       lat, g->lat < 0 ? 'S' : 'N', lon, g->lon < 0 ? 'W' : 'E', g->alt);
+    } else if (!strcmp(sentence, "RMC")) {
+        len = snprintf(body, sizeof(body),
+                       "GPRMC,%02d%02d%02d.%03d,A,%s,%c,%s,%c,%.2f,%s,%02d%02d%02d,,,A",
+                       utc.tm_hour, utc.tm_min, utc.tm_sec, (int)(unix_ms % 1000),
+                       lat, g->lat < 0 ? 'S' : 'N', lon, g->lon < 0 ? 'W' : 'E',
+                       g->speed * 3.6 / 1.852, course,
+                       utc.tm_mday, utc.tm_mon + 1, (utc.tm_year + 1900) % 100);
+    } else {
+        return 0;
+    }
+    if (len < 0 || (size_t)len >= sizeof(body) || size < (size_t)len + 7) {
+        return 0;
+    }
+    for (int i = 0; i < len; i++) {
+        checksum ^= body[i];
+    }
+    return snprintf(out, size, "$%s*%02X\r\n", body, checksum);
+}
+
 bool ios_bb_gps_set(IosBbGps *g, const char *spec)
 {
     double v[6] = { 0, 0, 0, 0, -1, 5 };

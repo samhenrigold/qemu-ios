@@ -115,6 +115,69 @@ static void test_aes(void)
 }
 
 /* SHA-1("abc") the kext's way: software-padded block streamed by ch 4. */
+static void skg_encrypt_zero(uint8_t out[16])
+{
+    uint8_t zero[16] = { 0 };
+    qtest_memwrite(qts, SRC, zero, sizeof(zero));
+    for (int i = 0; i < 4; i++) {
+        qtest_writel(qts, AES_BASE + 0x1010 + 4 * i, 0);
+    }
+    /* Native UniquePlus selector15 deliberately has key-length field zero. */
+    qtest_writel(qts, AES_BASE + 0x1000, (15 << 21) | 0x30100);
+    write_desc(qts, RING, 0, 0x30103, SRC, 16);
+    write_desc(qts, RING + 32, 0, 0x103, DST, 16);
+    qtest_writel(qts, CDMA_BASE, 6);
+    for (int ch = 1; ch <= 2; ch++) {
+        uint32_t base = CDMA_BASE + (ch << 12);
+        qtest_writel(qts, base, 2);
+        qtest_writel(qts, base + 4, 0);
+        qtest_writel(qts, base + 8, 0);
+        qtest_writel(qts, base + 0x14, ch == 1 ? RING : RING + 32);
+    }
+    qtest_writel(qts, CDMA_BASE + 0x1000, 0x189);
+    qtest_writel(qts, CDMA_BASE + 0x2000, 0x89);
+    g_assert_cmphex(qtest_readl(qts, CDMA_BASE + 0x2000) & 0xc0000,
+                    ==, 0x80000);
+    qtest_memread(qts, DST, out, 16);
+}
+
+/* Candidate mode vectors independently generated with OpenSSL AES-256-CBC.
+ * These establish that real seed/count-dependent AES reaches selector15;
+ * they are not physical A6 SKG known-answer vectors. */
+static void test_skg_candidate(void)
+{
+    static const uint8_t expected[2][16] = {
+        { 0xc9, 0xc3, 0x3f, 0x2a, 0xed, 0xef, 0x86, 0x7f,
+          0xe8, 0xcc, 0xf9, 0x70, 0x05, 0xb9, 0x3a, 0x8a },
+        { 0x6e, 0xd2, 0xc3, 0x3d, 0x12, 0x9a, 0xf5, 0x65,
+          0x3b, 0x5e, 0xae, 0xd7, 0xac, 0x82, 0xf7, 0x86 },
+    };
+    uint8_t out[16];
+    qtest_writel(qts, AES_BASE + 0xfc, 0x80);
+    for (int i = 0; i < 8; i++) {
+        uint32_t word = i < 5 ? 0x03020100 + 0x04040404 * i : 0;
+        qtest_writel(qts, AES_BASE + 0x400 + i * 4, word);
+        g_assert_cmphex(qtest_readl(qts, AES_BASE + 0x400 + i * 4), ==, 0);
+    }
+    qtest_writel(qts, AES_BASE + 0x420, 7);
+    for (int count = 1; count <= 2; count++) {
+        qtest_writel(qts, AES_BASE + 0x430, 3);
+        qtest_writel(qts, AES_BASE + 0x424, count);
+        qtest_writel(qts, AES_BASE + 0x428, 1);
+        g_assert_cmphex(qtest_readl(qts, AES_BASE + 0x42c), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, AES_BASE + 0x430), ==, 2);
+        skg_encrypt_zero(out);
+        g_assert_cmpmem(out, sizeof(out), expected[count - 1], sizeof(out));
+    }
+    /* Invalid slot/count completes with error, without a false success. */
+    qtest_writel(qts, AES_BASE + 0x430, 3);
+    qtest_writel(qts, AES_BASE + 0x424, 0);
+    qtest_writel(qts, AES_BASE + 0x428, 1);
+    g_assert_cmphex(qtest_readl(qts, AES_BASE + 0x430), ==, 1);
+    qtest_writel(qts, AES_BASE + 0x430, 3);
+    g_assert_cmphex(qtest_readl(qts, AES_BASE + 0x430), ==, 0);
+}
+
 static void test_sha1(void)
 {
     static const uint8_t expect[20] = {
@@ -165,10 +228,11 @@ int main(int argc, char **argv)
     g_assert(write(fd, trailer, sizeof(trailer)) == sizeof(trailer));
     close(fd);
 
-    qts = qtest_initf("-machine ipad1,kboot=%s", kboot);
+    qts = qtest_initf("-machine ipad1,kboot=%s -global driver=s5l8930.cdma,property=skg-probe,value=on", kboot);
     qtest_add_func("/ipad1/cdma/m2m", test_m2m);
     qtest_add_func("/ipad1/cdma/aes", test_aes);
     qtest_add_func("/ipad1/cdma/sha1", test_sha1);
+    qtest_add_func("/ipad1/cdma/skg-candidate", test_skg_candidate);
     ret = g_test_run();
     qtest_quit(qts);
     unlink(kboot);

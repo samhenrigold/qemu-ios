@@ -24,7 +24,9 @@ done
 # it_agent: the iPod's guest agent (foreground app, lock state, launch, sync, the pasteboard), as
 # contrib/it-agent/build.sh builds it: clang's own stdarg.h, and SpringBoardServices' entitlements.
 cc6 "$HERE/../it-agent/it_agent.c" "$OUT/it_agent.o" -isystem "$(xcrun clang -print-resource-dir)/include"
-link6 -execute "$OUT/it_agent" "$OUT/it_agent.o"
+# it_agent.c's _start hands main argc, argv and envp; a legacy link enters at crt1old.c's instead
+agent_entry=(); [ "${LEGACY_LINK:-0}" = 1 ] || agent_entry=(-e __start)
+link6 -execute "$OUT/it_agent" "$OUT/it_agent.o" ${agent_entry[@]+"${agent_entry[@]}"}
 rm -f "$OUT/it_agent.o"
 "${LDID:-ldid}" -S"$HERE/../it-agent/it_agent-entitlements.xml" "$OUT/it_agent"
 file "$OUT/it_agent"

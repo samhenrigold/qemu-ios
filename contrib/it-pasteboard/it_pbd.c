@@ -11,16 +11,5 @@
 
 int main(void)
 {
-    sleep(STARTUP_DELAY);
-    if (!objc_setup()) {
-        w("it_pbd: could not resolve the ObjC runtime\n");
-        _exit(1);
-    }
-    w("it_pbd: up\n");
-    for (;;) {
-        if (!pump_host_to_guest()) {
-            pump_guest_to_host();
-        }
-        usleep(250000);
-    }
+    return clipboard_main();
 }

@@ -1683,7 +1683,15 @@ static EHCIQueue *ehci_state_fetchqh(EHCIState *ehci, int async)
     }
 #endif
 
-    if (q->qh.token & QTD_TOKEN_HALT) {
+    /* A high-speed periodic QH with no service microframes cannot issue a
+     * transaction (4.10.3). Native Synopsys drivers use these as schedule
+     * anchors with an empty, zero next-qTD pointer. Do not fetch or execute
+     * that inactive overlay: interpreting address zero as a transfer can
+     * spuriously reset the entire HC and strand valid asynchronous work. */
+    if ((q->qh.token & QTD_TOKEN_HALT) ||
+        (ehci->skip_idle_periodic_qh && !async &&
+         get_field(q->qh.epchar, QH_EPCHAR_EPS) == EHCI_QH_EPS_HIGH &&
+         !(q->qh.epcap & QH_EPCAP_SMASK_MASK))) {
         ehci_set_state(ehci, async, EST_HORIZONTALQH);
 
     } else if ((q->qh.token & QTD_TOKEN_ACTIVE) &&
@@ -2122,7 +2130,18 @@ static void ehci_advance_state(EHCIState *ehci, int async)
 
         if (again < 0 || itd_count > 16) {
             /* TODO: notify guest (raise HSE irq?) */
-            fprintf(stderr, "processing error - resetting ehci HC\n");
+            fprintf(stderr, "processing error - resetting ehci HC (async=%d state=%u again=%d itd=%d cmd=%08x periodic=%08x asyncbase=%08x)\n",
+                    async, ehci_get_state(ehci, async), again, itd_count,
+                    ehci->usbcmd, ehci->periodiclistbase, ehci->asynclistaddr);
+            if (ehci_get_state(ehci, async) == EST_EXECUTE && q &&
+                !QTAILQ_EMPTY(&q->packets)) {
+                EHCIPacket *failed = QTAILQ_FIRST(&q->packets);
+                fprintf(stderr, "ehci failed QH=%08x qTD=%08x token=%08x buf=%08x,%08x,%08x,%08x,%08x\n",
+                        q->qhaddr, failed->qtdaddr, failed->qtd.token,
+                        failed->qtd.bufptr[0], failed->qtd.bufptr[1],
+                        failed->qtd.bufptr[2], failed->qtd.bufptr[3],
+                        failed->qtd.bufptr[4]);
+            }
             ehci_reset(ehci);
             again = 0;
         }

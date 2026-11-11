@@ -20,6 +20,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/arm/ios-boot-args.h"
 #include "hw/arm/machines-qom.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -375,6 +376,7 @@ struct IPad1MachineState {
     bool usb_cable;                      /* cable present; runtime qom-set */
     bool wifi;                           /* BCM4329 behind the IOP's SDIO ring */
     uint64_t rtc_epoch;                  /* rtc-epoch: the PMU clock at power-on (Unix seconds), 0 = the host's */
+    bool quiet_boot;                    /* omit -v in the RAM boot handoff */
     bool baseband;                       /* leave the kboot DT's baseband node matchable (default off) */
     DeviceState *bb_modem;               /* the ios-baseband behind spi2 (baseband=on, radio boards) */
     DeviceState *dart1;
@@ -760,6 +762,11 @@ static void ipad1_cpu_reset(void *opaque)
                      "(load 0x%x len 0x%x)", load_pa, image_len);
         exit(1);
     }
+    if (s->quiet_boot && !ios_boot_args_quiet((uint8_t *)data, image_len,
+                                             load_pa, bootargs_pa)) {
+        error_report("quiet-boot: invalid ARM32 boot command line");
+        exit(1);
+    }
     /*
      * No modem behind spi2 unless one is attached: the baseband node stays in
      * the DT (the cell stream turns it on with baseband=on) but matches nothing,
@@ -1060,9 +1067,25 @@ static void ipad1_pwroff_tick(void *opaque)
 static void ipad1_powerdown_req(Notifier *n, void *opaque)
 {
     IPad1MachineState *s = IPAD1_MACHINE(qdev_get_machine());
+    static uint64_t sequence;
 
     if (s->pwroff_phase != PWROFF_IDLE && s->pwroff_phase != PWROFF_WATCH) {
         return;
+    }
+    /* Prepared guests expose the existing launchd reboot2(RB_HALT) RPC.
+     * Completion still comes from the PMU, never from the RPC reply. Keep
+     * the hardware gesture below for older guests without a live agent. */
+    if (!strcmp(ipod_agent_status(s->agent,
+                                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME)), "alive")) {
+        g_autofree char *request = g_strdup_printf("qemu-powerdown-%" PRIu64 " halt\n",
+                                                  ++sequence);
+        if (!ipod_agent_submit(s->agent, request)) {
+            /* Watched as the gesture is: a guest that hasn't halted in pwroff_watch_ms is reported. */
+            timer_del(s->pwroff_timer);
+            s->pwroff_phase = PWROFF_WATCH;
+            ipad1_pwroff_arm(s, pwroff_watch_ms(s));
+            return;
+        }
     }
     /*
      * The sheet follows the interface orientation, which follows the
@@ -2398,8 +2421,20 @@ static char *ipad1_get_agent_status(Object *obj, Error **errp)
                                       qemu_clock_get_ms(QEMU_CLOCK_REALTIME)));
 }
 
+static bool ipad1_get_quiet_boot(Object *obj, Error **errp)
+{
+    return IPAD1_MACHINE(obj)->quiet_boot;
+}
+
+static void ipad1_set_quiet_boot(Object *obj, bool value, Error **errp)
+{
+    IPAD1_MACHINE(obj)->quiet_boot = value;
+}
+
 static void ipad1_instance_init(Object *obj)
 {
+    object_property_add_bool(obj, "quiet-boot", ipad1_get_quiet_boot,
+                             ipad1_set_quiet_boot);
     IPAD1_MACHINE(obj)->usb_cable = true;
     IPAD1_MACHINE(obj)->iop_core = true;
     IPAD1_MACHINE(obj)->wifi = true;

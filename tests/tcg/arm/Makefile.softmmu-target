@@ -20,6 +20,16 @@ run-test-armv6m-undef: QEMU_OPTS=-semihosting-config enable=on,target=native,cha
 
 ARM_TESTS+=test-armv6m-undef
 
+test-swift-cntvoff: test-swift-cntvoff.S
+	$(CC) -march=armv7-a -mfloat-abi=soft \
+		-Wl,--build-id=none -x assembler-with-cpp \
+		$< -o $@ -nostdlib -static \
+		-T $(ARM_SRC)/$@.ld
+
+run-test-swift-cntvoff: QEMU_OPTS=-display none -M versatilepb -cpu apple-swift -audio driver=none -semihosting-config enable=on,target=native,chardev=output -kernel
+
+ARM_TESTS+=test-swift-cntvoff
+
 # These objects provide the basic boot code and helper functions for all tests
 CRT_OBJS=boot.o
 

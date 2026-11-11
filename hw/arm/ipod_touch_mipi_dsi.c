@@ -68,6 +68,8 @@ static uint64_t ipod_touch_mipi_dsi_read(void *opaque, hwaddr addr, unsigned siz
         }
         case REG_ESCMODE:
             return s->escmode;
+        case REG_CLKCTRL:
+            return s->clkctrl;
         case REG_INTSRC:
             return s->intsrc;
         case REG_RXFIFO: {

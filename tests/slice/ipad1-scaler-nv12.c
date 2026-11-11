@@ -20,7 +20,9 @@
 typedef int SysBusDevice;
 typedef int DeviceState;
 #define ROUND_UP(n,d) (((n)+(d)-1)/(d)*(d))
-typedef int MemoryRegion;
+typedef struct { uint64_t addr; } MemoryRegion;
+#define trace_ipod_scaler_reg_write(...) ((void)0)
+#define trace_ipod_scaler_transfer(...) ((void)0)
 typedef uint64_t hwaddr;
 typedef int *qemu_irq;
 static uint8_t ram[0x200000];

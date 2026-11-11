@@ -27,6 +27,8 @@
 #include "ipod-gles.h"
 static int gles_strict = 1;
 static inline uint32_t ldl_le_p(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+/* Layout fixtures have no compressed texture storage. */
+static GLESPVRTC *gles_pvrtc_texture(bool create) { return NULL; }
 static void gles_surface_forget(GLenum target) { (void)target; }
 static void gles_texture_begin(void) {}
 static int64_t gles_texture_end(uint32_t target, uint32_t level, GLESPVRTCLevel image) { return 0; }

@@ -20,6 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "chardev/char.h"
+#include "chardev/char-serial.h"
 #include "hw/arm/s5l8930.h"
 #include "system/reset.h"
 #include "trace.h"
@@ -165,6 +166,26 @@ static int hdq_chr_write(Chardev *chr, const uint8_t *buf, int len)
     return len;
 }
 
+static int hdq_chr_ioctl(Chardev *chr, int cmd, void *arg)
+{
+    HdqGaugeChardev *g = HDQ_GAUGE_CHARDEV(chr);
+
+    if (cmd != CHR_IOCTL_SERIAL_SET_BREAK) {
+        return -ENOTSUP;
+    }
+    if (*(int *)arg) {
+        /* A break resets the HDQ transaction. TX and RX share the wire, so
+         * the serial client also receives its low-line echo. Deliver it on
+         * the next event-loop turn, before ordinary symbol traffic, rather
+         * than re-entering the UART from its control-register write. */
+        g->bits = g->nbits = 0;
+        g->resp_head = g->resp_tail = 0;
+        hdq_queue(g, 0);
+        timer_mod(g->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    return 0;
+}
+
 static void hdq_chr_accept_input(Chardev *chr)
 {
     hdq_flush(HDQ_GAUGE_CHARDEV(chr));
@@ -263,6 +284,7 @@ static void hdq_chr_class_init(ObjectClass *oc, const void *data)
 
     cc->chr_open = hdq_chr_open;
     cc->chr_write = hdq_chr_write;
+    cc->chr_ioctl = hdq_chr_ioctl;
     cc->chr_accept_input = hdq_chr_accept_input;
 }
 

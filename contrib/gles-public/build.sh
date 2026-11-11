@@ -28,7 +28,7 @@ tbd "$GEN/CoreFoundation.tbd" /System/Library/Frameworks/CoreFoundation.framewor
 tbd "$GEN/libobjc.tbd" /usr/lib/libobjc.A.dylib 227 1 "_objc_msgSend, _objc_msgSendSuper2, __objc_empty_cache" ""
 tbd "$GEN/Foundation.tbd" /System/Library/Frameworks/Foundation.framework/Foundation 678.24 300 "" ""
 for GUEST_ARCH in armv6 armv7; do
-    cc6 "$HERE/opengles.c" "$GEN/opengles-$GUEST_ARCH.o" -x objective-c -I"$GEN" -Wno-objc-root-class
+    cc6 "$HERE/opengles.c" "$GEN/opengles-$GUEST_ARCH.o" -x objective-c -I"$GEN" -Wno-objc-root-class -D_FORTIFY_SOURCE=0
     link6 -dylib "$GEN/OpenGLES-$GUEST_ARCH" "$GEN/opengles-$GUEST_ARCH.o" \
         -install_name /System/Library/Frameworks/OpenGLES.framework/OpenGLES \
         -compatibility_version 1.0 -current_version 1.0 -exported_symbols_list "$GEN/gles2x.exp" \

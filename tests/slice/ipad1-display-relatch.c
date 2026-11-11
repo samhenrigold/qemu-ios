@@ -28,6 +28,7 @@ typedef struct { uint32_t regs[0x6000 / 4]; uint32_t swap_id; } DisplayPipe;
 #include "types.h"
 
 typedef struct S5L8930DisplayState {
+    bool h5p;
     DisplayPipe pipe[1];
     uint8_t *front, *front_next;
     size_t front_size;
@@ -44,7 +45,7 @@ static unsigned reads;
 
 /* The two stubs: a fixed panel, and guest memory at IOVA = offset into ram. */
 static void panel_size(S5L8930DisplayState *s, unsigned *w, unsigned *h) { *w = W; *h = H; }
-static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len)
+static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned len, const uint32_t *tables)
 {
     assert(va + len <= sizeof(ram));
     memcpy(dst, ram + va, len);

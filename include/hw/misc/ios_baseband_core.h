@@ -47,6 +47,9 @@ typedef struct IosBbCall {
     char number[32];
 } IosBbCall;
 
+/* Optional binary-transport call events. The snapshot is valid during callback. */
+typedef void (*IosBbCallFn)(void *opaque, const IosBbCall *call);
+
 typedef struct IosBbAtChan {
     char line[600];
     unsigned len;
@@ -88,7 +91,15 @@ typedef struct IosBbSms {
     char pdu[400];            /* full 23.040 hex PDU as sent in +CMT */
 } IosBbSms;
 
+/* Binary transports observe the same inbox used by the AT transport. The
+ * zero-based slot is valid when this callback runs; no AT DLCI is required. */
+typedef void (*IosBbSmsFn)(void *opaque, unsigned slot);
+
 typedef struct IosBbCore {
+    IosBbCallFn call_event;
+    void *call_opaque;
+    IosBbSmsFn sms_event;
+    void *sms_opaque;
     IosBbOutFn out;
     void *opaque;
     int64_t now_ms;
@@ -125,6 +136,11 @@ typedef struct IosBbCore {
 
     /* Link: raw bytes until the host starts H5. */
     bool h5;
+    /* Fixed transport configuration; retained by modem reset. */
+    bool h5_userspace;         /* Apple userspace length and X25 CRC format */
+    uint8_t h5_data_type;      /* reliable stream type; zero selects kernel 14 */
+    IosBbOutFn h5_wire_out, h5_payload_out;
+    void *h5_opaque;
     bool h5_active;            /* CONFIG RESP sent */
     bool h5_crc;               /* negotiated data integrity check */
     bool h5_in_frame, h5_esc;
@@ -219,6 +235,14 @@ void ios_bb_operator_changed(IosBbCore *bb);
 int ios_bb_rssi(const IosBbCore *bb);
 /* Network-side call events. Return false if refused (no service, line busy). */
 bool ios_bb_incoming_call(IosBbCore *bb, const char *number);
+/* Transport-neutral outgoing calls; returns call ID, or -1 on refusal. */
+int ios_bb_dial(IosBbCore *bb, const char *number);
+/* Answer an incoming/waiting call by ID, holding any other active call. */
+bool ios_bb_answer(IosBbCore *bb, int id);
+bool ios_bb_hangup(IosBbCore *bb, int id);
+bool ios_bb_release_active(IosBbCore *bb);
+/* Advance calls only, without AT registration/SMS/GPS traffic. */
+void ios_bb_calls_tick(IosBbCore *bb, int64_t now_ms);
 void ios_bb_remote_hangup(IosBbCore *bb);
 void ios_bb_remote_answer(IosBbCore *bb);
 /* "idle", "dialing", "alerting", "incoming", "active", "held" of the first live call. */
@@ -227,10 +251,18 @@ const char *ios_bb_call_state(const IosBbCore *bb);
 bool ios_bb_emergency_call(const IosBbCore *bb);
 /* The host's link is up (not switched off) and the last +CREG it was sent says registered. */
 bool ios_bb_attached(const IosBbCore *bb);
+/* Advance/query network selection without producing AT transport output.
+ * Registration values follow +CREG (0 detached, 1 home, 2 searching). */
+int ios_bb_network_registration(IosBbCore *bb, int64_t now_ms);
+/* Shared CFUN0/1/4 radio transition, excluding the AT command response. */
+bool ios_bb_set_radio_mode(IosBbCore *bb, int mode);
 /* Whether the motor +xdrv=4 drives runs at bb->now_ms. */
 bool ios_bb_vibrating(const IosBbCore *bb);
 /* The SIM's lock: "off" (no PIN), "pin" (waiting for it), "ready" (PIN entered), "puk", "blocked". */
 const char *ios_bb_sim_lock(const IosBbCore *bb);
+/* Complete transparent SIM EF; zero for absent/unknown file or short buffer. */
+size_t ios_bb_sim_read_file(const IosBbCore *bb, uint16_t fid,
+                            uint8_t *data, size_t capacity);
 /* The numbers the modem treats as emergency numbers (TS 22.101 10.1.1). */
 bool ios_bb_is_emergency_number(const char *number);
 
@@ -240,10 +272,14 @@ bool ios_bb_sms_sender_ok(const char *number);
 bool ios_bb_plmn_ok(const char *plmn);
 bool ios_bb_carrier_ok(const char *name);
 
-/* Network-side SMS: deliver a 23.040 SMS-DELIVER as +CMT on DLCI 3. */
+/* Network-side SMS: store one 23.040 SMS-DELIVER, then notify the binary
+ * transport or emit +CMT on the configured AT SMS channel. */
 bool ios_bb_incoming_sms(IosBbCore *bb, const char *number, const char *text);
 const char *ios_bb_last_mo_sms_number(const IosBbCore *bb);
 const char *ios_bb_last_mo_sms_text(const IosBbCore *bb);
+/* Accept a GSM SMS-SUBMIT PDU (including SMSC length) on the local network. */
+bool ios_bb_submit_sms_pdu(IosBbCore *bb, const uint8_t *pdu, size_t len,
+                            uint8_t *reference);
 
 /*
  * Network -> guest IPv4 packet on the data DLCI. The guest's address and DNS are
@@ -255,6 +291,16 @@ bool ios_bb_data_input(IosBbCore *bb, const uint8_t *pkt, size_t len);
 
 /* H5 packet CRC as the Apple kext computes it (golden vector "123456789" -> 0xf689). */
 uint16_t ios_bb_h5_crc(const uint8_t *p, size_t n);
+
+/* H5-only transport: bypass raw AT detection and 27.010 payload handling.
+ * Configure callbacks before reset/input; default zero configuration preserves
+ * the kernel transport. send is atomic (false means queue capacity exhausted). */
+void ios_bb_h5_input(IosBbCore *bb, const uint8_t *buf, size_t len);
+bool ios_bb_h5_send(IosBbCore *bb, const uint8_t *buf, size_t len);
+void ios_bb_h5_tick(IosBbCore *bb, int64_t now_ms);
+/* UART baud transition: acknowledge any pending receipt before restarting
+ * stream sequence space, retaining the negotiated link. */
+void ios_bb_h5_restart(IosBbCore *bb);
 
 /*
  * Infineon SPI framing (3GS and iPhone 4: BasebandSPI's IFX protocol, see

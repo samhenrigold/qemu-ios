@@ -57,6 +57,9 @@ static inline bool arm_excp_unmasked(CPUState *cs, unsigned int excp_idx,
         return !allIntMask;
     case EXCP_FIQ:
         pstate_unmasked = (!(env->daif & PSTATE_F)) && (!allIntMask);
+        if (arm_feature(env, ARM_FEATURE_SWIFT_INTERRUPT_PROBE)) {
+            pstate_unmasked = !(env->daif & PSTATE_I);
+        }
         break;
 
     case EXCP_IRQ:

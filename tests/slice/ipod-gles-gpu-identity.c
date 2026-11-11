@@ -15,6 +15,7 @@
  * SLICE:fe contrib/gles-public/opengles.c fn fe_limit
  */
 #include <assert.h>
+#define GLES_CAP_MAP_BUFFER 2u   /* include/hw/arm/guest-services/gles.h */
 #include <stdio.h>
 #include <string.h>
 static unsigned slen(const char *s) { return (unsigned)strlen(s); }
@@ -57,6 +58,14 @@ int main(void)
     assert(!strcmp(ver(FE_SGX1, sgx511, sizeof sgx511), "OpenGL ES-CM 1.1 IMGSGX535-63.24"));
     assert(!strcmp(ver(FE_SGX1, sgx712, sizeof sgx712), "OpenGL ES-CM 1.1 IMGSGX535-97.7"));
     assert(!strcmp(ver(FE_SGX2, 0, 0), "OpenGL ES 2.0"));
+    /* Original N42 11A465 543RC2 driver's identity (the build omits RC2). */
+    static const char sgx543[] = "PowerVR SGX 543\0IMGSGX543GLDriver\0IMGSGX543-97\0";
+    assert(!strcmp(fe_cstring(sgx543, sizeof sgx543, "PowerVR "), "PowerVR SGX 543"));
+    assert(!strcmp(ver(FE_SGX2, sgx543, sizeof sgx543), "OpenGL ES 2.0 IMGSGX543-97"));
+    static const char sgx554[] = "IMGSGX554-115.15\0";
+    assert(!strcmp(ver(FE_SGX2, sgx554, sizeof sgx554), "OpenGL ES 2.0 IMGSGX554-115.15"));
+    static const char bad[] = "IMGSGX543GLDriver\0IMGSGX543-\0";
+    assert(!strcmp(ver(FE_SGX2, bad, sizeof bad), "OpenGL ES 2.0"));
 
     /* GLEngine: ES 1.1 and 2.0 take different lists from the same names; 4.2.1 has no APPLE_sync, 6.1.6 has it. */
     static const char ge421[] = "GL_ARB_shadow\0GL_OES_depth_texture\0GL_OES_packed_depth_stencil\0"
@@ -68,6 +77,12 @@ int main(void)
     assert(!strcmp(ext(FE_SGX1, ge421, sizeof ge421),
                    "GL_IMG_texture_compression_pvrtc GL_OES_draw_texture GL_OES_packed_depth_stencil"));
     assert(!strcmp(ext(FE_SGX2, ge616, sizeof ge616), "GL_APPLE_sync GL_OES_texture_float"));
+    /* Buffer mapping is advertised only where the host reports it (the A6's), whatever the engine names. */
+    static const char maps[] = "GL_OES_mapbuffer\0GL_EXT_map_buffer_range\0GL_APPLE_sync\0";
+    assert(!strcmp(ext(FE_SGX2, maps, sizeof maps), "GL_APPLE_sync"));
+    fe_caps = GLES_CAP_MAP_BUFFER;
+    assert(!strcmp(ext(FE_SGX2, maps, sizeof maps), "GL_OES_mapbuffer GL_EXT_map_buffer_range GL_APPLE_sync"));
+    fe_caps = 0;
     assert(!strcmp(fe_cstring(ge421, sizeof ge421, "OpenGL ES GLSL ES 1.0"), "OpenGL ES GLSL ES 1.0"));
 
     /* Limits: the Mac's answers clamped to each GPU's. */

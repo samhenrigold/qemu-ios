@@ -14,6 +14,11 @@
 #include <string.h>
 #define GL_INVALID_OPERATION 0x502
 #define GL_INVALID_ENUM 0x500
+#define GL_INVALID_VALUE 0x501
+#define GL_ARRAY_BUFFER 0x8892
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GLES_ID_glMapBufferRangeEXT 858
+#define GLES_ID_glFlushMappedBufferRangeEXT 859
 #define GL_OUT_OF_MEMORY 0x505
 #define GLES_SLOT_MAP_BUFFER 649
 #define GLES_SLOT_UNMAP_BUFFER 650
@@ -23,7 +28,8 @@ typedef uint64_t vaddr;
 typedef struct {
     void *data;
     size_t size;
-    uint32_t usage, map_va, map_size, map_access;
+    uint32_t usage, map_va, map_size, map_access, map_offset;
+    bool map_range;
 } GLESBuffer;
 static GLESBuffer *bound;
 static GLESBuffer *gles_buffer_bound(uint32_t target) { return target == 0x8892 ? bound : NULL; }
@@ -103,6 +109,45 @@ int main(void)
     assert(CALL(GLES_SLOT_MAP_BUFFER, ARRAY, WRITE_ONLY, GUEST) == GUEST);
     b.size = 4;
     assert(CALL(GLES_SLOT_UNMAP_BUFFER, ARRAY) == 1 && bytes[4] == 5);
-    puts("PASS: glMapBuffer copies in whatever the access, glUnmapBuffer copies back unless read-only, faults reissue");
+    /* A subrange points at its own start; unmapping preserves its neighbors. */
+    b.size = 8;
+    assert(CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 2, 3, 2, GUEST) == GUEST);
+    assert(!memcmp(guest, bytes + 2, 3));
+    memset(guest, 0x77, 3);
+    assert(CALL(GLES_SLOT_UNMAP_BUFFER, ARRAY) == 1);
+    assert(bytes[1] == 2 && bytes[2] == 0x77 && bytes[4] == 0x77 && bytes[5] == 6);
+
+    /* Explicit flush offsets are relative to the map. Unflushed bytes stay put. */
+    assert(CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 2, 4, 0x12, GUEST) == GUEST);
+    memset(guest, 0x88, 4);
+    assert(!CALL(GLES_ID_glFlushMappedBufferRangeEXT, ARRAY, 1, 1));
+    assert(bytes[2] == 0x77 && bytes[3] == 0x88 && bytes[4] == 0x77);
+    assert(CALL(GLES_SLOT_UNMAP_BUFFER, ARRAY) == 1 && bytes[5] == 6);
+    assert(CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 8, 1, GUEST) == GUEST);
+    memset(guest, 0x99, 8);
+    assert(CALL(GLES_SLOT_UNMAP_BUFFER, ARRAY) == 1 && bytes[0] == 0x55);
+
+    rejected = 0;
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 7, 2, 2, GUEST));
+    assert(rejected == GL_INVALID_VALUE && !b.map_va);
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, -1, 1, 2, GUEST));
+    assert(rejected == GL_INVALID_VALUE);
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 1, 0x40, GUEST));
+    assert(rejected == GL_INVALID_VALUE);
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 0, 2, GUEST));
+    assert(rejected == GL_INVALID_OPERATION);
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 1, 5, GUEST));
+    assert(rejected == GL_INVALID_OPERATION);
+    assert(CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 8, 0x12, GUEST) == GUEST);
+    assert(!CALL(GLES_ID_glMapBufferRangeEXT, ARRAY, 0, 8, 2, GUEST));
+    assert(rejected == GL_INVALID_OPERATION);
+    assert(!CALL(GLES_ID_glFlushMappedBufferRangeEXT, ARRAY, 7, 2));
+    assert(rejected == GL_INVALID_VALUE);
+    guest_fails = true;
+    assert(CALL(GLES_ID_glFlushMappedBufferRangeEXT, ARRAY, 0, 1) == -1 && b.map_va);
+    guest_fails = false;
+    assert(CALL(GLES_SLOT_UNMAP_BUFFER, ARRAY) == 1);
+
+    puts("PASS: full/range buffer maps, partial flushes, read-only access, bounds and fault retries");
     return 0;
 }

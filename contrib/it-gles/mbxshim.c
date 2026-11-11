@@ -76,6 +76,12 @@ static int gles_slot_of(unsigned id);
 #define GLES_OP_PRESENT         0x1000
 #define GLES_OP_PRESENT_SURFACE 0x1001
 #define GLES_OP_DRAWABLE_STORAGE 0x1008
+#define GLES_OP_CAPABILITIES     0x100a
+/* its answer's bits, as include/hw/arm/guest-services/gles.h has them (this side builds without that header) */
+#define GLES_CAP_FRAMEBUFFER_FETCH 1u
+#define GLES_CAP_MAP_BUFFER        2u
+#define GLES_CAP_NATIVE_DISPATCH   4u
+#define GLES_CAP_FENCE_FINISH      8u
 
 /* The two drawable formats CA hands the engine. Declared up here because the
  * surface plausibility check needs the pixel size before the drawable code
@@ -263,6 +269,18 @@ static int guest_fault_read(unsigned long base, unsigned bytes)
     volatile const unsigned char *p = (void *)base;
     for (unsigned x = 0; x < bytes; x += 4096) (void)p[x];
     (void)p[bytes - 1];
+    return 1;
+}
+
+/* Readback destinations need ordinary guest stores before the trap as well.
+ * Let the native VM resolve write/COW faults at an actual store instruction;
+ * preserve the existing bytes, and never bypass the mapping's permissions. */
+static int guest_fault_write(unsigned long base, unsigned bytes)
+{
+    if (!base || !bytes || bytes > 64u * 1024 * 1024 || base > ~0UL - bytes) return 0;
+    volatile unsigned char *p = (void *)base;
+    for (unsigned x = 0; x < bytes; x += 4096) p[x] = p[x];
+    p[bytes - 1] = p[bytes - 1];
     return 1;
 }
 
@@ -791,12 +809,49 @@ static void *s_mapBuffer(void *gc, unsigned target, unsigned access)
         long long mapped = qc(649, gc, 3, A(target, access, (unsigned)(unsigned long)data));
         return mapped > 0 ? (void *)(unsigned long)mapped : 0;
     }
+/* Range maps use the same sharegroup-owned storage as OES_mapbuffer, but
+ * return the start of the requested range, not the buffer's base. */
+static void *s_mapBufferRange(void *gc, unsigned target, unsigned offset,
+                              unsigned length, unsigned access)
+{
+    GuestGC *c = gc, *owner = map_owner(gc);
+    unsigned name = !c ? 0 : target == 0x8893 ? c->element_buffer :
+                    target == 0x8892 ? c->array_buffer : 0;
+    volatile int size = 0, mapped_before = 0;
+    void *data = 0;
+    if (name && length && length <= 64 * 1024 * 1024 &&
+        qc(651, gc, 3, A(target, 0x88bc, (unsigned)(unsigned long)&mapped_before)) >= 0 &&
+        !mapped_before &&
+        qc(651, gc, 3, A(target, 0x8764, (unsigned)(unsigned long)&size)) >= 0 &&
+        size > 0 && offset <= (unsigned)size && length <= (unsigned)size - offset) {
+        OSSpinLockLock(&owner->maps_lock);
+        MapStorage *m = owner->maps;
+        while (m && m->name != name) m = m->next;
+        if (!m && (m = calloc(1, sizeof(*m)))) {
+            m->name = name; m->next = owner->maps; owner->maps = m;
+        }
+        if (m && m->size < length) {
+            free(m->data); m->data = calloc(1, length);
+            m->size = m->data ? length : 0;
+        }
+        data = m ? m->data : 0;
+        OSSpinLockUnlock(&owner->maps_lock);
+        if (data) for (unsigned x = 0; x < length; x += 4096)
+            ((volatile unsigned char *)data)[x] = 0;
+    }
+    long long mapped = qc(858, gc, 5,
+        A(target, offset, length, access, (unsigned)(unsigned long)data));
+    return mapped > 0 ? (void *)(unsigned long)mapped : 0;
+}
 static int s_unmapBuffer(void *gc, unsigned target)
     { return (int)qc(650, gc, 1, A(target)); }
 static int s_bufferData(void *gc, unsigned target, unsigned size,
                         unsigned data, unsigned usage)
     { guest_fault_read(data, size);
       return (int)qc(646, gc, 4, A(target, size, data, usage)); }
+static int s_texStorage2D(void *gc, unsigned target, unsigned levels,
+                          unsigned format, unsigned width, unsigned height)
+    { return (int)qc(919, gc, 5, A(target, levels, format, width, height)); }
 static int s_bufferSubData(void *gc, unsigned target, unsigned offset,
                            unsigned size, unsigned data)
     { guest_fault_read(data, size);
@@ -1020,6 +1075,8 @@ static void gles_hand_table(void **table)
         table[644] = (void *)s_genBuffers;
         table[646] = (void *)s_bufferData;
         table[649] = (void *)s_mapBuffer;
+        table[858] = (void *)s_mapBufferRange;
+        table[919] = (void *)s_texStorage2D;
         table[650] = (void *)s_unmapBuffer;
         table[647] = (void *)s_bufferSubData;
 
@@ -1611,18 +1668,23 @@ static int surface_fault_read(unsigned long base, unsigned stride, unsigned rows
 /* 7E18's engine at 0xd918 takes (gc, GL target, IOSurface), not
  * (gc, IOSurface, ...). The target is 0x84f5 or 0x8d41; treating it as a
  * surface pointer crashes the compositor. Texture bindings never own a view. */
-static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format, int plane);
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface,
+                                unsigned gl_format, int plane,
+                                unsigned view_width, unsigned view_height);
 static int GLESBindCoreSurface(void *gc, unsigned target, void *surface)
 {
-    return GLESBindCoreSurfaceAs(gc, target, surface, 0, -1);
+    return GLESBindCoreSurfaceAs(gc, target, surface, 0, -1, 0, 0);
 }
 
 /* gl_format: the layout the caller's GL arguments give the surface (glishim's 0x38E
  * attach), used when the IOSurface carries no pixel format; 0 = none. plane: the plane of a
  * two-plane surface the caller asked for, or -1 for the whole surface. */
-static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsigned gl_format, int plane)
+static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface,
+                                unsigned gl_format, int plane,
+                                unsigned view_width, unsigned view_height)
 {
     unsigned base, stride, width, height, format, uv = 0, uvstride = 0;
+    unsigned view_element = 0;
     int result;
     if (!surface) {
         return qc(GLES_OP_BIND_SURFACE, gc, 8, A(target,0,0,0,0,0,0,0)) == 0;
@@ -1649,13 +1711,39 @@ static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsig
         /* One plane as its own texture, as 5.x on CoreAnimation draws a 4:2:0 surface (Cover Flow's covers from
          * the JPEG block): its luma as GL_LUMINANCE, its Cb/Cr as GL_LUMINANCE_ALPHA, converted by its own
          * shader. Converting the whole surface for each of the two made it convert RGB as YCbCr. */
-        if ((plane == 0 || plane == 1) && (gl_format == 0x4c303038 || gl_format == 0x32433038)) {
+        if ((plane == 0 || plane == 1) && gl_format) {
+            switch (gl_format) {
+            case 0x41303038: /* A008 */
+            case 0x4c303038: view_element = 1; break; /* L008 */
+            case 0x32433038: /* 2C08 */
+            case 0x4c353635: view_element = 2; break; /* L565 */
+            case 0x52474241: /* RGBA */
+            case 0x42475241: view_element = 4; break; /* BGRA */
+            default: break;
+            }
+        }
+        /* Preserve the existing whole-NV12-to-RGB sampling path. A full-size
+         * RGB request cannot be a packed byte view of the luma plane. */
+        if (view_element == 4 && view_width == width && view_height == height &&
+            view_width > stride / view_element) {
+            view_element = 0;
+        }
+        if (view_element) {
             base = plane ? uv : base;
             stride = plane ? uvstride : stride;
-            width = p_IOSurfaceGetWidthOfPlane ? p_IOSurfaceGetWidthOfPlane(surface, plane)
+            unsigned plane_width = p_IOSurfaceGetWidthOfPlane ? p_IOSurfaceGetWidthOfPlane(surface, plane)
                   : plane ? (width + 1) / 2 : width;
-            height = p_IOSurfaceGetHeightOfPlane ? p_IOSurfaceGetHeightOfPlane(surface, plane)
+            unsigned plane_height = p_IOSurfaceGetHeightOfPlane ? p_IOSurfaceGetHeightOfPlane(surface, plane)
                    : plane ? (height + 1) / 2 : height;
+            /* Camera stabilization packs four luma bytes, or two CbCr
+             * pairs, into each RGBA texel. Its texture dimensions describe
+             * that view, not the full IOSurface's pixel dimensions. */
+            width = view_width ? view_width : plane_width;
+            height = view_height ? view_height : plane_height;
+            if (!width || !height || width > stride / view_element || height > plane_height) {
+                p_IOSurfaceUnlock(surface, surface_lock_flags, 0);
+                return 0;
+            }
             format = gl_format;
             uv = uvstride = 0;
         }
@@ -1676,7 +1764,8 @@ static int GLESBindCoreSurfaceAs(void *gc, unsigned target, void *surface, unsig
             surface_fault_read(base, stride, height, width) &&
             surface_fault_read(uv, uvstride, height / 2, width);
     } else {
-        unsigned element = p_IOSurfaceGetBytesPerElement ? p_IOSurfaceGetBytesPerElement(surface) : 0;
+        unsigned element = view_element ? view_element :
+            p_IOSurfaceGetBytesPerElement ? p_IOSurfaceGetBytesPerElement(surface) : 0;
         unsigned long long row = (unsigned long long)width * (element ? element : 1);
         readable = readable && !uv &&
             surface_fault_read(base, stride, height, row < stride ? (unsigned)row : stride);

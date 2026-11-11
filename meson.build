@@ -1848,7 +1848,7 @@ endif
 
 coreaudio = not_found
 if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
-  coreaudio = dependency('appleframeworks', modules: 'CoreAudio',
+  coreaudio = dependency('appleframeworks', modules: ['CoreAudio', 'AudioToolbox'],
                          required: get_option('coreaudio'))
 endif
 

@@ -184,7 +184,7 @@ bool s5l8930_iop_io_failed(void)
 #define FMI_ID_CES              16
 #define FMI_META_BYTES          10          /* bytes_per_meta, fw set_config */
 #define FMI_BOOTPAGE_BYTES      0x600       /* kext c04e92b6 */
-#define FMI_MAX_PAGE            0x4000
+#define FMI_MAX_PAGE            0x8800 /* includes data and spare on 16 KiB PPN parts */
 #define FMI_MAX_MULTI           0x200       /* 0x800-byte CE/page arrays */
 
 #define SDIO_OP_PING            1
@@ -592,8 +592,9 @@ static uint32_t fmi_set_config(S5L8930IOPState *s, int bus, uint8_t *cmd)
     uint32_t bpp = ARG(0x24);
     uint32_t spare = ARG(0x28);
 
+    /* nand_read_page fills page + spare into buffers of FMI_MAX_PAGE (s5l8930_h2fmi.c's H2FMI_BUF) */
     if (ARG(0x10) != bus || bpp == 0 || bpp > FMI_MAX_PAGE ||
-        spare > FMI_MAX_PAGE) {
+        spare > FMI_MAX_PAGE - bpp) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad config bus %u page %u spare %u\n",
                       __func__, ARG(0x10), bpp, spare);
         if (qemu_loglevel_mask(LOG_GUEST_ERROR)) {   /* the command's argument words */
@@ -1722,7 +1723,7 @@ static int iop_post_load(void *opaque, int version)
     }
     for (int bus = 0; bus < NAND_BUSES; bus++) {     /* fmi_set_config's bounds: the page buffers */
         if (!s->bytes_per_page[bus] || s->bytes_per_page[bus] > FMI_MAX_PAGE ||
-            s->bytes_per_spare[bus] > FMI_MAX_PAGE) {
+            s->bytes_per_spare[bus] > FMI_MAX_PAGE - s->bytes_per_page[bus]) {
             return -EINVAL;
         }
     }

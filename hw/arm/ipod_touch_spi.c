@@ -104,6 +104,16 @@ static void apple_spi_cs_set(void *opaque, int pin, int level)
     apple_spi_update_cs(s);
 }
 
+static uint32_t apple_spi_transfer(IPodTouchSPIState *s, uint32_t tx)
+{
+    uint32_t rx = ssi_transfer(s->spi, tx);
+    if (s->traced_transfers < s->trace_transfer_limit) {
+        qemu_log("SPI%u transfer %u tx=0x%02x rx=0x%02x\n",
+                 s->base, s->traced_transfers++, tx & 0xff, rx & 0xff);
+    }
+    return rx;
+}
+
 static void apple_spi_run(IPodTouchSPIState *s)
 {
     uint32_t tx;
@@ -127,7 +137,7 @@ static void apple_spi_run(IPodTouchSPIState *s)
 
     while ((REG(s, R_TXCNT) || drain_tx) && !fifo8_is_empty(&s->tx_fifo)) {
         tx = (uint32_t)fifo8_pop(&s->tx_fifo);
-        rx = ssi_transfer(s->spi, tx);
+        rx = apple_spi_transfer(s, tx);
         if (REG(s, R_TXCNT)) {
             REG(s, R_TXCNT)--;
         }
@@ -150,7 +160,7 @@ static void apple_spi_run(IPodTouchSPIState *s)
 
     // fetch the remaining bytes by sending sentinel bytes.
     while (!fifo8_is_full(&s->rx_fifo) && (REG(s, R_RXCNT) > 0) && (REG(s, R_CFG) & R_CFG_AGD)) {
-        rx = ssi_transfer(s->spi, 0xff);
+        rx = apple_spi_transfer(s, 0xff);
         /* The loop condition already guarantees the FIFO is not full here. */
         fifo8_push(&s->rx_fifo, (uint8_t)rx);
         REG(s, R_RXCNT)--;
@@ -306,6 +316,8 @@ static const MemoryRegionOps spi_ops = {
 static void ipod_touch_spi_reset(DeviceState *d)
 {
     IPodTouchSPIState *s = (IPodTouchSPIState *)d;
+
+    s->traced_transfers = 0;
 	memset(s->regs, 0, sizeof(s->regs));
     fifo8_reset(&s->tx_fifo);
     fifo8_reset(&s->rx_fifo);
@@ -424,6 +436,7 @@ static const Property ipod_touch_spi_properties[] = {
     /* The TX FIFO stands in for DMA pacing: a whole DMA burst lands in it
      * before RUN. Part of the migration stream, hence a property. */
     DEFINE_PROP_UINT32("tx-fifo-depth", IPodTouchSPIState, tx_fifo_depth, R_FIFO_TX_DEPTH),
+    DEFINE_PROP_UINT32("trace-transfer-limit", IPodTouchSPIState, trace_transfer_limit, 0),
 };
 
 static void ipod_touch_spi_class_init(ObjectClass *klass, const void *data)

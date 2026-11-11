@@ -12,7 +12,7 @@
  *
  * SLICE include/hw/arm/panel-gamma.h file
  * SLICE hw/arm/s5l8930_display.c define (CLCD_|CLCD_WORDS)
- * SLICE hw/arm/s5l8930_display.c fn clcd_update_irq gamma_update gamma_reset clcd_read clcd_write gamma_row
+ * SLICE hw/arm/s5l8930_display.c fn clcd_update_irq clcd_frame_end gamma_update gamma_reset clcd_read clcd_write gamma_row
  */
 #include <assert.h>
 #include <math.h>
@@ -39,6 +39,7 @@ typedef struct S5L8930DisplayState {
     uint32_t calib[3][256];
     uint8_t gamma8[3][256];
     bool gamma_identity;
+    bool h5p;
     int shown;
 } S5L8930DisplayState;
 #include "slice.h"
@@ -86,8 +87,7 @@ int main(void)
     clcd_write(s, CLCD_IRQ_MASK, 4, 4);
     clcd_write(s, CLCD_IRQ_ENABLE, 1, 4);
     assert(!irq);
-    s->clcd_status |= CLCD_IRQ_FRAME;   /* the next frame (vbl_tick) */
-    clcd_update_irq(s);
+    clcd_frame_end(s);   /* the next frame (vbl_tick) */
     assert(irq);
     /* its filter: acknowledge, then load each table from one control write */
     clcd_write(s, CLCD_IRQ_STATUS, 0xf, 4);
@@ -144,7 +144,20 @@ int main(void)
         unsigned o = px(s, 0xff000000u | v << 16) >> 16 & 0xff;
         assert(o + 2 >= 254 - v && o <= 254 - v + 2);
     }
-    puts("PASS: the frame interrupt loads White on Black's mirrored tables and the panel shows them inverted; "
+    /* H5P's second gamma RPC polls the first update's request bit. Preserve
+     * enable/control bits and retain the older variant's register behavior. */
+    clcd_write(s, CLCD_GAMMA_CTRL, 0x49, 4);
+    clcd_frame_end(s);
+    assert(clcd_read(s, CLCD_GAMMA_CTRL, 4) == 0x49);
+    s->h5p = true;
+    clcd_write(s, CLCD_GAMMA_CTRL, 0x49, 4);
+    assert(clcd_read(s, CLCD_GAMMA_CTRL, 4) & CLCD_GAMMA_UPDATE);
+    clcd_frame_end(s);
+    assert(clcd_read(s, CLCD_GAMMA_CTRL, 4) == 9);
+    clcd_write(s, CLCD_GAMMA_CTRL, 0x48, 4);
+    clcd_frame_end(s);
+    assert(clcd_read(s, CLCD_GAMMA_CTRL, 4) == 8);
+    puts("PASS: H5P gamma updates complete; the frame interrupt loads White on Black's mirrored tables and the panel shows them inverted; "
          "with +0x2c bit0 off the panel bypasses them; a calibration curve shows the framebuffer as drawn");
     return 0;
 }

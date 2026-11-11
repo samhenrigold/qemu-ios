@@ -23,6 +23,7 @@ enum {
     GL_FRAMEBUFFER_EXT = 1, GL_COLOR_ATTACHMENT0_EXT, GL_DEPTH_ATTACHMENT_EXT,
     GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT,
     GL_TEXTURE, GL_RENDERBUFFER_EXT,
+    GLES_SURFACE_RGBA16F, GLES_SURFACE_RGB555_BE, GLES_SURFACE_ARGB64, GLES_SURFACE_AG32, GLES_SURFACE_NV12,
     GLES_SURFACE_BGRA32, GLES_SURFACE_RGBA32, GLES_SURFACE_RGB565, GLES_SURFACE_RGB555,
     GLES_SLOT_FB_RENDERBUFFER, GLES_SLOT_FB_TEXTURE_2D, GL_INVALID_OPERATION,
 };
@@ -51,6 +52,9 @@ static void glFramebufferTexture2DEXT(GLenum t, GLenum p, GLenum tt, GLuint name
 static void glFramebufferRenderbufferEXT(GLenum t, GLenum p, GLenum rt, GLuint name)
 { if (p == GL_COLOR_ATTACHMENT0_EXT) color = 0; }
 
+#define TRACE_PRINTF(...) ((void)0)
+static void gles_record_drawable_attachment(const uint32_t *a) { (void)a; }
+static bool gles_a6;   /* the attach path is the same on every board; only the native record is the A6's */
 #include "slice.h"
 static int64_t gles_sync_surface(CPUState *cpu) { return gles_sync_surface_1(cpu); }
 

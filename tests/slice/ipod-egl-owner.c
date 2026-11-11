@@ -40,6 +40,7 @@ static const struct {unsigned ifmt;} gles2x_configs[3]={{0x8058},{0x8058},{0x805
   static int egl_error;
   static EGLBoolean egl_fail(EGLint e){egl_error=e;return 0;}
   typedef struct {GuestGC *gc;void *owner;int is_egl;void *draw,*read;} fe_cur_t;
+  static void fe_native_current(fe_cur_t *c, GuestGC *gc) { assert(c->gc == gc); }
   static pthread_key_t fe_key;
   static pthread_once_t fe_once=PTHREAD_ONCE_INIT;
   static unsigned releases,deletes,binds;

@@ -6,7 +6,7 @@
  * and panics (fault_addr 0xc4, pc 0x80656f7c; LightTouchMac matrix 09-29, 8F190/8G4 run 2 under host load).
  * The first host command that needs the interface is its multicast filter (set_var mcast_list).
  *
- * Drives the production sdpcm_handle_cdc / sdio_arm_autojoin / sdio_autojoin with fake timers and the 8F190
+ * Drives the production bcm_fullmac_cdc / sdio_arm_autojoin / sdio_autojoin with fake timers and the 8F190
  * driver's own command order, no emulator:
  *   - WLC_UP, then a minute of guest time with the rest of initFirmware still running: no join events
  *   - set_var mcast_list: the join follows after the auto-join delay, AUTH ASSOC SET_SSID LINK, once
@@ -14,7 +14,7 @@
  *   - IT_WIFI_AUTOJOIN=0: never
  *
  * Mutation (named, must fail this test): arm the clock at WLC_UP whatever the host's state, i.e. in
- * sdpcm_handle_cdc replace
+ * bcm_fullmac_cdc replace
  *        if (s->host_netif) {
  *            sdio_arm_autojoin(s);
  *        }
@@ -22,9 +22,9 @@
  *        sdio_arm_autojoin(s);
  * (the code before the fix).
  *
- * SLICE include/hw/arm/ipod_touch_sdio.h define CDC_|BDC_|WLC_|BSS_INFO_|ISCAN_|WL_CNT_|SCAN_COMPLETE|SDPCM_CONTROL
- * SLICE hw/arm/ipod_touch_sdio.c define FAKE_SSID
- * SLICE hw/arm/ipod_touch_sdio.c fn cdc_hdrlen sdio_send_assoc_events sdio_handle_set_ssid sdio_autojoin sdio_arm_autojoin sdpcm_handle_cdc
+ * SLICE include/hw/net/bcm_fullmac.h define CDC_|BDC_|WLC_|BSS_INFO_|ISCAN_|WL_CNT_|SCAN_COMPLETE|BCM_FULLMAC_CONTROL
+ * SLICE hw/arm/bcm_fullmac.c define FAKE_SSID
+ * SLICE hw/arm/bcm_fullmac.c fn cdc_hdrlen sdio_send_assoc_events sdio_handle_set_ssid sdio_autojoin sdio_arm_autojoin bcm_fullmac_cdc
  * PKG glib-2.0
  */
 #include <glib.h>
@@ -46,21 +46,25 @@ static void stl_le_p(void *p, uint32_t v) { uint8_t *b = p; b[0] = v; b[1] = v >
 typedef struct { const char *fw_version; } BCMSDIOChip;
 typedef struct {
     unsigned cdc_hdrlen, bdc_hdrlen;
-    bool associated, iscan_reported, host_netif;
+    bool fws_supported; uint32_t fws_tlv;
+    bool associated, iscan_reported, host_netif, escan_pending;
     uint32_t toe, toe_ol;
     QEMUTimer *scan_timer, *join_timer;
-    BCMSDIOChip chip;
-    uint8_t bssid[6];
-} IPodTouchSDIOState;
+    const char *fw_version;
+    uint8_t bssid[6], mac[6];
+} BCMFullmacState;
 static int events[64], nevents;
-static void sdpcm_send(IPodTouchSDIOState *s, uint8_t ch, const uint8_t *p, uint32_t n) { (void)s; (void)ch; (void)p; (void)n; }
-static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t type, uint32_t status, uint16_t flags)
+static void bcm_fullmac_send(BCMFullmacState *s, uint8_t ch, const uint8_t *p, uint32_t n) { (void)s; (void)ch; (void)p; (void)n; }
+static void sdpcm_send_event(BCMFullmacState *s, uint32_t type, uint32_t status, uint16_t flags)
 { (void)s; (void)status; (void)flags; assert(nevents < 64); events[nevents++] = type; }
-static void fill_bss_info(IPodTouchSDIOState *s, uint8_t *p) { (void)s; (void)p; }
-static void fill_iscan_results(IPodTouchSDIOState *s, uint8_t *p) { (void)s; (void)p; }
+static void fill_bss_info(BCMFullmacState *s, uint8_t *p) { (void)s; (void)p; }
+static void fill_iscan_results(BCMFullmacState *s, uint8_t *p) { (void)s; (void)p; }
+static bool bcm_escan_request(BCMFullmacState *s,const uint8_t *p,uint32_t n) { assert(!"unexpected escan"); return false; }
+static void bcm_fullmac_event_data(BCMFullmacState*s,uint32_t e,uint32_t status,uint16_t flags,const uint8_t*p,uint32_t n) { assert(!"unexpected firmware event"); }
+static void bcm_fullmac_credit_map(BCMFullmacState*s) { assert(!s->fws_supported); }
 #include "slice.h"
 static QEMUTimer scan_t, join_t;
-static IPodTouchSDIOState s;
+static BCMFullmacState s;
 static void scan_complete(void *o) { sdpcm_send_event(o, WLC_E_SCAN_COMPLETE, 0, 0); }
 /* Let guest time pass, firing whatever the model armed (the join timer re-arms itself while a scan runs). */
 static void advance(int64_t ns)
@@ -84,7 +88,7 @@ static void cdc(uint32_t cmd, int set, const char *iovar, uint32_t value_len)
     uint32_t plen = (iovar ? strlen(iovar) + 1 : 0) + value_len;
     stl_le_p(f, cmd); stl_le_p(f + 4, plen); stl_le_p(f + 8, (++id << 16) | (set ? CDC_DCMD_SET : 0));
     if (iovar) strcpy((char *)f + 16, iovar);
-    sdpcm_handle_cdc(&s, f, 16 + plen);
+    bcm_fullmac_cdc(&s, f, 16 + plen, 0);
 }
 static int joined(void)
 {

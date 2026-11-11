@@ -3,7 +3,9 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../armv6-toolchain/armv6.sh"
 cc6 "$HERE/it_agent.c" "$HERE/it_agent.o" -isystem "$(xcrun clang -print-resource-dir)/include"
-link6 -execute "$HERE/it_agent" "$HERE/it_agent.o"
+# it_agent.c's _start hands main argc, argv and envp; a legacy link enters at crt1old.c's instead
+agent_entry=(); [ "${LEGACY_LINK:-0}" = 1 ] || agent_entry=(-e __start)
+link6 -execute "$HERE/it_agent" "$HERE/it_agent.o" ${agent_entry[@]+"${agent_entry[@]}"}
 rm -f "$HERE/it_agent.o"
 
 "${LDID:-ldid}" -S"$HERE/it_agent-entitlements.xml" "$HERE/it_agent"

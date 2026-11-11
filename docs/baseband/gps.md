@@ -9,6 +9,7 @@ the next reader; nothing keys on them.
 | Board | Location hardware | How locationd reaches it | Modeled |
 |---|---|---|---|
 | N88 iPhone 3GS | GPS receiver inside the X-Gold baseband; the DT has no `gps` node | `CLGpsController82`: AT `+XL...` commands on the modem's `cl1` DLCI (DLCI 7 on 4.2.1 and 6.1.6); the modem computes the fix and reports it as `+XLSR:` | yes: `hw/misc/ios_baseband_gps.c` |
+| N41/N42 iPhone 5 | GPS receiver inside the Qualcomm MDM9615 | Native Maverick PDS service over QMUX/H5; shared fix exposed as `gps-fix` | yes: shared receiver with native PDS position reports |
 | N90 iPhone 4 | Broadcom BCM4750 on `uart4` (DT `gps,bcm4750`, `function-gps_reset` GPIO 0x306, `function-gps_standby` 0x307; kext AppleEmbeddedGPS / AppleBCM4750) | `CLGpsController90`: Broadcom's GLL host library linked into locationd (`/dev/tty.gps`), plus control-plane assistance over the modem (`+XLGCPL`, `+XLRMT`) | no (below) |
 | K48 iPad | The DT carries the same `gps,bcm4750` node for the 3G model; the Wi-Fi iPad this machine is has no chip | as the N90 (`handleK48CountInRequest`) | no |
 | M68 iPhone, N45/N72/N18/N81 iPods | none | Wi-Fi (and on the iPhone cell) lookups against Skyhook and Apple's location service | no |
@@ -78,3 +79,35 @@ Other routes, and why they are not the hardware:
   accessory authentication, which an emulator cannot sign.
 - **locationd's own NMEA provider** (`NmeaDeviceName`) is a developer default inside the guest, which is the guest
   behavior the models avoid.
+
+## iPhone 5: Qualcomm PDS
+
+The A6 board enables the shared `IosBbGps` receiver. QMP clients set
+`gps-fix` on `/machine/baseband-modem` using
+`latitude,longitude[,altitude[,speed[,course[,accuracy]]]]`. Units are degrees,
+metres above WGS84, m/s, degrees clockwise from north and metres. An empty
+string clears the fix. Fix controls persist across modem resets; session
+subscriptions follow their owning transport/client.
+
+PDS EventReport indications (message 1) carry checksummed GGA/RMC NMEA in
+TLV 0x10, extended NMEA in 0x11, acquired-fix success in 0x12 and the explicitly
+serialized 105-byte parsed position in 0x13. The validity mask describes the
+supplied fields. Tracking defaults select the interval in seconds. Queue
+backpressure retries the due report.
+
+Apple PDS command `0x5557` configures each client's satellite-measurement
+subscription using boolean TLV 1. Indication `0x555a` supplies fix time in
+TLV 1 and a counted measurement array in TLV 2. The virtual receiver reports
+an empty measurement array on the same cadence as its position fix.
+
+The parsed-position layout follows CodeAurora's Gobi 2012
+`GobiConnectionMgmtAPIStructs.h`,
+`sPDSEventReportIndication_ParsedPositionData`; calendar months are zero-based.
+The shared formatter is `hw/misc/ios_baseband_gps.c`. N42 product identity in
+the device tree selects the native CoreLocation hardware path.
+
+`tests/slice/a6-mdm-qmi.c` checks coordinates, timestamps, cadence, transport
+isolation and retry. `tests/unit/test-ios-baseband.c` checks NMEA coordinates
+and checksums. Native CoreLocation clients have received successive fixes on
+the [supported N42 builds](../n42/README.md). Native speed and course reporting
+require further qualification.

@@ -278,33 +278,76 @@ static void pump_guest_to_host(void)
  * paste into.
  */
 #define STARTUP_DELAY 40
+#define CLIPBOARD_UNAVAILABLE 2     /* the worker's exit status: no pasteboard here (2.x), never respawned */
+
+static int clipboard_main(void)
+{
+    sleep(STARTUP_DELAY);
+    if (!objc_setup()) {
+        w("it_agent: clipboard runtime unavailable\n");
+        return CLIPBOARD_UNAVAILABLE;
+    }
+    for (;;) {
+        if (!pump_host_to_guest()) pump_guest_to_host();
+        usleep(250000);
+    }
+}
 
 #ifndef IT_AGENT_CLIPBOARD_ONLY   /* contrib/it-pasteboard/it_pbd.c: the clipboard above, its own main */
 #include "agent-ops.h"
 
-int main(void)
+int main(int argc, char **argv, char **environment);
+/* Without LEGACY_LINK, armv6.sh's link has no crt1: the process enters at its entry point with argc, argv[], 0,
+ * envp[] on the stack only, and main's registers hold garbage (an armv7 agent entered at _main died on argv[0]
+ * every boot). The build scripts enter here (-e __start) instead; LEGACY_LINK's crt1old.c does the same. */
+__attribute__((naked, used)) void _start(void)
 {
-    unsigned clipboard_delay = STARTUP_DELAY * 4;
-    int clipboard_ready = 0;
-    int clipboard_attempted = 0;
+    __asm__ volatile("ldr r0, [sp]\n\t"
+                     "add r1, sp, #4\n\t"
+                     "add r2, r0, #1\n\t"
+                     "add r2, r1, r2, lsl #2\n\t"
+                     "bic sp, sp, #7\n\t"
+                     "bl _main\n\t"
+                     "bl __exit");
+}
+
+int main(int argc, char **argv, char **environment)
+{
+    if (argc == 2 && !strcmp(argv[1], "--clipboard-worker")) {
+        return clipboard_main();
+    }
+    pid_t clipboard = 0;
+    unsigned clipboard_retry = 0;
+    int clipboard_status, clipboard_off = 0;
     unsigned ticks = 0;
     w("it_agent: command service up\n");
     for (;;) {
         /* File/command RPC needs no UIKit initialization. Start immediately so
          * boot-time provisioning does not wait for the clipboard grace period. */
         agent_tick();
+        /* UIPasteboard makes synchronous IPC calls. A sleeping or unavailable
+         * pasteboard server must not stop command polling or child reaping.
+         * Re-exec a worker rather than forking after ObjC has initialized. It
+         * inherits this launchd job's process group for normal job cleanup. */
+        if (clipboard && waitpid(clipboard, &clipboard_status, WNOHANG) == clipboard) {
+            clipboard = 0;
+            clipboard_retry = 20;
+            /* as main(void) did: a runtime without the pasteboard is tried once, not every 45 s for good */
+            clipboard_off = WIFEXITED(clipboard_status) && WEXITSTATUS(clipboard_status) == CLIPBOARD_UNAVAILABLE;
+        }
+        if (!clipboard && !clipboard_retry && !clipboard_off && argv[0] && argv[0][0] == '/') {
+            char *args[] = {argv[0], "--clipboard-worker", 0};
+            if (posix_spawn(&clipboard, argv[0], 0, 0, args, environment)) {
+                clipboard = 0;
+                clipboard_retry = 20;
+            }
+        }
+        if (clipboard_retry) clipboard_retry--;
         /* The app's Stop is a hard halt (pause, flush the host's files, quit), never a guest
          * shutdown, and the kernel's own writeback is ~30 s: flush every 5 s so what was
          * written 5+ s before a Stop survives it. ponytail: fixed period; nothing to do when
          * clean, make it adaptive only if flash wear or pauses ever show up. */
         if (++ticks % 20 == 0) sync();
-        if (clipboard_delay) clipboard_delay--;
-        else if (!clipboard_attempted) {
-            clipboard_attempted = 1;
-            clipboard_ready = objc_setup();
-            if (!clipboard_ready) w("it_agent: clipboard runtime unavailable\n");
-        }
-        if (clipboard_ready && !pump_host_to_guest()) pump_guest_to_host();
         usleep(250000);
     }
     return 0;

@@ -142,6 +142,7 @@ static const Exynos4210UartReg exynos4210_uart_regs[] = {
 #define UCON_S5L_RX_INT_ENABLE          (1 << 12)
 #define UCON_S5L_TX_INT_ENABLE          (1 << 13)
 #define UCON_S5L_ERROR_INT_ENABLE       (1 << 14)
+#define UCON_SEND_BREAK                (1 << 4)
 
 /* UART Error Status */
 #define UERSTAT_OVERRUN  0x1
@@ -187,6 +188,7 @@ struct Exynos4210UartState {
 
     uint32_t channel;
     bool s5l8720_irq;
+    bool a6_serial;               /* "a6-serial": the A6 port (s5l8950.c), Rx latched on arrival, break sent */
     uint32_t tx_char_ns;          /* "tx-char-ns": transmit pacing, 0 = instant */
     bool cts;                     /* "cts": the far end holds CTS asserted (UMSTAT bit 0) */
     QEMUTimer *tx_done_timer;
@@ -358,21 +360,26 @@ static void exynos4210_uart_update_irq(Exynos4210UartState *s)
         if ((count && !(s->reg[I_(UCON)] & 0x80)) ||
             count >= exynos4210_uart_Rx_FIFO_trigger_level(s)) {
             exynos4210_uart_update_dmabusy(s);
-            s->reg[I_(UINTSP)] |= UINTSP_RXD;
+            if (!s->a6_serial) {
+                s->reg[I_(UINTSP)] |= UINTSP_RXD;
+            }
             /*
-             * In DMA receive mode the trigger level is the DMA's request and the receive timeout still
+             * S5L's timeout remains independent of the FIFO threshold in
+             * either receive mode. In DMA mode the trigger level is the DMA's request and the receive timeout still
              * comes when the line goes quiet: the S5L8920's 5.x and 6.x serial driver hears of a packet
              * the CDMA has taken only from that timeout. Cancelling it here lost every reply of at least
              * the trigger level (Read Local Version's 15 bytes; HCI_Reset's 7 got through), and BlueTool
              * waited out its 10 s and was run again.
              */
-            if ((s->reg[I_(UCON)] & 3) < 2) {
+            if (!s->a6_serial && (s->reg[I_(UCON)] & 3) < 2) {
                 timer_del(s->fifo_timeout_timer);
             }
         }
     } else if (s->reg[I_(UTRSTAT)] & UTRSTAT_Rx_BUFFER_DATA_READY) {
         exynos4210_uart_update_dmabusy(s);
-        s->reg[I_(UINTSP)] |= UINTSP_RXD;
+        if (!s->a6_serial) {
+            s->reg[I_(UINTSP)] |= UINTSP_RXD;
+        }
     }
 
     s->reg[I_(UINTP)] = s->reg[I_(UINTSP)] & ~s->reg[I_(UINTM)];
@@ -431,7 +438,11 @@ static void exynos4210_uart_timeout_int(void *opaque)
 
     if ((s->reg[I_(UTRSTAT)] & UTRSTAT_Rx_BUFFER_DATA_READY) ||
         (s->reg[I_(UCON)] & (1 << 11))) {
-        s->reg[I_(UINTSP)] |= UINTSP_RXD;
+        /* S5L exposes timeout and FIFO threshold as separate sources.
+         * Acknowledge-timeout alone must drop a timeout-only interrupt. */
+        if (!s->a6_serial) {
+            s->reg[I_(UINTSP)] |= UINTSP_RXD;
+        }
         s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_TIMEOUT;
         exynos4210_uart_update_dmabusy(s);
         exynos4210_uart_update_irq(s);
@@ -610,8 +621,13 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         s->reg[I_(UINTM)] = val;
         exynos4210_uart_update_irq(s);
         break;
-    case UCON:
+    case UCON: {
+        bool break_changed = (s->reg[I_(UCON)] ^ val) & UCON_SEND_BREAK;
+        int send_break = !!(val & UCON_SEND_BREAK);
         s->reg[I_(offset)] = val;
+        if (s->a6_serial && break_changed) {
+            qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_BREAK, &send_break);
+        }
         /* A mode transition can expose buffered data to DMA, or stop its
          * request. Do not leave the old level latched until the next byte. */
         exynos4210_uart_update_dmabusy(s);
@@ -622,6 +638,7 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         }
         exynos4210_uart_update_irq(s);
         break;
+    }
     case UMCON:
     default:
         s->reg[I_(offset)] = val;
@@ -734,6 +751,21 @@ static void exynos4210_uart_receive(void *opaque, const uint8_t *buf, int size)
     s->reg[I_(UTRSTAT)] |= UTRSTAT_Rx_BUFFER_DATA_READY;
     s->rx_since_timeout = true;
 
+    /* S5L's fast ISR acknowledges UTRSTAT before its deferred reader drains
+     * the FIFO. Latch Rx on arrival; recomputing a level on acknowledgment
+     * would immediately reassert the line and starve that reader. */
+    if (s->a6_serial &&
+        (!(s->reg[I_(UFCON)] & UFCON_FIFO_ENABLE) ||
+         !(s->reg[I_(UCON)] & 0x80) ||
+         fifo_elements_number(&s->rx) >= exynos4210_uart_Rx_FIFO_trigger_level(s))) {
+        s->reg[I_(UINTSP)] |= UINTSP_RXD;
+    }
+    /* DMA availability follows the FIFO, independently of the CPU's Rx
+     * interrupt threshold. A short reply must be in the DMA ring before
+     * the receive-timeout interrupt asks the serial driver to consume it. */
+    if (s->a6_serial) {
+        exynos4210_uart_update_dmabusy(s);
+    }
     exynos4210_uart_update_irq(s);
 }
 
@@ -882,6 +914,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 
 static const Property exynos4210_uart_properties[] = {
     DEFINE_PROP_BOOL("s5l8720-irq", Exynos4210UartState, s5l8720_irq, false),
+    DEFINE_PROP_BOOL("a6-serial", Exynos4210UartState, a6_serial, false),
     DEFINE_PROP_UINT32("tx-char-ns", Exynos4210UartState, tx_char_ns, 0),
     DEFINE_PROP_BOOL("cts", Exynos4210UartState, cts, false),
     DEFINE_PROP_CHR("chardev", Exynos4210UartState, chr),
