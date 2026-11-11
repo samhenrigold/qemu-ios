@@ -1476,9 +1476,14 @@ static void a6_init(MachineState *machine)
             sysbus_mmio_map(SYS_BUS_DEVICE(port), 0, 0x34190000 + i * 0x1000);
         }
         /* MCA speaker/voice FIFOs use the same PCM sink and DMA pacing.
-         * The native 11A465 speaker stream is 44.1 kHz: using 48 kHz made
-         * the matched lock sound play at 1.09x. This remains a virtual
-         * external clock pending A6 NCO modeling. */
+         * The speaker stream is 44.1 kHz on 11A465 and on 14G61, whose
+         * lock sound (a 48 kHz file), Opening ringtone and charging chime
+         * all play at 1.000x here. The MCA is the frame-clock slave on
+         * that port and no register the guest writes carries the rate: the
+         * speaker's DT audio-data word 0 bit 0 is clear, so AppleAE2MCA
+         * never programs its NCO (function-mclk_frequency, NCOf 6) except
+         * to 0 at power-down, and the MCA and CS42L65 writes are the same
+         * for every stream. Hence a fixed external clock. */
         for (int i = 0; i < 2; i++) {
             DeviceState *port = qdev_new(TYPE_S5L8930_I2S);
             qdev_prop_set_bit(port, "mca", true);
