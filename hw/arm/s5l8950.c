@@ -236,6 +236,7 @@ struct S5L8950State {
     bool resume_boot;
     bool button_down[IPOD_TOUCH_BUTTON_VOLDOWN + 1];
     char *kboot, *nand, *restore_image;
+    char *usb_tcp_addr; /* the host USB bridge (usbmuxd-qemu); unset: IT_USB_TCP */
     int restore_fd;
     uint64_t restore_size;
     bool ppn, display_probe, ae2_probe, pmu_adc_probe, tristar_probe,
@@ -1355,6 +1356,15 @@ static void a6_powerdown_req(Notifier *notifier, void *opaque)
 
 static Notifier a6_powerdown_notifier = {.notify = a6_powerdown_req};
 
+/* The PMU took the guest's power-off (standby, or the charging halt), the
+ * evidence a QEMU SHUTDOWN event alone isn't (qemu_ios_ui's clean stop). */
+static int a6_guest_shutdown;
+
+bool s5l8950_guest_shutdown_confirmed(void)
+{
+    return qatomic_read(&a6_guest_shutdown);
+}
+
 static uint32_t a6_uart_rx_avail(void *opaque, hwaddr addr, bool to_device)
 {
     uint32_t status =
@@ -1538,7 +1548,7 @@ static void a6_init(MachineState *machine)
         uint32_t hwcfg[] = {0, 0x7a8f60d0, 0x082000e8, 0x01f08024};
         usb = ipod_touch_init_usb_otg(qemu_allocate_irq(a6_irq, s, 11), hwcfg);
         synopsys_usb_state *otg = S5L8900USBOTG(usb);
-        synopsys_usb_set_tcp_addr(otg, NULL);
+        synopsys_usb_set_tcp_addr(otg, s->usb_tcp_addr);
         otg->builtin_host = !otg->server_host && !getenv("IT_USB_TCP");
         otg->host_charge = true;
         otg->withhold_charge = false;
@@ -1854,6 +1864,16 @@ static void a6_set_nand(Object *obj, const char *path, Error **errp)
     g_free(s->nand);
     s->nand = g_strdup(path);
 }
+static char *a6_get_usb_tcp_addr(Object *obj, Error **errp)
+{
+    return g_strdup(S5L8950_MACHINE(obj)->usb_tcp_addr);
+}
+static void a6_set_usb_tcp_addr(Object *obj, const char *value, Error **errp)
+{
+    S5L8950State *s = S5L8950_MACHINE(obj);
+    g_free(s->usb_tcp_addr);
+    s->usb_tcp_addr = g_strdup(value);
+}
 static char *a6_get_restore_image(Object *obj, Error **errp)
 {
     return g_strdup(S5L8950_MACHINE(obj)->restore_image);
@@ -2059,6 +2079,10 @@ static void a6_class_init(ObjectClass *klass, const void *data)
     mc->default_ram_size = A6_RAM_SIZE;
     object_class_property_add_str(klass, "kboot", a6_get_kboot, a6_set_kboot);
     object_class_property_add_str(klass, "nand", a6_get_nand, a6_set_nand);
+    object_class_property_add_str(klass, "usb-tcp-addr", a6_get_usb_tcp_addr,
+                                  a6_set_usb_tcp_addr);
+    object_class_property_set_description(klass, "usb-tcp-addr",
+        "the host USB bridge the device-mode core dials (host:port or a unix socket path); unset: IT_USB_TCP");
     object_class_property_add_bool(klass, "ppn", a6_get_ppn, a6_set_ppn);
     object_class_property_add_bool(klass, "camera", a6_get_camera,
                                    a6_set_camera);
@@ -2299,6 +2323,7 @@ static int a6_pmu_send(I2CSlave *dev, uint8_t data)
             if (data & 1) {
                 /* Native standby is the final shutdown operation. Hibernate
                  * uses bit 1 and retains the independently powered devices. */
+                qatomic_set(&a6_guest_shutdown, 1);
                 qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
             } else {
                 a6_pmu_set_ap_power(s, false);
@@ -2310,6 +2335,7 @@ static int a6_pmu_send(I2CSlave *dev, uint8_t data)
              * As on the A4 PMU, this is a completed guest shutdown,
              * distinct from an ordinary restart or retained-RAM sleep. */
             if ((s->regs[0xb0] & 0xd0) == 0x90) {
+                qatomic_set(&a6_guest_shutdown, 1);
                 qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
             } else {
                 qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);

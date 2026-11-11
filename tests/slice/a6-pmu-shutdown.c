@@ -1,5 +1,6 @@
 /* Exercise the production PMU transport: hibernate must retain the VM, while
- * the native final standby command must exit even without a host request.
+ * the native final standby command must exit even without a host request,
+ * and only that exit confirms the guest's shutdown (qemu_ios_ui's clean stop).
  * SLICE:types hw/arm/s5l8950.c typedef A6PMU
  * SLICE hw/arm/s5l8950.c fn a6_pmu_event a6_pmu_send
  */
@@ -21,6 +22,8 @@ enum i2c_event { I2C_START_SEND };
 #define trace_a6_pmu_register(...) ((void)0)
 #define trace_a6_pmu_gpio(...) ((void)0)
 static unsigned shutdowns, hibernates;
+static int a6_guest_shutdown;
+#define qatomic_set(p, v) (*(p) = (v))
 #include "types.h"
 static void a6_pmu_set_ap_power(A6PMU *s, bool on)
 {
@@ -64,14 +67,14 @@ int main(void)
     A6PMU s = {0};
     write_reg(&s, 0xb0, 0x80);
     write_reg(&s, 0x1b, 2);
-    assert(hibernates == 1 && shutdowns == 0);
+    assert(hibernates == 1 && shutdowns == 0 && !a6_guest_shutdown);
     assert(s.regs[0xb0] == 0x80 && s.regs[0x1b] == 0);
     write_reg(&s, 0x1b, 0);
     write_reg(&s, 0x48, 0);
     assert(hibernates == 1 && shutdowns == 0);
     write_reg(&s, 0xb0, 0);
     write_reg(&s, 0x1b, 1);
-    assert(shutdowns == 1 && hibernates == 1);
+    assert(shutdowns == 1 && hibernates == 1 && a6_guest_shutdown);
     assert(s.regs[0x1b] == 0);
-    puts("A6 native standby exits; hibernate retains the VM");
+    puts("A6 native standby exits and confirms the shutdown; hibernate retains the VM");
 }

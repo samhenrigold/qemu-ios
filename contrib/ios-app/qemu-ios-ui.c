@@ -71,6 +71,7 @@ static void ios_sequence_reset(void *opaque)
 static int ios_vm_alive;
 /* Which machine is running, latched on the QEMU thread when the VM starts. */
 static int ios_is_ipad1;
+static int ios_is_a6;            /* the iPhone 5 (s5l8950): its own PMU and buttons */
 static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's and the S5L8920 boards' */
 
 static struct {
@@ -349,6 +350,9 @@ bool qemu_ios_ui_ready(void)
 
 bool qemu_ios_ui_guest_shutdown_confirmed(void)
 {
+    if (qatomic_read(&ios_is_a6)) {
+        return s5l8950_guest_shutdown_confirmed();
+    }
     return qatomic_read(&ios_is_ipad1) ? s5l8930_d1815_guest_shutdown_confirmed()
                                        : pcf50633_guest_shutdown_confirmed();
 }
@@ -397,7 +401,9 @@ void qemu_ios_ui_vm_started(void)
     }
     qatomic_set(&ios_is_ipad1, object_dynamic_cast(qdev_get_machine(),
                                                    MACHINE_TYPE_NAME("ipad1")) != NULL);
-    qatomic_set(&ios_dsi_panel, qatomic_read(&ios_is_ipad1) ||
+    qatomic_set(&ios_is_a6, object_dynamic_cast(qdev_get_machine(),
+                                                MACHINE_TYPE_NAME("iPhone-5")) != NULL);
+    qatomic_set(&ios_dsi_panel, qatomic_read(&ios_is_ipad1) || qatomic_read(&ios_is_a6) ||
                 object_dynamic_cast(qdev_get_machine(), "s5l8920-machine") != NULL);
     for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
         ios.slots[i].tracking_id = -1;
@@ -422,6 +428,8 @@ void qemu_ios_ui_vm_started(void)
  */
 #define CLCD_PANEL 64, 1024, 511, 2, 0
 #define A4_PANEL   64, 2047, 2047, 16, 0x900000 / 4
+/* The iPhone 5 takes no panel=: its one size, 640x1136 */
+#define A6_PANEL   640, 640, 1136, 16, 640 * 1136
 static const QemuIosDeviceInfo ios_devices[] = {
     /* machine          board    w     h    scale orient cell   usbhost compass charger panel */
     { "iPod-Touch",    "n72ap",  320,  480, 1, 0, false, false, false, false, CLCD_PANEL },
@@ -433,6 +441,8 @@ static const QemuIosDeviceInfo ios_devices[] = {
     { "ipad1",         "k48ap", 1024,  768, 1, 1, false, true,  true,  true,  A4_PANEL },
     { "iPod-Touch-4G", "n81ap",  640,  960, 2, 0, false, true,  false, false, A4_PANEL },
     { "iPhone-4",      "n90ap",  640,  960, 2, 0, true,  true,  true,  false, A4_PANEL },
+    /* The A6's EHCI carries its modem and Wi-Fi, no keyboard; no compass or panel= modeled */
+    { "iPhone-5",      "n42ap",  640, 1136, 2, 0, true,  false, false, false, A6_PANEL },
 };
 
 const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
@@ -629,6 +639,7 @@ static void ios_press(IPodTouchButton button, bool down)
     ipad1_press_button(button, down);
     ipod_touch_1g_press_button(button, down);
     s5l8920_press_button(button, down);
+    s5l8950_press_button(button, down);
 }
 
 static void ios_button_release(void *opaque)
