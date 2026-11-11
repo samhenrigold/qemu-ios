@@ -1,5 +1,6 @@
 /* A completed bridge fence must drain queued rendering and publish its pixels
- * before a CPU image-cache consumer reads the surface.
+ * before a CPU image-cache consumer reads the surface, on the A6's host, which
+ * reports GLES_CAP_FENCE_FINISH (gles-fence-finish.c has the other boards').
  * SLICE contrib/gles-public/opengles.c fn batch_flush gles_batch fe_fenceSync fe_clientWaitSync
  * CFLAGS -Wall -Werror
  */
@@ -8,6 +9,8 @@
 #include <stdlib.h>
 #define GLES_OP_BATCH 0x1009
 #define GLES_ID_glFinish 1
+#define GLES_OP_CAPABILITIES 0x100a
+#define GLES_CAP_FENCE_FINISH 8u
 #define DRAW 7
 #define BATCH_WORDS 32
 #define FE_GL_ALREADY_SIGNALED 0x911a
@@ -26,6 +29,8 @@ static long long qc(unsigned slot, void *opaque, unsigned argc,
                     const unsigned *args)
 {
     GuestGC *gc = opaque;
+    if (slot == GLES_OP_CAPABILITIES)
+        return GLES_CAP_FENCE_FINISH;
     if (gles_batch(slot, gc, argc, args))
         return 0;
     if (slot == GLES_OP_BATCH) {

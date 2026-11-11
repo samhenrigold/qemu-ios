@@ -81,6 +81,7 @@ static int gles_slot_of(unsigned id);
 #define GLES_CAP_FRAMEBUFFER_FETCH 1u
 #define GLES_CAP_MAP_BUFFER        2u
 #define GLES_CAP_NATIVE_DISPATCH   4u
+#define GLES_CAP_FENCE_FINISH      8u
 
 /* The two drawable formats CA hands the engine. Declared up here because the
  * surface plausibility check needs the pixel size before the drawable code

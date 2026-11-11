@@ -270,7 +270,7 @@ static bool scaler_convert(IPodScalerState *s)
     if (!w || !h || w > 4096 || h > 4096 || (w | h) & 1 ||
         !dw || !dh || dw > 4096 || dh > 4096 ||
         (r[0x10 / 4] & ~0x400u) || (fmt != 4 && fmt != 6) || (r[0x30 / 4] & ~0x407u) ||
-        r[0x20 / 4] || (r[0x58 / 4] & 3) || ys < w || uvs < w || ds < dw * bpp ||
+        r[0x20 / 4] || ((r[0x58 / 4] & 3) && (w != dw || h != dh)) || ys < w || uvs < w || ds < dw * bpp ||
         (!s->xlate && (!scaler_range(ybase, ys, h, w) ||
                        !scaler_range(uvbase, uvs, h / 2, w) ||
                        !scaler_range(dest, ds, dh, dw * bpp)))) return false;
@@ -290,8 +290,9 @@ static bool scaler_convert(IPodScalerState *s)
         unsigned v = r[0x220 / 4 + i] & 0xfff;
         matrix[i] = (v ^ 0x800) - 0x800;
     }
-    /* A turn (+0x58 bits 0-1, which scaler_rgb honors) is refused above, as before scaling came in; an
-     * unscaled side steps by one whatever +0x50/+0x54 hold, as the 1:1 movie path always did. */
+    /* A scaled turn (+0x58 bits 0-1, which scaler_rgb honors) is refused above, as every scaled transfer was
+     * before scaling came in; a 1:1 one is converted unturned, as the movie path always did. An unscaled side
+     * steps by one whatever +0x50/+0x54 hold. */
     uint32_t sx = w == dw ? 0x10000 : r[0x50 / 4] ? r[0x50 / 4] : ((uint64_t)w << 16) / dw;
     uint32_t sy = h == dh ? 0x10000 : r[0x54 / 4] ? r[0x54 / 4] : ((uint64_t)h << 16) / dh;
     for (unsigned y = 0; y < dh; y++) {

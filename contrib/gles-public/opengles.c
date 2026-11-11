@@ -163,14 +163,18 @@ static int fe_es2(void)
     return have;
 }
 
-/* APPLE_sync: publish queued drawing and rendered IOSurface pixels before
- * advertising a completed fence to CPU consumers. */
+/* APPLE_sync (6.x and 7.x CoreAnimation fence every frame): the host runs each call to completion before the
+ * next, so a fence is signaled the moment it exists. On a host that reports GLES_CAP_FENCE_FINISH (the A6's) a
+ * fence first publishes queued drawing and rendered IOSurface pixels to CPU consumers; elsewhere nothing goes to
+ * the host, as those boards were qualified with. */
 #define FE_GL_ALREADY_SIGNALED 0x911A
 static unsigned fe_fenceSync(void *gc, unsigned condition, unsigned flags)
 {
     static unsigned next;
+    static int finish = -1;
     (void)condition; (void)flags;
-    if (gc) qc(GLES_ID_glFinish, gc, 0, A(0));
+    if (gc && finish < 0) finish = (qc(GLES_OP_CAPABILITIES, gc, 0, A(0)) & GLES_CAP_FENCE_FINISH) != 0;
+    if (gc && finish > 0) qc(GLES_ID_glFinish, gc, 0, A(0));
     return ++next ? next : ++next;                          /* 0 is no sync */
 }
 static unsigned fe_isSync(void *gc, unsigned sync) { (void)gc; return sync != 0; }

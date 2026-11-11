@@ -7044,7 +7044,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
     case GLES_OP_CAPABILITIES:
-        return gles_a6 ? gles_fetch_capabilities() | GLES_CAP_MAP_BUFFER | GLES_CAP_NATIVE_DISPATCH : 0;
+        return gles_a6 ? gles_fetch_capabilities() | GLES_CAP_MAP_BUFFER | GLES_CAP_NATIVE_DISPATCH |
+                                 GLES_CAP_FENCE_FINISH
+                       : 0;
     case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
         return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
     case GLES_OP_DRAWABLE_STORAGE:

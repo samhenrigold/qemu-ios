@@ -88,11 +88,15 @@ int main(void)
     assert(scaler_convert(&s));
     assert(!memcmp(ram+512,"\0\0\0\xff\0\0\xfe\xff",8));
     for(unsigned i=520;i<640;i++)assert(ram[i]==0xa5);
-    /* A turn (+0x58) is refused, as before scaling came in; an unscaled transfer steps by one whatever +0x50/+0x54 hold. */
+    /* A scaled turn (+0x58) is refused, as every scaled transfer was before scaling came in; a 1:1 one converts
+     * unturned, and an unscaled transfer steps by one whatever +0x50/+0x54 hold. */
     r[0x58/4]=3;assert(!scaler_convert(&s));r[0x58/4]=0;
     r[16]=r[9];r[0x50/4]=r[0x54/4]=0;
     assert(scaler_convert(&s));
     uint8_t unscaled[24];memcpy(unscaled,ram+512,sizeof(unscaled));
+    r[0x58/4]=3;memset(ram+512,0xa5,128);
+    assert(scaler_convert(&s));
+    assert(!memcmp(ram+512,unscaled,sizeof(unscaled)));r[0x58/4]=0;
     r[0x50/4]=r[0x54/4]=2<<16;memset(ram+512,0xa5,128);
     assert(scaler_convert(&s));
     assert(!memcmp(ram+512,unscaled,sizeof(unscaled)));
