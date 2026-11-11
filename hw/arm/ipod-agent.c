@@ -22,9 +22,26 @@ struct IPodAgent {
     uint64_t token;
     uint64_t ui_sequence;
     int64_t last_poll;
+    int64_t last_ui_poll;
     int64_t clock_offset;
     bool claimed;
+    uint8_t report[IT_AGENT_REPORT_MAX];
+    uint32_t report_len;
+    uint64_t report_serial;
 };
+
+/* A report is its session's: whatever ends the session drops it, so no reader takes it for the guest's state now. */
+static void agent_set_report(IPodAgent *a, const uint8_t *state, uint32_t len)
+{
+    if (len == a->report_len && (!len || !memcmp(a->report, state, len))) {
+        return;
+    }
+    if (len) {
+        memcpy(a->report, state, len);
+    }
+    a->report_len = len;
+    a->report_serial++;
+}
 
 static void item_free(void *p)
 {
@@ -63,6 +80,7 @@ void ipod_agent_reset(IPodAgent *a)
     g_queue_clear_full(&a->done, item_free);
     a->token = 0;
     a->claimed = false;
+    agent_set_report(a, NULL, 0);
     qemu_mutex_unlock(&a->lock);
 }
 
@@ -182,6 +200,7 @@ bool ipod_agent_cancel(IPodAgent *a, const char *id)
                  * Late WRITE/DONE calls cannot complete another request. */
                 a->claimed = false;
                 a->token = 0;
+                agent_set_report(a, NULL, 0);
             }
             g_queue_delete_link(&a->pending, p);
             item_free(item);
@@ -229,6 +248,21 @@ const char *ipod_agent_status(IPodAgent *a, int64_t now_ms)
     return status;
 }
 
+char *ipod_agent_report(IPodAgent *a, int64_t now_ms, uint64_t *serial)
+{
+    char *state = NULL;
+    qemu_mutex_lock(&a->lock);
+    if (now_ms - a->last_poll > IT_AGENT_LEASE_MS) {
+        agent_set_report(a, NULL, 0);
+    }
+    if (a->report_serial != *serial) {
+        *serial = a->report_serial;
+        state = strndup((const char *)a->report, a->report_len);   /* the app frees it with free() */
+    }
+    qemu_mutex_unlock(&a->lock);
+    return state;
+}
+
 int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
                        uint32_t address, uint32_t offset, uint32_t length,
                        int64_t now_ms, uint64_t candidate_token,
@@ -253,6 +287,7 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
             }
             a->claimed = true;
             a->last_poll = now_ms;
+            agent_set_report(a, NULL, 0);
             result = a->token;
         }
         goto out;
@@ -260,6 +295,9 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
     /* UI clients run in the target process, independently of the root daemon.
      * Cookies reject late replies; like root tokens, they are not credentials. */
     if (op >= 0x166 && op <= 0x169) {
+        if (op == 0x166) {
+            a->last_ui_poll = now_ms;
+        }
         if (!item || !item->ui_cookie || now_ms >= item->ui_deadline) {
             result = op == 0x166 ? 0 : -1;
             goto out;
@@ -281,6 +319,12 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
             goto out;
         }
         if (op == 0x16a && item && offset != 1) {
+            /* No it_typein has polled lately: this guest's apps carry none (the armv7 packages), or SpringBoard is
+             * not up. Refused here, the agent answers its host at once (-EIO), where the request would otherwise
+             * wait out its deadline for a poller that isn't coming. */
+            if (now_ms - a->last_ui_poll > IT_AGENT_UI_ALIVE_MS) {
+                goto out;
+            }
             item->ui_pid = offset;
             item->ui_cookie = (candidate_token ^ ++a->ui_sequence) & INT64_MAX;
             if (!item->ui_cookie) {
@@ -293,6 +337,10 @@ int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
     }
     if (op == 0x161) {
         a->last_poll = now_ms;
+        /* The poll's window is the agent's state report (it_agent v6); an older agent's is empty. */
+        if (length && length <= sizeof(chunk) && !copy(opaque, address, chunk, length, false)) {
+            agent_set_report(a, chunk, length);
+        }
         if (item && item->ui_cookie && now_ms >= item->ui_deadline) {
             item->status = -ETIMEDOUT;
             g_byte_array_set_size(item->response, 0);

@@ -113,6 +113,10 @@ int main(void) {
     assert(call(a,0x161,token,0,0,10003)==0);
     assert(!ipod_agent_submit(a,"ui type\nYWJj"));
     assert(call(a,0x161,token,0,0,10003)>0);
+    /* a request is routed only where an it_typein polls: with none (or none for 2 s) the agent hears no at once */
+    assert(call(a,0x16a,token,42,0,10003)==-1);
+    assert(call(a,0x166,0,7,0,8000)==0 && call(a,0x16a,token,42,0,10003)==-1);
+    assert(call(a,0x166,0,7,0,8003)==0);
     assert(call(a,0x16a,token,42,0,10003)==0);
     assert(call(a,0x161,token,0,0,10003)==0);
     assert(call(a,0x166,0,41,0,10003)==0);
@@ -141,6 +145,7 @@ int main(void) {
     result=ipod_agent_take_result(a);assert(!*result);g_free(result);
     assert(!ipod_agent_submit(a,"springboard uidump\n"));
     assert(call(a,0x161,token,0,0,15003)>0);
+    assert(call(a,0x166,0,7,0,15003)==0);   /* SpringBoard's it_typein, polling as it does 20 times a second */
     assert(call(a,0x16a,token,0,0,15003)==0);
     cookie=call(a,0x166,0,0,0,15003);assert(cookie>0);
     assert(call(a,0x161,token,0,0,15003)==0);
@@ -162,5 +167,38 @@ int main(void) {
     ipod_agent_set_clock_offset(c,34931200);
     assert(call(c,0x165,ct,0,0,0)==1300000000);
     ipod_agent_free(c);
-    puts("PASS: binary windows, malformed input, memory faults, bounds, ownership, restart, reset, clock");
+    /* the poll's window is the agent's state report: taken from its session only, handed to a reader once per change,
+     * and dropped with whatever ends the session, so nobody reads an old report as the guest's state now */
+    IPodAgent *g=ipod_agent_new();
+    uint64_t serial=0;
+    char *state;
+    int64_t gt=call(g,0x160,0,0,0,0);
+    assert(!ipod_agent_report(g,0,&serial) && serial==0);
+    memcpy(memory,"agent 6\nspringboard 0\n",22);
+    assert(call(g,0x161,gt+1,0,22,0)==-1 && !ipod_agent_report(g,0,&serial));
+    assert(call(g,0x161,gt,0,22,0)==0);
+    state=ipod_agent_report(g,0,&serial);
+    assert(state && !strcmp(state,"agent 6\nspringboard 0\n") && serial==1);free(state);
+    assert(call(g,0x161,gt,0,22,0)==0 && !ipod_agent_report(g,0,&serial));        /* the same report again */
+    assert(call(g,0x161,gt,0,0,0)==0 && !ipod_agent_report(g,0,&serial));         /* no window: it stands */
+    assert(call(g,0x161,gt,0,IT_AGENT_REPORT_MAX+1,0)==0 && !ipod_agent_report(g,0,&serial));
+    fail=true;assert(call(g,0x161,gt,0,22,0)==0 && !ipod_agent_report(g,0,&serial));fail=false;
+    memory[20]='1';
+    assert(call(g,0x161,gt,0,22,5000)==0);
+    state=ipod_agent_report(g,5000,&serial);assert(state && state[20]=='1' && serial==2);free(state);
+    state=ipod_agent_report(g,15001,&serial);assert(state && !*state && serial==3);free(state);   /* a lease of silence */
+    assert(call(g,0x161,gt,0,22,15001)==0);                                       /* the agent polls again */
+    state=ipod_agent_report(g,15001,&serial);assert(state && state[20]=='1');free(state);
+    assert(!ipod_agent_submit(g,"gone exec sleep 9\n") && call(g,0x161,gt,0,22,15001)>0);
+    assert(ipod_agent_cancel(g,"gone"));                                          /* revokes the session */
+    state=ipod_agent_report(g,15001,&serial);assert(state && !*state);free(state);
+    gt=call(g,0x160,0,0,0,15001);assert(gt>0 && call(g,0x161,gt,0,22,15001)==0);
+    state=ipod_agent_report(g,15001,&serial);assert(state && *state);free(state);
+    ipod_agent_reset(g);
+    state=ipod_agent_report(g,15001,&serial);assert(state && !*state);free(state);
+    assert(!ipod_agent_report(g,15001,&serial));
+    uint64_t fresh=0;                                                              /* a reader that starts now */
+    state=ipod_agent_report(g,15001,&fresh);assert(state && !*state && fresh==serial);free(state);
+    ipod_agent_free(g);
+    puts("PASS: binary windows, malformed input, memory faults, bounds, ownership, restart, reset, clock, state report");
 }

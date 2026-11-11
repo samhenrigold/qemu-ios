@@ -97,6 +97,12 @@ char *qemu_ios_agent_result(void);
 void qemu_ios_agent_free_result(char *result);
 /* 0 absent/not running, 1 alive, 2 stale. */
 int qemu_ios_agent_status(void);
+/* What the guest agent says of the guest, sent with each of its polls (contrib/it-agent/README.md, "State report"):
+ * UTF-8 `key value` lines, at most 1 KiB, when they changed since *serial (0 at first), which this updates; "" once
+ * the session that sent them ended (the guest reset, the agent restarted or went silent for its lease), so a reader
+ * never takes an old report for the guest's state now. NULL when nothing changed, and always from an agent before v6.
+ * The guest wrote it: parse it as untrusted. Free it with free(). Any thread. API 2.4. */
+char *qemu_ios_agent_report(uint64_t *serial);
 
 /* it_boot's last QC_PKG_REPORT since the guest last reset: the serial now
  * current and its result code (contrib/it-boot/it_boot.c R_*; negative = an
@@ -115,7 +121,7 @@ const char *qemu_ios_build_id(void);
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((2u << 16) | 3u)
+#define QEMU_IOS_API_VERSION ((2u << 16) | 4u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */

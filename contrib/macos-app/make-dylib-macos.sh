@@ -96,6 +96,7 @@ _qemu_ios_agent_cancel
 _qemu_ios_agent_result
 _qemu_ios_agent_free_result
 _qemu_ios_agent_status
+_qemu_ios_agent_report
 _qemu_ios_gles_contexts
 _qemu_ios_guest_package_report
 _qemu_ios_gles_protocol

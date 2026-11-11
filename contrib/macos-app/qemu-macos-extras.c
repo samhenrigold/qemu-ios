@@ -700,6 +700,17 @@ int qemu_ios_agent_status(void)
     return !strcmp(status, "alive") ? 1 : !strcmp(status, "stale") ? 2 : 0;
 }
 
+char *qemu_ios_agent_report(uint64_t *serial)
+{
+    if (!serial) {
+        return NULL;
+    }
+    IPodAgent *a = ipod_agent_acquire();
+    char *state = a ? ipod_agent_report(a, qemu_clock_get_ms(QEMU_CLOCK_REALTIME), serial) : NULL;
+    ipod_agent_free(a);
+    return state;
+}
+
 void qemu_ios_agent_cancel(const char *id)
 {
     if (id && qemu_ios_ui_ready()) {

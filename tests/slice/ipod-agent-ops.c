@@ -2,6 +2,7 @@
  *
  * SLICE:agent-ops contrib/it-agent/agent-ops.h file
  * SLICE:agent-sbs contrib/it-agent/agent-sbs.h file
+ * SLICE:agent-report contrib/it-agent/agent-report.h file
  * SLICE:sbs-launch contrib/it-agent/sbs-launch.h file
  * CFLAGS -Wno-deprecated-declarations
  */
@@ -29,7 +30,7 @@ static void request(const char *header,const void *body,unsigned len) {
 }
 int main(void) {
     request("1 ping\n","",0);
-    assert(!result_status && result_len==strlen(AG_HELLO) && !memcmp(result,"it_agent v5\nops ",16));
+    assert(!result_status && result_len==strlen(AG_HELLO) && !memcmp(result,"it_agent v6\nops ",16));
     assert(strstr(AG_HELLO," cadebug ") && strstr(AG_HELLO," statusbar ") && strstr(AG_HELLO," statusbarget\n"));
     /* malformed requests are refused before any framework is touched */
     request("1b cadebug 4\n","",0);assert(result_status==-EINVAL);
@@ -108,5 +109,31 @@ int main(void) {
     request("38 putpart 0 1 644 \n","",0);assert(result_status==-EINVAL);
     assert(!symlink("elsewhere","link.it-agent-part"));
     request("39 putpart 0 1 644 link\n","x",1);assert(result_status==-ELOOP);
-    puts("PASS: binary commands/files, stderr/status, permissions, overflow, timeout, recovery, shell-free spawn, sync, chown, unlink, versioned ping, no kill, chunked putpart");
+    /* the state report's lines (agent-report.h): whole lines only, one value on each, inside one window */
+    char report[AG_REPORT_MAX+1];
+    struct ag_report_sample sample;
+    memset(&sample,0,sizeof(sample));
+    unsigned n=agent_report_format(report,AG_REPORT_MAX,0,0);report[n]=0;
+    assert(!strcmp(report,"agent 6\n"));                                          /* no sample yet */
+    n=agent_report_format(report,AG_REPORT_MAX,&sample,0);report[n]=0;
+    assert(!strcmp(report,"agent 6\nspringboard 0\n"));                           /* SpringBoard isn't up */
+    sample.springboard=2;sample.locked=1;sample.has_uidegrees=1;sample.uidegrees=-90;sample.interface=4;
+    strcpy(sample.front,"com.apple.mobilesafari");strcpy(sample.name,"Saf\nari\x7f");
+    n=agent_report_format(report,AG_REPORT_MAX,&sample,0);report[n]=0;
+    assert(!strcmp(report,"agent 6\nspringboard 2\nlocked 1\npasscode 0\nfront com.apple.mobilesafari\n"
+                          "name Saf ari \nuidegrees -90\n"));
+    n=agent_report_format(report,AG_REPORT_MAX,&sample,1);report[n]=0;
+    assert(strstr(report,"springboard 2\nstalled 1\nlocked 1\n"));               /* SpringBoard holds the next one */
+    n=agent_report_format(report,30,&sample,0);report[n]=0;
+    assert(!strcmp(report,"agent 6\nspringboard 2\n"));                           /* never cut inside a line */
+    memset(sample.front,'f',sizeof(sample.front)-1);memset(sample.name,'n',sizeof(sample.name)-1);
+    n=agent_report_format(report,AG_REPORT_MAX,&sample,1);report[n]=0;
+    assert(n<AG_REPORT_MAX && strstr(report,"\nuidegrees -90\n") && strlen(strstr(report,"\nname ")+6)>255);
+    sample.front[0]=0;sample.has_uidegrees=0;sample.has_interface=1;
+    n=agent_report_format(report,AG_REPORT_MAX,&sample,0);report[n]=0;
+    assert(!strstr(report,"front") && !strstr(report,"name"));                     /* the Home or lock screen */
+    assert(strstr(report,"\ninterface 4\n") && !strstr(report,"uidegrees"));        /* 3.2 on: the other orientation call */
+    /* which SpringBoard: a process by its command name (here launchd's, the one pid known), none for a name nothing has */
+    assert(agent_report_pid("launchd")==1 && !agent_report_pid("no such process"));
+    puts("PASS: binary commands/files, stderr/status, permissions, overflow, timeout, recovery, shell-free spawn, sync, chown, unlink, versioned ping, no kill, chunked putpart, state report lines");
 }
