@@ -18,6 +18,7 @@
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
 #include <assert.h>
+#define GLES_CAP_MAP_BUFFER 2u   /* include/hw/arm/guest-services/gles.h */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

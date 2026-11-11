@@ -1101,6 +1101,20 @@ static void test_incoming_sms(void)
     c_mux_str(3, "at+cnmi=1,2,2,1\r");
     pump();
     expect_frame(3, "\r\nOK\r\n");
+
+    /* An SMS center with a '+' goes out as its digits (TOA 0x91 says international), and +CMGR's length counts the
+     * TPDU after that address as sent: 33, not one short. */
+    strcpy(bb.sca, "+1234");
+    CHECK(ios_bb_incoming_sms(&bb, "14155550100", "Hello from 2007"));
+    pump();
+    expect_frame(3, "\r\n+CMT: ,33\r\n"
+        "\r\n03912143040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
+    c_mux_str(3, "at+cmgr=4\r");
+    pump();
+    expect_frame(3, "\r\n+CMGR: 1,,33\r\n"
+        "\r\n03912143040B914151550501F00000704020312581000FC8329BFD0699E5EF36480683DD00\r\n");
+    expect_frame(3, "\r\nOK\r\n");
+    bb.sca[0] = 0;
 }
 
 /* Worked example 4.3: the user sends "Hi" to +1 415 555 0100. */

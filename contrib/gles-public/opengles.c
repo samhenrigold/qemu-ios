@@ -1387,9 +1387,11 @@ static int fe_names(const char *text, unsigned long size, const char *name)
 #define FE_X_SGX1 2
 #define FE_X_SGX2 4
 #define FE_X_OLD  8
+#define FE_X_HOSTMAP 16   /* only where the host reports GLES_CAP_MAP_BUFFER (the A6's) */
+static unsigned fe_caps;   /* GLES_OP_CAPABILITIES, read with the first glGetString */
 static const struct { const char *name; unsigned char on; } fe_ext_table[] = {
-    { "GL_OES_mapbuffer",                   FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 },
-    { "GL_EXT_map_buffer_range",            FE_X_SGX1 | FE_X_SGX2 },
+    { "GL_OES_mapbuffer",                   FE_X_MBX | FE_X_SGX1 | FE_X_SGX2 | FE_X_HOSTMAP },
+    { "GL_EXT_map_buffer_range",            FE_X_SGX1 | FE_X_SGX2 | FE_X_HOSTMAP },
     { "GL_APPLE_core_surface_texture",     FE_X_MBX | FE_X_OLD },
     { "GL_APPLE_sync",                     FE_X_SGX2 },
     { "GL_APPLE_texture_2D_limited_npot",  FE_X_SGX1 },
@@ -1432,6 +1434,7 @@ static void fe_extensions(char *out, unsigned cap, int gpu, const char *text, un
     for (i = 0; i < sizeof fe_ext_table / sizeof fe_ext_table[0]; i++) {
         const char *e = fe_ext_table[i].name;
         if (!(fe_ext_table[i].on & col)) continue;
+        if ((fe_ext_table[i].on & FE_X_HOSTMAP) && !(fe_caps & GLES_CAP_MAP_BUFFER)) continue;
         if (text ? !fe_names(text, size, e) : !(fe_ext_table[i].on & FE_X_OLD)) continue;
         if (n + slen(e) + 1 >= cap) break;
         if (n) out[n++] = ' ';
@@ -1476,9 +1479,10 @@ static const char *fe_getString(void *gc, unsigned name)
         const char *text, *drv;
         unsigned long size, dsize;
         fe_image(gpu == FE_MBX ? FE_MBX_ENGINE : FE_SGX_ENGINE, &text, &size);
+        fe_caps = (unsigned)qc(GLES_OP_CAPABILITIES, gc, 0, A(0));
         fe_extensions(ext[gpu], sizeof ext[gpu], gpu, text, size);
         if (gpu == FE_SGX2 && fe_names(text, size, "GL_EXT_shader_framebuffer_fetch") &&
-            (qc(GLES_OP_CAPABILITIES, gc, 0, A(0)) & 1)) {
+            (fe_caps & GLES_CAP_FRAMEBUFFER_FETCH)) {
             const char *fetch = " GL_EXT_shader_framebuffer_fetch";
             unsigned n = slen(ext[gpu]), k = 0;
             while (fetch[k] && n + 1 < sizeof ext[gpu]) ext[gpu][n++] = fetch[k++];
@@ -1673,7 +1677,10 @@ static void fe_native_layout(void)
 
 static void fe_native_current(fe_cur_t *c, GuestGC *gc)
 {
-    static int noted;
+    static int noted, allowed = -1;
+    /* The A6's host only (GLES_CAP_NATIVE_DISPATCH): elsewhere cached callers stay the no-ops they were qualified as. */
+    if (gc && allowed < 0) allowed = (qc(GLES_OP_CAPABILITIES, gc, 0, A(0)) & GLES_CAP_NATIVE_DISPATCH) != 0;
+    if (allowed <= 0) return;
     if (gc) pthread_once(&fe_native_once, fe_native_layout);
     if (!fe_native_key) return;
     if (!gc) {

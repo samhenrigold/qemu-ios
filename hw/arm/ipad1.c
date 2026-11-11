@@ -1080,8 +1080,10 @@ static void ipad1_powerdown_req(Notifier *n, void *opaque)
         g_autofree char *request = g_strdup_printf("qemu-powerdown-%" PRIu64 " halt\n",
                                                   ++sequence);
         if (!ipod_agent_submit(s->agent, request)) {
+            /* Watched as the gesture is: a guest that hasn't halted in pwroff_watch_ms is reported. */
             timer_del(s->pwroff_timer);
-            s->pwroff_phase = PWROFF_IDLE;
+            s->pwroff_phase = PWROFF_WATCH;
+            ipad1_pwroff_arm(s, pwroff_watch_ms(s));
             return;
         }
     }

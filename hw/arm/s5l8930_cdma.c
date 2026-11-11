@@ -1462,8 +1462,11 @@ static int cdma_post_load(void *opaque, int version_id)
         s->ch[ch].in_seg = s->in_seg_mig[ch];
     }
     /* A deferred FIFO notification is host execution state; reconstruct it
-     * from the restored channels after all device state has been loaded. */
-    qemu_bh_schedule(s->kick_bh);
+     * from the restored channels after all device state has been loaded. The A6's: the other boards restore
+     * without one, as they were qualified. */
+    if (s->a6) {
+        qemu_bh_schedule(s->kick_bh);
+    }
     return 0;
 }
 

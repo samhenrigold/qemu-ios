@@ -377,6 +377,11 @@ static inline const char *gles_id_name(uint32_t id)
 /* Optional implemented renderer features. Unknown on older cores => no bits. */
 #define GLES_OP_CAPABILITIES            (GLES_OP_BASE + 10)
 #define GLES_CAP_FRAMEBUFFER_FETCH      1u
+/* The A6's shim behavior (contrib/gles-public/opengles.c): OES_mapbuffer and EXT_map_buffer_range advertised, and the
+ * stock engine's thread slot published so cached callers (VectorKit, CoreImage) dispatch. A host without them (every
+ * other board's: gles_host_set_a6) keeps the shim as those boards were qualified with. */
+#define GLES_CAP_MAP_BUFFER             2u
+#define GLES_CAP_NATIVE_DISPATCH        4u
 #define GLES_BATCH_MAX_WORDS            4096
 
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */

@@ -187,7 +187,7 @@ static void executable_signature_info(CFStringRef path, CFStringRef *ident, CFTy
         for (unsigned i = 0; i < ncmds && off + 16 <= (unsigned)n; i++) {
             unsigned *lc = (unsigned *)(h + off);
             if (lc[0] == 0x1d) { sigoff = lc[2]; siglen = lc[3]; break; }
-            if (lc[1] < 8) break;
+            if (lc[1] < 8 || lc[1] > (unsigned)n - off) break;   /* no wrap past the header read */
             off += lc[1];
         }
     }
@@ -196,9 +196,9 @@ static void executable_signature_info(CFStringRef path, CFStringRef *ident, CFTy
         unsigned count = be32(b + 8);
         for (unsigned i = 0; i < count && 12 + 8 * i + 8 <= siglen; i++) {
             unsigned o = be32(b + 12 + 8 * i + 4);
-            if (o + 24 > siglen) continue;
+            if (siglen < 24 || o > siglen - 24) continue;   /* o + 24 could wrap */
             unsigned magic = be32(b + o), len = be32(b + o + 4);
-            if (len > siglen - o) continue;
+            if (len < 8 || len > siglen - o) continue;   /* the entitlements' len - 8 must not wrap */
             if (magic == 0xfade0c02 && !*ident) {
                 unsigned io = be32(b + o + 20);
                 if (io < len && memchr(b + o + io, 0, len - io))

@@ -7044,7 +7044,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     /* ---- engine-level operations (not framework dispatch slots) ---- */
     case GLES_OP_CAPABILITIES:
-        return gles_a6 ? gles_fetch_capabilities() : 0;
+        return gles_a6 ? gles_fetch_capabilities() | GLES_CAP_MAP_BUFFER | GLES_CAP_NATIVE_DISPATCH : 0;
     case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
         return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
     case GLES_OP_DRAWABLE_STORAGE:
@@ -9216,10 +9216,19 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
     case GLES_SLOT_GET_FB_ATTACH_PARAM: { /* target, attach, pname, int* */
         GLint v = 0;
 
+        if (!gles_a6) {
+            /* Every other board's answer, as qualified: the bound renderbuffer, whatever was asked. The host's own
+             * answer names the CA drawable's private surrogate texture (GL_TEXTURE), which no EAGL guest attached. */
+            uint32_t bound = gh.bound_renderbuffer;
+            if (a[3]) {
+                gles_guest_rw(cpu, a[3], (uint8_t *)&bound, sizeof(bound), 1);
+            }
+            return 0;
+        }
         if (!gh.bound_framebuffer) {
             return gles_reject(GL_INVALID_OPERATION);
         }
-        if (gles_a6 && a[0] == GL_FRAMEBUFFER_EXT && a[1] == GL_COLOR_ATTACHMENT0_EXT &&
+        if (a[0] == GL_FRAMEBUFFER_EXT && a[1] == GL_COLOR_ATTACHMENT0_EXT &&
             gles_is_drawable(gh.bound_framebuffer)) {
             /* The host drawable is a private texture, while EAGL attached a
              * guest renderbuffer. Report that attachment, independent of the

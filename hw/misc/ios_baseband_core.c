@@ -2919,7 +2919,8 @@ static void at_command_line(IosBbCore *bb, int ch, const char *line)
 
         if (idx >= 1 && s->used) {
             unsigned oct = strlen(s->pdu) / 2;
-            unsigned sca = (bb->sca[0]) ? 1 + 1 + (strlen(bb->sca) + 1) / 2 : 1;
+            /* as sms_build_deliver encodes it: the digits without a leading '+' */
+            unsigned sca = (bb->sca[0]) ? 1 + 1 + (strlen(bb->sca + (bb->sca[0] == '+')) + 1) / 2 : 1;
 
             chan_printf(bb, ch, "\r\n+CMGR: 1,,%u\r\n\r\n%s\r\n",
                         oct - sca, s->pdu);

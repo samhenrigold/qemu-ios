@@ -24,8 +24,9 @@
  * SLICE include/hw/arm/ipod_touch_guard.h range static inline uint64_t it_guard_idx | #endif /* HW_ARM_IPOD_TOUCH_GUARD_H
  * SLICE hw/arm/s5l8930_cdma.c range #define CDMA_CHANNELS  | /* Per-IPSW GID stand-in
  * SLICE hw/arm/s5l8930_cdma.c define GID_|CDMA_PACED_[A-Z_]+_NS
- * SLICE hw/arm/s5l8930_cdma.c fn aes_trace_tag gid_lookup aes_apply fifo_push aes_feed aes_for_channel cdma_is_memory cdma_src cdma_fifo_fed cdma_update_irq fifo_pop cdma_waits_for_uart cdma_fifo_xfer cdma_run cdma_is_paced cdma_paced_advance cdma_paced_pos cdma_pace_arm cdma_pace_tick cdma_paced_stop cdma_start_paced cdma_read cdma_write s5l8930_cdma_sink_done s5l8930_cdma_set_source s5l8930_cdma_kick cdma_kick_deferred
+ * SLICE hw/arm/s5l8930_cdma.c fn aes_trace_tag gid_lookup aes_apply fifo_push aes_feed aes_for_channel cdma_is_memory cdma_src cdma_fifo_fed cdma_update_irq fifo_pop cdma_waits_for_uart cdma_fifo_xfer cdma_run cdma_is_paced cdma_paced_advance cdma_paced_pos cdma_pace_arm cdma_pace_tick cdma_paced_stop cdma_start_paced cdma_read cdma_write s5l8930_cdma_sink_done s5l8930_cdma_set_source s5l8930_cdma_kick cdma_kick_deferred cdma_post_load
  */
+#include <errno.h>
 #include <assert.h>
 #define trace_event_get_state_backends(id) 0
 #define trace_s5l8930_aes_transfer(...) ((void)0)
@@ -540,6 +541,15 @@ int main(void) {
     assert(s7->ch[13].desc == DESC + 16 && s7->ch[13].in_seg);
     free(s7);
     free(s); free(s2); free(s3); free(s4); free(s5); free(s6);
+    /* A snapshot restore re-runs stalled channels from a bottom half on the A6 only; the other boards restore as
+     * they were qualified, with nothing scheduled. */
+    S5L8930CDMAState *restored = calloc(1, sizeof *restored);
+    bh_scheduled = false;
+    assert(cdma_post_load(restored, 4) == 0 && !bh_scheduled);
+    restored->a6 = true;
+    assert(cdma_post_load(restored, 4) == 0 && bh_scheduled);
+    bh_scheduled = false;
+    free(restored);
     puts("PASS: CDMA inline-AES bypass symmetric both ways, enabled-channel status regs, FIFO-drained signal, "
          "memory-to-memory interrupt enable, reentrant FIFO room resumes partial DMA exactly once, "
          "A6 channel 40 transfer/IRQ and legacy rejection; AES-256 file-layer read/write, descriptor IV and zero-room/partial CBC continuation");
