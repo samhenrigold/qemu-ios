@@ -2282,6 +2282,17 @@ static void a6_pmu_adc_complete(void *opaque)
             raw = 800;
         }
     }
+    if (channel == 6 && s->usb_power) {
+        /* Channel 6 is the Lightning port's USB data lines, which TriStar
+         * switches to the ADC to tell a host from a charger (its switch
+         * writes 01=0c and 0d around each conversion). A host's pull-downs
+         * hold them at 0 V, as the D1815's brick-ID mux reads for one
+         * (s5l8930_i2c.c). Mid-scale read as no host: AppleARMPMUCharger
+         * called the cable Detached right after the OTG driver started, the
+         * device never connected and no host (usbmuxd, or the OTG model's
+         * built-in one) got past its first SETUP. */
+        raw = 0;
+    }
     s->regs[0x49] = raw & 0xf;
     s->regs[0x4a] = raw >> 4;
     s->regs[0x48] &= ~0x20;
