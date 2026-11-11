@@ -28,6 +28,8 @@ enum i2c_event { I2C_START_SEND };
 #define QEMU_CLOCK_VIRTUAL 0
 #define SHUTDOWN_CAUSE_GUEST_SHUTDOWN 1
 static unsigned shutdown_requests;
+static int a6_guest_shutdown;
+#define qatomic_set(p, v) (*(p) = (v))
 #define SHUTDOWN_CAUSE_GUEST_RESET 2
 static unsigned reset_requests;
 static void qemu_system_reset_request(int cause)
@@ -225,16 +227,19 @@ int main(void)
     assert(a6_pmu_recv(&s) == 0x80);
     assert(a6_pmu_recv(&s) == 0x80);
     unsigned before_shutdown = shutdown_requests;
+    /* The charging halt confirms the guest's shutdown as standby does. */
+    a6_guest_shutdown = 0;
     s.regs[0xb0] = 0x90;
     s.reg = 0x99;
     s.address = false;
     a6_pmu_send(&s, 0x2b);
-    assert(shutdown_requests == before_shutdown + 1);
+    assert(shutdown_requests == before_shutdown + 1 && a6_guest_shutdown);
     assert(!reset_requests);
+    a6_guest_shutdown = 0;
     s.regs[0xb0] = 0;
     s.reg = 0x99;
     a6_pmu_send(&s, 0x2b);
-    assert(reset_requests == 1);
+    assert(reset_requests == 1 && !a6_guest_shutdown);
     assert(shutdown_requests == before_shutdown + 1);
     /* Calibration and NTC inputs must be independent. Nonthermal voltage
      * channels retain their analog fixture, including when thermal sensing

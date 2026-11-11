@@ -1,6 +1,6 @@
 /* Host button events batched by a busy emulator still have a guest-time hold.
  *
- * Every machine's press hook (iPod touch, iPad, 1G, S5L8920) sees the press and the release.
+ * Every machine's press hook (iPod touch, iPad, 1G, S5L8920, S5L8950) sees the press and the release.
  *
  * SLICE contrib/ios-app/qemu-ios-ui.c range struct ios_button { | void qemu_ios_ui_button(
  */
@@ -29,6 +29,8 @@ static char g1_pins[8];
 static void ipod_touch_1g_press_button(IPodTouchButton b,bool down) {g1_pins[b]=down;}
 static bool s5l8920_pins[4];
 static void s5l8920_press_button(IPodTouchButton b,bool down) {s5l8920_pins[b]=down;}
+static bool s5l8950_pins[4];
+static void s5l8950_press_button(IPodTouchButton b,bool down) {s5l8950_pins[b]=down;}
 static QEMUTimer *timer_new_ms(int c,void(*cb)(void*),void *arg) {
  QEMUTimer *t=calloc(1,sizeof(*t));t->cb=cb;t->arg=arg;return t;
 }
@@ -42,8 +44,8 @@ int main(void) {
  for(int b=0;b<4;b++) {
   now=1000;event(b,true);event(b,false);
   QEMUTimer*t=ios_button_holds[b].release;
-  assert(pins[b] && ipad_pins[b] && g1_pins[b] && s5l8920_pins[b] && t->pending && t->deadline==1100);
-  now=1100;t->cb(t->arg);assert(!pins[b] && !ipad_pins[b] && !g1_pins[b] && !s5l8920_pins[b]);
+  assert(pins[b] && ipad_pins[b] && g1_pins[b] && s5l8920_pins[b] && s5l8950_pins[b] && t->pending && t->deadline==1100);
+  now=1100;t->cb(t->arg);assert(!pins[b] && !ipad_pins[b] && !g1_pins[b] && !s5l8920_pins[b] && !s5l8950_pins[b]);
   now=2000;event(b,true);now=2500;event(b,false);
   assert(pins[b] && t->deadline==2500);t->cb(t->arg);assert(!pins[b]);
   now=3000;event(b,true);event(b,false);now=3050;event(b,true);

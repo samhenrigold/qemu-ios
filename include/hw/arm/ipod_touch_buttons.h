@@ -33,5 +33,7 @@ void ipod_touch_1g_press_button(IPodTouchButton button, bool down);
 void s5l8920_press_button(IPodTouchButton button, bool down);
 /* The S5L8950 N42 board's GPIO buttons; no-op on other machines. */
 void s5l8950_press_button(IPodTouchButton button, bool down);
+/* Whether the N42 PMU took the guest's power-off (qemu_ios_ui_guest_shutdown_confirmed). */
+bool s5l8950_guest_shutdown_confirmed(void);
 
 #endif /* HW_ARM_IPOD_TOUCH_BUTTONS_H */
