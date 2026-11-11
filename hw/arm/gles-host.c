@@ -36,6 +36,8 @@
 #include "accel/tcg/cpu-mmu-index.h"
 #include "exec/tlb-flags.h"
 #include "system/ram_addr.h"
+#include "system/ramblock.h"
+#include "system/ramlist.h"
 #include "system/physmem.h"
 #include "hw/core/sysbus.h"
 #include "hw/arm/ipod_touch_2g.h"
@@ -4745,6 +4747,19 @@ static bool gles_surface_range(uint32_t base, uint32_t stride, unsigned rows,
         (uint64_t)base + (uint64_t)(rows - 1) * stride + rowbytes <= UINT32_MAX;
 }
 
+/* How many pages a surface's rows span from its base's page, as a bind keeps them; 0 for one it
+ * doesn't track. ponytail: NV12 (video, new every frame anyway) is not tracked; its two planes
+ * would need two page lists. */
+static unsigned gles_surface_npages(uint32_t base, uint32_t stride, unsigned w, unsigned h,
+                                    unsigned bpp, bool nv12)
+{
+    if (nv12 || !gles_surface_range(base, stride, h, w * bpp)) {
+        return 0;
+    }
+    uint64_t last = base + (uint64_t)(h - 1) * stride + w * bpp - 1;
+    return (last >> TARGET_PAGE_BITS) - (base >> TARGET_PAGE_BITS) + 1;
+}
+
 static bool gles_surface_read(CPUState *cpu, uint32_t base, uint32_t stride,
                               unsigned rows, unsigned rowbytes, uint8_t *dst)
 {
@@ -4910,9 +4925,22 @@ static size_t gles_page_gen_len;
 /* The RAM offset of the page at `va` as the calling process maps it now, and
  * may read it: the page walk alone would hand an unprivileged caller kernel
  * pages. (Not write: the SGX writes surfaces a process maps read-only.) */
-static bool gles_page_ram(CPUState *cpu, vaddr va, ram_addr_t *ram)
+/* DMA marks VGA-dirty only on a logged region: log each RAM region a surface lives in, once. */
+static void gles_log_region(MemoryRegion *mr)
 {
     static MemoryRegion *logged[4];
+
+    for (unsigned j = 0; j < ARRAY_SIZE(logged) && logged[j] != mr; j++) {
+        if (!logged[j]) {
+            memory_region_set_log(mr, true, DIRTY_MEMORY_VGA);
+            logged[j] = mr;
+            break;
+        }
+    }
+}
+
+static bool gles_page_ram(CPUState *cpu, vaddr va, ram_addr_t *ram)
+{
     MemTxAttrs attrs = {};
     hwaddr pa, xlat, len = TARGET_PAGE_SIZE;
     MemoryRegion *mr;
@@ -4929,13 +4957,7 @@ static bool gles_page_ram(CPUState *cpu, vaddr va, ram_addr_t *ram)
                                      pa, &xlat, &len, false, attrs);
     }
     if (!memory_region_is_ram(mr) || len < TARGET_PAGE_SIZE) return false;
-    for (unsigned j = 0; j < ARRAY_SIZE(logged) && logged[j] != mr; j++) {
-        if (!logged[j]) {                       /* DMA marks VGA-dirty only on a logged region */
-            memory_region_set_log(mr, true, DIRTY_MEMORY_VGA);
-            logged[j] = mr;
-            break;
-        }
-    }
+    gles_log_region(mr);
     *ram = memory_region_get_ram_addr(mr) + xlat;
     return true;
 }
@@ -5449,13 +5471,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
     }
     if (gles_surface_flush(cpu, a[1])) return -1;     /* a rendered alias: its pixels are on the host */
 
-    /* ponytail: NV12 (video, new every frame anyway) is not tracked; its two planes would
-     * need two page lists. */
-    unsigned npages = 0;
-    if (!nv12 && gles_surface_range(a[1], a[2], h, w * bpp)) {
-        uint64_t last = a[1] + (uint64_t)(h - 1) * a[2] + w * bpp - 1;
-        npages = (last >> TARGET_PAGE_BITS) - (a[1] >> TARGET_PAGE_BITS) + 1;
-    }
+    unsigned npages = gles_surface_npages(a[1], a[2], w, h, bpp, nv12);
     g_autofree GLESSurface *surface = g_malloc0(sizeof(GLESSurface) + npages * sizeof(ram_addr_t));
     surface->base = a[1]; surface->stride = a[2]; surface->width = w; surface->height = h;
     surface->format = fmt; surface->uv = a[6]; surface->uvstride = a[7]; surface->target = target;
