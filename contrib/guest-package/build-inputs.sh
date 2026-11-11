@@ -9,7 +9,7 @@ set -euo pipefail
 export LC_ALL=C
 COMPONENTS="armv6-toolchain it-gles gles-public it-agent it-instprogress it-media it-proxy it-status it-halt
 it-orientation ipad1-guest appsync it-boot it-pasteboard it-seal it-prefs it-keybag it-heading
-it-gltest it-msmquiet guest-package"
+it-gltest it-msmquiet it-restore launchd-cache guest-package"
 
 # NUL-separated paths on stdin -> one JSON object {path relative to $1: sha256}
 hashes() {

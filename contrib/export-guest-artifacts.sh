@@ -10,7 +10,8 @@
 #                       gles-names.h, the name table it and the host speak, the n72 recipe's inputs, the n45 recipe's
 #                       (OpenGLES-1x, 1.x's own front end, and opengles-1x.exports, the export set it must match),
 #                       the legacy-linked armv7 helpers and AppSync for 3.0 (<name>-legacy),
-#                       the armv6 it_keybag, and armv6.itpack /
+#                       the armv6 it_keybag, the iPhone 5's it_initialize, it_mobilegestalt and
+#                       launchd-cache-template (contrib/it-restore, contrib/launchd-cache), and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -67,6 +68,17 @@ for recipe in it-keybag; do
         fail "$recipe/build-ipod.sh failed"
     fi
 done
+# The iPhone 5's preparation tools (FirmwareKit's N42 recipe): the restore initializer and its MobileGestalt
+# worker, and the launchd cache template its iOS 8+ job edits fill.
+for recipe in it-restore launchd-cache; do
+    out="$B/src/build/$recipe"
+    [ "$recipe" = launchd-cache ] && out="$out/launchd-cache-template"
+    mkdir -p "$B/src/build/$recipe"
+    if ! bash "$B/src/contrib/$recipe/build.sh" "$out" >"$B/logs/$recipe.log" 2>&1; then
+        cat "$B/logs/$recipe.log" >&2
+        fail "$recipe/build.sh failed"
+    fi
+done
 
 # Stage only after every build has succeeded. Each Mach-O keeps its ldid signature (it runs in the guest); the
 # app's signature seals them as resources.
@@ -113,6 +125,9 @@ done
 stage ipad-guest-tools "$C/it-gles/OpenGLES-1x"
 stage ipad-guest-tools "$C/it-gles/opengles-1x.exports"
 stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
+for t in it-restore/it_initialize it-restore/it_mobilegestalt launchd-cache/launchd-cache-template; do
+    stage ipad-guest-tools "$G/$t"
+done
 chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h \
     "$OUT"/ipad-guest-tools.incomplete/*.exports
 

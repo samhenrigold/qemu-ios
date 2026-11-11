@@ -8,8 +8,13 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#include <sys/disk.h>
+#include <stdint.h>
 #include "../armv6-toolchain/qemu-call.h"
+/* xnu bsd/sys/disk.h's numbers: the 3.1.3 SDK the guest tools build with has
+ * no sys/disk.h, and these three are all the imager asks the disk driver. */
+#define DKIOCSYNCHRONIZECACHE _IO('d', 22)
+#define DKIOCGETBLOCKSIZE _IOR('d', 24, uint32_t)
+#define DKIOCGETBLOCKCOUNT _IOR('d', 25, uint64_t)
 #ifdef IT_INITIAL_PREPARE
 #include "data.h"
 #endif
