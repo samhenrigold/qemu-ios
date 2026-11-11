@@ -3,7 +3,8 @@
  * Host only. iBoot's miu_init demands POWER_ID[31:24] == epoch(), the CHIPID fuse field floored at the build's
  * epoch; on hardware LLB writes that byte, and the machine's iboot= path (which skips LLB) writes what LLB would.
  * Images come from the iPad 1 decrypt caches (~/Developer/qemu-ios-files/ipad1/repro/cache/<ipsw sha1>/iBoot.bin)
- * or the iOS 5 spike's (~/Developer/qemu-ios-files/ios5-spike/dec-<build>/); missing builds are skipped. Pinned: the
+ * or the iOS 5 spike's (~/Developer/qemu-ios-files/ios5-spike/dec-<build>/); missing builds are skipped, and with none
+ * the check fails: tests/slice/ipad1-iboot-fixtures.sh fetches and decrypts all five into the first. Pinned: the
  * model's fuse field (1, docs/ipad1/hw1-probes.log) gives 1 for 3.2/4.2 and 2 from 4.3; a fuse above the floor
  * wins; two copies of the check refuse.
  *
@@ -21,8 +22,8 @@
 static const struct { const char *build, *dirs[2], *version; unsigned want[3]; } BUILDS[] = {
  {"7B500", {"ipad1/repro/cache/68b613f78581d36eab96aa5a007001dff142baa3", "ipad1/7B500/dec"}, "iBoot-817.29", {1, 1, 3}},
  {"8C148", {"ipad1/repro/cache/8717b3bedc925b587566442ad375aa65d857e79a"}, "iBoot-931.71.16", {1, 1, 3}},
- {"8L1",   {"ios5-spike/dec-8L1"}, "iBoot-1072.61", {2, 2, 3}},
- {"9A405", {"ios5-spike/dec-9A405"}, "iBoot-1219.43.32", {2, 2, 3}},
+ {"8L1",   {"ipad1/repro/cache/66a114630a457dea3565cf99b9285b2fe3d56d62", "ios5-spike/dec-8L1"}, "iBoot-1072.61", {2, 2, 3}},
+ {"9A405", {"ipad1/repro/cache/732fc3ca3f5654e6f0df787c817ca16054dfb8da", "ios5-spike/dec-9A405"}, "iBoot-1219.43.32", {2, 2, 3}},
  {"9B206", {"ipad1/repro/cache/ad9b607439250f2337fe132890dadc4c487beca8", "ios5-spike/dec-9B206"}, "iBoot-1219.62.15", {2, 2, 3}},
 };
 #define N(a) (sizeof(a) / sizeof((a)[0]))
