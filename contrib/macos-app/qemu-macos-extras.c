@@ -700,6 +700,17 @@ int qemu_ios_agent_status(void)
     return !strcmp(status, "alive") ? 1 : !strcmp(status, "stale") ? 2 : 0;
 }
 
+char *qemu_ios_agent_report(uint64_t *serial)
+{
+    if (!serial) {
+        return NULL;
+    }
+    IPodAgent *a = ipod_agent_acquire();
+    char *state = a ? ipod_agent_report(a, qemu_clock_get_ms(QEMU_CLOCK_REALTIME), serial) : NULL;
+    ipod_agent_free(a);
+    return state;
+}
+
 void qemu_ios_agent_cancel(const char *id)
 {
     if (id && qemu_ios_ui_ready()) {
@@ -757,6 +768,13 @@ int32_t qemu_ios_gles_protocol(int64_t *serial)
 bool qemu_ios_ui_vibrator(uint64_t *pulses)
 {
     return ios_vibrator_get(pulses);
+}
+
+/* hw/arm/ipod_touch_multitouch.c: atomics, so no BQL or ready check needed. */
+extern bool ipod_touch_multitouch_delivery(uint64_t *reads);
+bool qemu_ios_ui_touch_waiting(uint64_t *reads)
+{
+    return ipod_touch_multitouch_delivery(reads);
 }
 
 uint32_t qemu_ios_api_version(void)

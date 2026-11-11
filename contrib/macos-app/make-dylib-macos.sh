@@ -96,6 +96,7 @@ _qemu_ios_agent_cancel
 _qemu_ios_agent_result
 _qemu_ios_agent_free_result
 _qemu_ios_agent_status
+_qemu_ios_agent_report
 _qemu_ios_gles_contexts
 _qemu_ios_guest_package_report
 _qemu_ios_gles_protocol
@@ -116,6 +117,7 @@ _qemu_ios_ui_guest_shutdown_confirmed
 _qemu_ios_ui_display_sleeping
 _qemu_ios_ui_backlight_level
 _qemu_ios_ui_vibrator
+_qemu_ios_ui_touch_waiting
 _qemu_ios_snapshot_save2
 _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume

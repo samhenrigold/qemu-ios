@@ -345,4 +345,8 @@ void ipod_touch_multitouch_register_input(IPodTouchMultitouchState *s);
 /* The guest took next_frame (each read path calls this after clearing it): an owed frame goes out now. */
 void ipod_touch_multitouch_frame_taken(IPodTouchMultitouchState *s);
 
+/* Whether a touch report that begins or ends a contact still waits for the guest's driver to read it; `reads` (may be
+ * NULL) counts those it has read since the process began. Any thread. */
+bool ipod_touch_multitouch_delivery(uint64_t *reads);
+
 #endif

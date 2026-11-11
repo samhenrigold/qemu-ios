@@ -56,6 +56,13 @@ static void ipod_touch_sysic_request_edge(void *sysic, unsigned group,
     sysic_group = group;
     sysic_bit = bit;
 }
+/* frame_taken's delivery accounting (ipod-multitouch-quick-tap.c tests it); here only the held ATN is under test. */
+#define qatomic_inc(p) ((*(p))++)
+static uint64_t mt_contact_reads;
+static void mt_note_delivery(IPodTouchMultitouchState *s)
+{
+    (void)s;
+}
 #include "slice.h"
 int main(void)
 {

@@ -156,6 +156,7 @@ static void agent_child_tick(void)
 }
 
 #include "agent-sbs.h"
+#include "agent-report.h"
 
 /* `cadebug MASK VALUE`: Core Animation's debug colors, as Instruments' Core Animation checkboxes set them: the render
  * server's flags become (flags & ~MASK) | (VALUE & MASK) (QuartzCore's CARenderServerSetDebugFlags; port 0 looks up
@@ -234,7 +235,7 @@ static int agent_statusbarget(const char *args)
     return 0;
 }
 
-#define AG_HELLO "it_agent v5\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
+#define AG_HELLO "it_agent v6\nops ping exec spawn sync put putpart get getrange chown unlink settime " \
     "launch frontmost lockstatus orientation dlicon halt type backspace uidump cadebug statusbar statusbarget\n"
 
 static void agent_dispatch(unsigned size)
@@ -410,7 +411,9 @@ static void agent_tick(void)
         if (token <= 0) return;
         agent_token = token;
     }
-    int64_t size = qc(0x161, 0, 0, 0);
+    /* The poll's window carries the state report (agent-report.h); a host from before it ignores the window. */
+    static char report[AG_REPORT_MAX];
+    int64_t size = qc(0x161, report, 0, agent_report_now(report));
     if (size < 0) { agent_token = 0; agent_cancel(); return; }
     if (!(++tick % 4)) {
         int64_t epoch = qc(0x165, 0, 0, 0);

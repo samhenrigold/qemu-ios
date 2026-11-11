@@ -7,8 +7,14 @@
  * Mutations (named, each must fail this test): drop mt_emit_frame's "pending frame starts or ends a contact" early
  * return; drop the inform_frame_ready call in it.
  *
+ * And what a host can know of it (ipod_touch_multitouch_delivery): a press or lift waits until the guest has read the
+ * report carrying it, each such read is counted, motion is neither, and a guest that reads nothing leaves it waiting.
+ * Mutations: drop the count in frame_taken; drop a finger phase from mt_note_delivery; drop its call in frame_taken.
+ *
  * SLICE:wire include/hw/arm/ipod_touch_multitouch.h range #define MT_INTERFACE_VERSION | typedef struct IPodTouchMultitouchState
- * SLICE hw/arm/ipod_touch_multitouch.c fn mt_frame_period_ns mt_any_down mt_any_active mt_emit_frame mt_cancel_pending_end
+ * SLICE hw/arm/ipod_touch_multitouch.c fn mt_frame_period_ns mt_any_down mt_any_active
+ * SLICE hw/arm/ipod_touch_multitouch.c range static uint64_t mt_contact_reads; | static void mt_emit_frame(
+ * SLICE hw/arm/ipod_touch_multitouch.c fn mt_emit_frame mt_cancel_pending_end
  * SLICE hw/arm/ipod_touch_multitouch.c fn ipod_touch_multitouch_set_finger touch_timer_tick touch_end_timer_tick
  * SLICE hw/arm/ipod_touch_multitouch.c fn ipod_touch_multitouch_frame_taken
  * CFLAGS -Wall -Werror -Wno-unused-function
@@ -23,6 +29,9 @@
 #define QEMU_CLOCK_VIRTUAL 0
 #define NANOSECONDS_PER_SECOND 1000000000LL
 #define MTT(...) ((void)0)
+#define qatomic_read(p) (*(p))
+#define qatomic_set(p, v) (*(p) = (v))
+#define qatomic_inc(p) ((*(p))++)
 static int64_t now;
 static int64_t qemu_clock_get_ns(int clock) { return now; }
 typedef struct { int64_t at; } QEMUTimer;   /* -1: not armed */
@@ -95,17 +104,35 @@ static void reset(void)
 int main(void)
 {
     /* A quick tap: press and release before the guest reads anything. */
+    uint64_t reads = 0, read0;
     reset();
+    assert(!ipod_touch_multitouch_delivery(&read0));
     ipod_touch_multitouch_set_finger(&s, 0, .5f, .98f, true);
+    assert(ipod_touch_multitouch_delivery(&reads) && reads == read0);   /* the press waits for the guest */
     ipod_touch_multitouch_set_finger(&s, 0, .5f, .98f, false);
     assert(!s.touch_down);                         /* the pointer path's next press is a press */
     guest_reads_at(now + 1000000);                 /* the start */
+    assert(ipod_touch_multitouch_delivery(&reads) && reads == read0 + 1);   /* read; the lift still waits */
     guest_reads_at(now + 1000000);                 /* nothing yet: the owed end waits a report period */
+    assert(ipod_touch_multitouch_delivery(&reads) && reads == read0 + 1);
     guest_reads_at(now + 20000000);                /* the end */
+    assert(ipod_touch_multitouch_delivery(&reads) && reads == read0 + 2);   /* the gesture's end is to come */
     guest_reads_at(now + 200000000);               /* the gesture's end */
+    assert(!ipod_touch_multitouch_delivery(&reads) && reads == read0 + 3);  /* all of the tap reached the guest */
     guest_reads_at(now + 200000000);
     printf("quick tap: %s\n", got);
     assert(!strcmp(got, "S E F "));
+
+    /* A guest that reads nothing (its digitizer powered down): the tap waits, whatever time passes. */
+    reset();
+    ipod_touch_multitouch_set_finger(&s, 0, .5f, .5f, true);
+    now += 80000000;
+    ipod_touch_multitouch_set_finger(&s, 0, .5f, .5f, false);
+    for (int i = 0; i < 20; i++) {
+        now += 100000000;
+        if (end.at >= 0 && end.at <= now) { end.at = -1; touch_end_timer_tick(&s); }
+    }
+    assert(ipod_touch_multitouch_delivery(&reads) && reads == read0 + 3);
 
     /* A held tap, read between: as before. */
     reset();
@@ -126,10 +153,12 @@ int main(void)
     ipod_touch_multitouch_set_finger(&s, 0, .5f, .4f, true);
     now += 20000000;
     ipod_touch_multitouch_set_finger(&s, 0, .5f, .3f, true);
+    assert(!ipod_touch_multitouch_delivery(&read0));   /* the press was read; motion doesn't wait */
     guest_reads_at(now + 1000000);
     printf("drag: %s\n", got);
     assert(!strcmp(got, "S M "));
     assert(s.fingers[0].y == .3f);
+    assert(!ipod_touch_multitouch_delivery(&reads) && reads == read0);   /* nor is its read counted */
     /* A guest that misses the end's ATN still gets another: the gesture-end report, kept back, raises it again. */
     reset();
     ipod_touch_multitouch_set_finger(&s, 0, .5f, .5f, true);

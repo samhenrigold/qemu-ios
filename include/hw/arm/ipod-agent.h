@@ -7,6 +7,10 @@
 #define IT_AGENT_CHUNK_MAX 1024
 #define IT_AGENT_QUEUE_MAX 16
 #define IT_AGENT_LEASE_MS 10000
+/* A request is routed to an app's it_typein only where one has polled this recently (each polls 20 times a second). */
+#define IT_AGENT_UI_ALIVE_MS 2000
+/* The agent's state report: one guest-memory window, sent with every poll. */
+#define IT_AGENT_REPORT_MAX IT_AGENT_CHUNK_MAX
 
 typedef struct IPodAgent IPodAgent;
 typedef int (*IPodAgentCopy)(void *, uint32_t, uint8_t *, size_t, bool);
@@ -29,6 +33,10 @@ bool ipod_agent_cancel(IPodAgent *a, const char *id);
 /* Owned result string; empty when none. */
 char *ipod_agent_take_result(IPodAgent *a);
 const char *ipod_agent_status(IPodAgent *a, int64_t now_ms);
+/* The agent's state report (contrib/it-agent/README.md, "State report") when it changed since *serial (0 at first),
+ * which this updates: a malloc'd string, empty once the session that sent it ended (a reset, a new or cancelled
+ * session, a lease's silence). NULL when nothing changed. The guest wrote it. */
+char *ipod_agent_report(IPodAgent *a, int64_t now_ms, uint64_t *serial);
 int64_t ipod_agent_call(IPodAgent *a, unsigned op, uint64_t token,
                        uint32_t address, uint32_t offset, uint32_t length,
                        int64_t now_ms, uint64_t candidate_token,

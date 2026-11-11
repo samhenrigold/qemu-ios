@@ -21,10 +21,43 @@ base64 body in QOM's `agent-request` string. `agent-result` returns
 `id status\n<base64 body>`. `agent-cancel` accepts an id. `agent-status` is
 absent/alive/stale.
 
-`ping` answers `it_agent v5\nops <space-separated op list>\n` (v4 the same without
-`statusbarget`, v3 also without `cadebug` and `statusbar`, v2 also without `putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
+`ping` answers `it_agent v6\nops <space-separated op list>\n` (v5 the same ops without the state report below,
+v4 also without `statusbarget`, v3 also without `cadebug` and `statusbar`, v2 also without `putpart`); a v1 agent answers only `it_agent v1\n` and returns -ENOSYS (-78) for
 every op it lacks, so a host detects capabilities from the ping reply. Statuses are 0, a child's exit status,
 or a negative errno.
+
+### State report
+
+From v6 the agent tells the host what the guest is doing instead of waiting to be asked: every poll
+(QC_AG_POLL, four times a second) carries its report in the call's window, at most 1 KiB of `key value`
+lines. The host keeps the latest (`ipod_agent_report`, the app's `qemu_ios_agent_report`), hands it to a
+reader once per change, and drops it when the session that sent it ends (the guest resets, another agent
+claims the channel, a dispatched request is cancelled, or the agent is silent for its lease), so an old
+report is never read as the guest's state now. Sending it whole each time needs no acknowledgement and
+refills a host that lost it (a snapshot restored). A host from before v6 ignores the window.
+
+| line | meaning |
+|---|---|
+| `agent 6` | always first |
+| `springboard PID` | the SpringBoard that answered, by its process ID, so a respring's is another (`1` if it answered and the process list didn't name it); `0` when none is up. Absent until the first sample |
+| `stalled 1` | SpringBoard has held the sampler's question for 2 s or more (it is starting, restarting or hung): the lines after it are what it last answered |
+| `locked 0\|1`, `passcode 0\|1` | `SBGetScreenLockStatus` |
+| `front BUNDLE-ID`, `name LOCALIZED NAME` | `SBSCopyFrontmostApplicationDisplayIdentifier` and its name, asked once per app; absent on the Home or lock screen |
+| `uidegrees D` | the interface's orientation in SpringBoard's degrees (0, 90, 180, -90), as the `orientation` op answers it: `SBGetUIOrientation`, 3.1.3 |
+| `interface N` | the same as a UIInterfaceOrientation (1 to 4): `SBGetInterfaceOrientation`, which 3.2 to 7.1.2 export in its place and the stock lockdown relay's getInterfaceOrientation answers from. A firmware has one of the two lines or neither |
+
+The lines after `springboard` are there only while it is not 0. A reader skips keys it doesn't know and
+checks every value: the guest wrote them.
+
+A thread of its own (agent-report.h) asks SpringBoard, each call picked by its exported name: the stock
+SpringBoardServices stubs wait without a timeout, and a SpringBoard that is slow to answer must not hold
+up the poll that keeps the lease. `frontmost`, `lockstatus` and `orientation` stay as ops for hosts that
+ask; a host that reads the report need not send them.
+
+Which SpringBoard answered is looked up in the process list (`sysctl`, by command name), and only when it
+may be another: none was up before, or the answer took half a second or more. The Mach port is no guide.
+Where launchd keeps SpringBoard's service port across its death, a question asked during a respring waits
+for the next SpringBoard and is answered as though nothing happened.
 
 | op | args | body | reply | notes |
 |---|---|---|---|---|
@@ -47,7 +80,7 @@ or a negative errno.
 | cadebug | `mask value` | | flags now, `0x…\n` | Core Animation's debug colors: QuartzCore's `CARenderServerSetDebugFlags(0, mask, value)` (the render server's flags become `flags & ~mask \| value & mask`; 0x4 blended layers, 0x2 copied images, 0x4000 misaligned, 0x20000 offscreen, 0x1 flash updates, 3.1.3 to 7.1.2). v4 |
 | statusbar | | UIKit's status bar override data, laid out by the host for the firmware | | `+[UIStatusBarServer postStatusBarOverrideData:]` (4.2 to 7.1.2); SpringBoard takes it only from a process with `com.apple.UIKit.status-bar-override-allow` (`it_agent-entitlements.xml`). Each post replaces the last; zeros clear it. v4 |
 | statusbarget | `override SIZE` or `data SIZE` | | SIZE bytes (at most 4096) | what SpringBoard's status bar server holds: `+[UIStatusBarServer getStatusBarOverrideData]`, the overrides last posted (zeros once SpringBoard restarts), or `getStatusBarData`, the data it publishes with them merged in (4.2 to 7.1.2). v5 |
-| type, backspace, uidump | | UTF-8 text (type) | | routed to it_typein in the foreground app |
+| type, backspace, uidump | | UTF-8 text (type) | | routed to it_typein in the foreground app; -EIO at once where no it_typein has polled the host in the last 2 s (the armv7 packages carry none), not the routed request's 5 s deadline |
 | exec | shell command | stdin | stdout+stderr | **deprecated**: needs `/bin/sh`, which a no-shell image lacks; kept only for old hosts |
 
 `kill` (v1) is gone: it shelled out to `killall`. Restart a daemon or SpringBoard
