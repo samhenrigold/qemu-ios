@@ -770,6 +770,13 @@ bool qemu_ios_ui_vibrator(uint64_t *pulses)
     return ios_vibrator_get(pulses);
 }
 
+/* hw/arm/ipod_touch_multitouch.c: atomics, so no BQL or ready check needed. */
+extern bool ipod_touch_multitouch_delivery(uint64_t *reads);
+bool qemu_ios_ui_touch_waiting(uint64_t *reads)
+{
+    return ipod_touch_multitouch_delivery(reads);
+}
+
 uint32_t qemu_ios_api_version(void)
 {
     return QEMU_IOS_API_VERSION;

@@ -71,6 +71,13 @@ bool qemu_ios_ui_orientation(int value);
  * starts since the process began, so a buzz shorter than the caller's poll still shows. Always false
  * on a machine without one (the iPods, the iPad). API 2.2. */
 bool qemu_ios_ui_vibrator(uint64_t *pulses);
+/* Whether the guest's digitizer driver has yet to read a press or lift the host sent (qemu_ios_ui_touch, _touch2, an
+ * input sequence's): true while a touch report that begins or ends a contact waits for it. reads (may be NULL) counts
+ * the ones it has read since the process began. A touch has reached the driver once reads has grown and nothing
+ * waits, within a report or two (the digitizer's 60 Hz) on a running guest; a guest that isn't reading (its digitizer
+ * powered down behind a dark lock screen, its driver not up yet, the machine paused) leaves them waiting. What iOS
+ * then does with the touch is the guest's business: the agent's report tells. Any thread. API 2.4. */
+bool qemu_ios_ui_touch_waiting(uint64_t *reads);
 /* 44100 Hz stereo S16LE mixer packets; read needs 16384 bytes of capacity.
  * A generation owns one recording. Empty read = 0; failed/expired = -1.
  * Empty reads with seconds >= 0 mark silence through that capture time.

@@ -1031,6 +1031,37 @@ static bool mt_any_active(IPodTouchMultitouchState *s)
 }
 
 /*
+ * What a host can know of a touch's delivery (ipod_touch_multitouch_delivery): how many reports that begin or end a
+ * contact the guest's driver has read, and whether one still waits for it. One digitizer per machine, and the app
+ * reads these from its own threads, so they are global atomics.
+ */
+static uint64_t mt_contact_reads;
+static int mt_contact_waiting;
+
+bool ipod_touch_multitouch_delivery(uint64_t *reads)
+{
+    /* reads first: a count seen is never newer than the waiting flag read after it. */
+    if (reads) {
+        *reads = qatomic_read(&mt_contact_reads);
+    }
+    return qatomic_read(&mt_contact_waiting);
+}
+
+/* A press or lift the guest has not been given yet: in the pending frame, or not yet in a frame (a lift owed behind
+ * that frame, the end of the gesture a report later). */
+static void mt_note_delivery(IPodTouchMultitouchState *s)
+{
+    bool waiting = s->next_frame && s->next_frame_changes;
+
+    for (int i = 0; i < MT_MAX_FINGERS && !waiting; i++) {
+        MTFingerState *f = &s->fingers[i];
+
+        waiting = f->phase == MT_FINGER_LIFTED || f->phase == MT_FINGER_ENDING;
+    }
+    qatomic_set(&mt_contact_waiting, waiting);
+}
+
+/*
  * Emit one frame carrying every finger currently being reported, and advance
  * each finger's phase past what that frame just said.
  *
@@ -1061,6 +1092,7 @@ static void mt_emit_frame(IPodTouchMultitouchState *s)
     if (s->next_frame && s->next_frame_changes) {
         s->frame_owed = true;
         s->touch_down = (s->fingers[0].phase == MT_FINGER_DOWN);
+        mt_note_delivery(s);
         ipod_touch_multitouch_inform_frame_ready(s);
         return;
     }
@@ -1117,6 +1149,7 @@ static void mt_emit_frame(IPodTouchMultitouchState *s)
     }
 
     s->touch_down = (s->fingers[0].phase == MT_FINGER_DOWN);
+    mt_note_delivery(s);
     ipod_touch_multitouch_inform_frame_ready(s);
 }
 
@@ -1278,12 +1311,16 @@ static void touch_end_timer_tick(void *opaque)
 
 void ipod_touch_multitouch_frame_taken(IPodTouchMultitouchState *s)
 {
+    if (s->next_frame_changes) {
+        qatomic_inc(&mt_contact_reads);
+    }
     s->next_frame_changes = false;
     if (s->frame_owed) {
         s->frame_owed = false;
         /* At the next report, as the panel would: not while the guest is still reading this one. */
         timer_mod(s->touch_end_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + mt_frame_period_ns(s));
     }
+    mt_note_delivery(s);
 }
 
 static void ipod_touch_multitouch_realize(SSIPeripheral *d, Error **errp)
@@ -1356,6 +1393,7 @@ static void ipod_touch_multitouch_reset(DeviceState *dev)
     if (s->touch_end_timer) {
         timer_del(s->touch_end_timer);
     }
+    mt_note_delivery(s);
 }
 
 /*
@@ -1391,6 +1429,7 @@ static int ipod_touch_multitouch_post_load(void *opaque, int version_id)
     if (s->touch_end_timer) {
         timer_del(s->touch_end_timer);
     }
+    mt_note_delivery(s);
     return 0;
 }
 
