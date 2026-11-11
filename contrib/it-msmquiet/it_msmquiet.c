@@ -27,6 +27,10 @@
  * IOUSBDevice no other plugin claims: 9B206 handle_start 0x242c "Assuming it
  * is unsupported"), with the 4.x keys and CFUserNotificationCreate from its
  * own bundle; the bake loads this into whichever of the two jobs raises it.
+ *
+ * 7.x (DeviceOMatic) names the device in front of the key's text ("QEMU USB
+ * Keyboard: The connected device is not supported."), so a notice is also this
+ * one when it ends with that text, or with what follows the text's last %@.
  */
 
 /*
@@ -45,12 +49,20 @@ typedef double CFTimeInterval;
 typedef unsigned long CFOptionFlags;
 typedef int SInt32;
 typedef unsigned char Boolean;
+typedef struct { long location, length; } CFRange;
 #define CFSTR(s) ((CFStringRef)__builtin___CFStringMakeConstantString(s))
 #define NULL ((void *)0)
 #define true 1
 #define false 0
 
 extern Boolean CFEqual(CFTypeRef a, CFTypeRef b);
+extern void CFRelease(CFTypeRef cf);
+extern unsigned long CFGetTypeID(CFTypeRef cf);
+extern unsigned long CFStringGetTypeID(void);
+extern long CFStringGetLength(CFStringRef s);
+extern CFRange CFStringFind(CFStringRef s, CFStringRef find, CFOptionFlags options);
+extern CFStringRef CFStringCreateWithSubstring(CFAllocatorRef allocator, CFStringRef s, CFRange range);
+extern Boolean CFStringHasSuffix(CFStringRef s, CFStringRef suffix);
 extern CFBundleRef CFBundleGetMainBundle(void);
 extern CFStringRef CFBundleCopyLocalizedString(CFBundleRef bundle, CFStringRef key,
                                                CFStringRef value, CFStringRef table);
@@ -71,6 +83,36 @@ extern CFUserNotificationRef CFUserNotificationCreate(CFAllocatorRef allocator,
 /* Apple's own keys for this notice, by generation (3.2.x; 4.x). */
 static const CFStringRef keys[] = { CFSTR("UNSUPPORTED_FAILURE"), CFSTR("UNSUPPORTED_FAILURE_BODY") };
 #define NKEYS 2
+
+/* Whether the notice text `s` says `text`, a key's localization: is it, or ends with it behind the device's name
+ * (7.x), `text` itself or what follows its last %@ where it is the format the name goes into. A tail too short to
+ * tell one notice from another by (under 12 characters) says nothing. */
+static Boolean says(CFTypeRef s, CFStringRef text)
+{
+    CFRange name;
+    long length, start;
+    CFStringRef tail;
+    Boolean ends;
+
+    if (CFEqual(s, text)) {
+        return true;
+    }
+    if (CFGetTypeID(s) != CFStringGetTypeID()) {
+        return false;
+    }
+    length = CFStringGetLength(text);
+    name = CFStringFind(text, CFSTR("%@"), 4 /* kCFCompareBackwards */);
+    start = name.location < 0 ? 0 : name.location + 2;
+    if (length - start < 12) {
+        return false;
+    }
+    tail = CFStringCreateWithSubstring(NULL, text, (CFRange){ start, length - start });
+    ends = tail && CFStringHasSuffix((CFStringRef)s, tail);
+    if (tail) {
+        CFRelease(tail);
+    }
+    return ends;
+}
 
 static Boolean is_unsupported(CFTypeRef s)
 {
@@ -93,7 +135,7 @@ static Boolean is_unsupported(CFTypeRef s)
             return true;
         }
         /* a key this bundle does not carry localizes to itself */
-        if (localized[i] && !CFEqual(localized[i], keys[i]) && CFEqual(s, localized[i])) {
+        if (localized[i] && !CFEqual(localized[i], keys[i]) && says(s, localized[i])) {
             return true;
         }
     }
