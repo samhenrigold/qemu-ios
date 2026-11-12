@@ -323,6 +323,10 @@ struct as_nlist { unsigned n_strx; unsigned char n_type, n_sect; short n_desc; u
 
 struct as_hook { const char *name; const void *fn; };
 
+// Diagnostics for the one-time rebind: how many MIS pointers were seen in the
+// cache images, how many were rewritten, how many could not be made writable.
+static unsigned as_bind_seen, as_bind_done, as_bind_failed;
+
 #ifdef APPSYNC_TEST
 extern int as_make_writable(void *addr, unsigned len);  // the test owns the memory
 #else
@@ -383,9 +387,15 @@ static void appsync_rebind_image(const struct as_mach_header *mh, long slide,
                     const char *name = strtab + strx;  // external names lead with '_'
                     for (unsigned h = 0; h < nhooks; h++) {
                         if (name[0] == '_' && !strcmp(name + 1, hooks[h].name)) {
-                            if (slots[k] != hooks[h].fn &&
-                                as_make_writable(&slots[k], sizeof slots[k]))
-                                slots[k] = (void *)hooks[h].fn;
+                            as_bind_seen++;
+                            if (slots[k] != hooks[h].fn) {
+                                if (as_make_writable(&slots[k], sizeof slots[k])) {
+                                    slots[k] = (void *)hooks[h].fn;
+                                    as_bind_done++;
+                                } else {
+                                    as_bind_failed++;
+                                }
+                            }
                             break;
                         }
                     }
@@ -420,12 +430,15 @@ static const struct as_hook as_hooks[] = {
 
 // iOS 7+ (installd via MobileSystemServices, amfid on exec) reaches libmis only
 // through cache-internal pointers interposition cannot touch; rebind them here.
+extern void syslog(int, const char *, ...);
 __attribute__((constructor)) static void appsync_install_hooks(void) {
     if (!in_installd()) return;
     unsigned n = _dyld_image_count();
     for (unsigned i = 0; i < n; i++)
         appsync_rebind_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i),
                              as_hooks, sizeof as_hooks / sizeof *as_hooks);
+    syslog(3, "appsync: %s MIS rebind seen=%u done=%u protect_failed=%u images=%u",
+           getprogname(), as_bind_seen, as_bind_done, as_bind_failed, n);
 }
 
 #endif
