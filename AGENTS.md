@@ -1,0 +1,1 @@
+Rules for this tree and the app that pins it: https://github.com/samhenrigold/LightTouchMac/blob/main/CONTRIBUTING.md (Gates; Boards, Porting a board). qemu-ios checks: tests/gate.sh --all; each fix adds a tests/slice/ test that fails with the fix reverted.
