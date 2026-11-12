@@ -10,8 +10,9 @@
 #                       gles-names.h, the name table it and the host speak, the n72 recipe's inputs, the n45 recipe's
 #                       (OpenGLES-1x, 1.x's own front end, and opengles-1x.exports, the export set it must match),
 #                       the legacy-linked armv7 helpers and AppSync for 3.0 (<name>-legacy),
-#                       the armv6 it_keybag, the iPhone 5's it_initialize, it_mobilegestalt and
-#                       launchd-cache-template (contrib/it-restore, contrib/launchd-cache), and armv6.itpack /
+#                       the armv6 it_keybag, the iPhone 5's it_initialize, it_mobilegestalt,
+#                       launchd-cache-template (contrib/it-restore, contrib/launchd-cache) and httpget-armv7
+#                       (contrib/it-proxy, which its preparation bakes into the image), and armv6.itpack /
 #                       armv7.itpack (contrib/guest-package, VERSION's serial)
 #   macos-app/entitlements.plist   the app helper's entitlements
 #   include/ios-app/, include/macos-app/   the headers the helper compiles against
@@ -128,6 +129,9 @@ stage ipad-guest-tools "$G/ipod-guest/it_keybag" it_keybag-armv6
 for t in it-restore/it_initialize it-restore/it_mobilegestalt launchd-cache/launchd-cache-template; do
     stage ipad-guest-tools "$G/$t"
 done
+# The iPhone 5's root is read-only and its sandbox lets it_agent exec only from the system volume, so its
+# preparation bakes the armv7 httpget (LightTouchMac's Wi-Fi check) into the image rather than the harness putting it.
+stage ipad-guest-tools "$C/it-proxy/httpget-armv7"
 chmod 0644 "$OUT"/ipad-guest-tools.incomplete/*.plist "$OUT"/ipad-guest-tools.incomplete/*.h \
     "$OUT"/ipad-guest-tools.incomplete/*.exports
 
