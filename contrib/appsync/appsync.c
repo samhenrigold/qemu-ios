@@ -77,7 +77,10 @@ extern const char *getprogname(void);
 extern int strcmp(const char *, const char *);
 static int in_installd(void) {
     const char *p = getprogname();
-    return p && (!strcmp(p, "installd") || !strcmp(p, "mobile_installation_proxy"));
+    // amfid runs the same signature check on exec (iOS 10): it must get the
+    // synthesized info dictionary too, so the kernel accepts the ad-hoc cdhash.
+    return p && (!strcmp(p, "installd") || !strcmp(p, "mobile_installation_proxy") ||
+                 !strcmp(p, "amfid"));
 }
 
 // Resolve the original rather than replacing Apple's signing information. This
@@ -285,6 +288,114 @@ static CFStringRef as_SecCertificateCopySubjectSummary(SecCertificateRef c) {
     return real ? real(c) : 0;
 }
 
+// ---- fishhook-style rebinding for iOS 7+ -----------------------------------
+// On iOS 7+ the signature check runs inside the dyld shared cache
+// (MobileSystemServices for installd, amfid for exec), and those cache images
+// call libmis through their own __got / __la_symbol_ptr slots, bound to the
+// real libmis before this dylib loaded. Interposition reaches only an image's
+// own imports, so it misses the cache-internal calls. Rewrite the bound
+// pointers directly, the way fishhook does: walk each image's indirect symbol
+// table and replace the slots whose undefined symbol names a hook. Addresses
+// use unsigned long so the same code is exact on the ILP32 guest and the LP64
+// host test.
+struct as_mach_header { unsigned magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags; };
+struct as_load_command { unsigned cmd, cmdsize; };
+struct as_segment_command {
+    unsigned cmd, cmdsize; char segname[16];
+    unsigned vmaddr, vmsize, fileoff, filesize; int maxprot, initprot; unsigned nsects, flags;
+};
+struct as_section {
+    char sectname[16], segname[16];
+    unsigned addr, size, offset, align, reloff, nreloc, flags, reserved1, reserved2;
+};
+struct as_symtab_command { unsigned cmd, cmdsize, symoff, nsyms, stroff, strsize; };
+struct as_dysymtab_command {
+    unsigned cmd, cmdsize, ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym,
+        tocoff, ntoc, modtaboff, nmodtab, extrefsymoff, nextrefsyms,
+        indirectsymoff, nindirectsyms, extreloff, nextrel, locreloff, nlocrel;
+};
+struct as_nlist { unsigned n_strx; unsigned char n_type, n_sect; short n_desc; unsigned n_value; };
+#define AS_LC_SEGMENT 0x1
+#define AS_LC_SYMTAB 0x2
+#define AS_LC_DYSYMTAB 0xb
+#define AS_IS_PTR_SECTION(f) (((f) & 0xff) == 6 || ((f) & 0xff) == 7)  // NON_LAZY / LAZY
+#define AS_INDIRECT_SKIP 0xc0000000u                                   // LOCAL | ABS
+
+struct as_hook { const char *name; const void *fn; };
+
+#ifdef APPSYNC_TEST
+extern int as_make_writable(void *addr, unsigned len);  // the test owns the memory
+#else
+extern unsigned mach_task_self_;
+extern int vm_protect(unsigned, unsigned long, unsigned long, int, int);
+static int as_make_writable(void *addr, unsigned len) {
+    // Cache __DATA_CONST slots are read-only after fixups; COPY (0x10) forces a
+    // private writable page. READ|WRITE is 3.
+    return vm_protect(mach_task_self_, (unsigned long)addr, len, 0, 3 | 0x10) == 0;
+}
+#endif
+
+static void appsync_rebind_image(const struct as_mach_header *mh, long slide,
+                                 const struct as_hook *hooks, unsigned nhooks) {
+    if (!mh || mh->magic != 0xfeedface) return;  // 32-bit Mach-O only
+    const struct as_symtab_command *st = 0;
+    const struct as_dysymtab_command *dy = 0;
+    unsigned long linkedit_base = 0;
+    int have_linkedit = 0;
+    const char *p = (const char *)mh + sizeof *mh;
+    for (unsigned i = 0; i < mh->ncmds; i++) {
+        const struct as_load_command *lc = (const struct as_load_command *)p;
+        if (lc->cmdsize < sizeof *lc) return;
+        if (lc->cmd == AS_LC_SEGMENT) {
+            const struct as_segment_command *sg = (const struct as_segment_command *)p;
+            if (!strcmp(sg->segname, "__LINKEDIT")) {
+                linkedit_base = (unsigned long)slide + sg->vmaddr - sg->fileoff;
+                have_linkedit = 1;
+            }
+        } else if (lc->cmd == AS_LC_SYMTAB) {
+            st = (const struct as_symtab_command *)p;
+        } else if (lc->cmd == AS_LC_DYSYMTAB) {
+            dy = (const struct as_dysymtab_command *)p;
+        }
+        p += lc->cmdsize;
+    }
+    if (!st || !dy || !have_linkedit) return;
+    const struct as_nlist *symtab = (const struct as_nlist *)(linkedit_base + st->symoff);
+    const char *strtab = (const char *)(linkedit_base + st->stroff);
+    const unsigned *indirect = (const unsigned *)(linkedit_base + dy->indirectsymoff);
+    p = (const char *)mh + sizeof *mh;
+    for (unsigned i = 0; i < mh->ncmds; i++) {
+        const struct as_load_command *lc = (const struct as_load_command *)p;
+        if (lc->cmd == AS_LC_SEGMENT) {
+            const struct as_segment_command *sg = (const struct as_segment_command *)p;
+            const struct as_section *sec = (const struct as_section *)(sg + 1);
+            for (unsigned s = 0; s < sg->nsects; s++) {
+                if (!AS_IS_PTR_SECTION(sec[s].flags)) continue;
+                unsigned count = sec[s].size / 4;
+                void **slots = (void **)((unsigned long)slide + sec[s].addr);
+                const unsigned *isym = indirect + sec[s].reserved1;
+                for (unsigned k = 0; k < count; k++) {
+                    unsigned idx = isym[k];
+                    if (idx & AS_INDIRECT_SKIP) continue;
+                    if (idx >= st->nsyms) continue;
+                    unsigned strx = symtab[idx].n_strx;
+                    if (strx >= st->strsize) continue;
+                    const char *name = strtab + strx;  // external names lead with '_'
+                    for (unsigned h = 0; h < nhooks; h++) {
+                        if (name[0] == '_' && !strcmp(name + 1, hooks[h].name)) {
+                            if (slots[k] != hooks[h].fn &&
+                                as_make_writable(&slots[k], sizeof slots[k]))
+                                slots[k] = (void *)hooks[h].fn;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        p += lc->cmdsize;
+    }
+}
+
 // dyld interposition: replace/original pairs in __DATA,__interpose.
 #ifndef APPSYNC_TEST
 typedef struct { const void *replacement; const void *original; } interpose_t;
@@ -295,5 +406,26 @@ __attribute__((used)) static const interpose_t as_interposers[]
     { (const void *)as_SecCertificateCreateWithData,     (const void *)SecCertificateCreateWithData },
     { (const void *)as_SecCertificateCopySubjectSummary, (const void *)SecCertificateCopySubjectSummary },
 };
+
+extern unsigned _dyld_image_count(void);
+extern const struct as_mach_header *_dyld_get_image_header(unsigned);
+extern long _dyld_get_image_vmaddr_slide(unsigned);
+
+static const struct as_hook as_hooks[] = {
+    { "MISValidateSignature", (const void *)as_MISValidateSignature },
+    { "MISValidateSignatureAndCopyInfo", (const void *)as_MISValidateSignatureAndCopyInfo },
+    { "SecCertificateCreateWithData", (const void *)as_SecCertificateCreateWithData },
+    { "SecCertificateCopySubjectSummary", (const void *)as_SecCertificateCopySubjectSummary },
+};
+
+// iOS 7+ (installd via MobileSystemServices, amfid on exec) reaches libmis only
+// through cache-internal pointers interposition cannot touch; rebind them here.
+__attribute__((constructor)) static void appsync_install_hooks(void) {
+    if (!in_installd()) return;
+    unsigned n = _dyld_image_count();
+    for (unsigned i = 0; i < n; i++)
+        appsync_rebind_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i),
+                             as_hooks, sizeof as_hooks / sizeof *as_hooks);
+}
 
 #endif

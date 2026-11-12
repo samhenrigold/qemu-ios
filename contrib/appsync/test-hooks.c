@@ -58,7 +58,39 @@ void *test_symbol(void *handle, const char *name) {
     if (!strcmp(name, "SecCertificateCopySubjectSummary")) return summary;
     assert(0); return 0;
 }
+int as_make_writable(void *a, unsigned l) { (void)a; (void)l; return 1; }
+
+// A one-import 32-bit Mach-O laid out in a buffer: __LINKEDIT with vmaddr==fileoff
+// so linkedit_base == slide, a single __la_symbol_ptr slot whose indirect symbol
+// names a hook. The rebinder must rewrite that slot and leave an unrelated one.
+static void test_rebind(void) {
+    unsigned char buf[512];
+    memset(buf, 0, sizeof buf);
+    unsigned *w = (unsigned *)buf;
+    w[0] = 0xfeedface; w[1] = 12; w[3] = 6; w[4] = 4; w[5] = 284;        // mach_header
+    w[7] = 1; w[8] = 124; memcpy(buf + 36, "__DATA", 6); w[19] = 1;      // __DATA segment
+    memcpy(buf + 84, "__la_symbol_ptr", 15); memcpy(buf + 100, "__DATA", 6);
+    w[29] = 312; w[30] = 4; w[31] = 312; w[35] = 7;                      // addr,size,off,flags=LAZY
+    w[38] = 1; w[39] = 56; memcpy(buf + 160, "__LINKEDIT", 10);          // __LINKEDIT, vmaddr=fileoff=0
+    w[52] = 2; w[53] = 24; w[54] = 320; w[55] = 1; w[56] = 332; w[57] = 34;  // LC_SYMTAB
+    w[58] = 0xb; w[59] = 80; w[72] = 368; w[73] = 1;                     // LC_DYSYMTAB indirect @368
+    w[80] = 1;                                                          // nlist n_strx = 1
+    memcpy(buf + 333, "_MISValidateSignatureAndCopyInfo", 32);          // strtab[1]
+    w[92] = 0;                                                          // indirect[0] -> symbol 0
+    *(void **)(buf + 312) = 0;
+    struct as_hook hooks[] = {
+        { "MISValidateSignatureAndCopyInfo", (const void *)as_MISValidateSignatureAndCopyInfo },
+    };
+    appsync_rebind_image((struct as_mach_header *)buf, (long)(unsigned long)buf, hooks, 1);
+    assert(*(void **)(buf + 312) == (void *)as_MISValidateSignatureAndCopyInfo);
+    memset(buf + 333, 0, 32); memcpy(buf + 333, "_SomethingElse", 14);  // unrelated import
+    *(void **)(buf + 312) = (void *)0x1234;
+    appsync_rebind_image((struct as_mach_header *)buf, (long)(unsigned long)buf, hooks, 1);
+    assert(*(void **)(buf + 312) == (void *)0x1234);
+}
+
 int main(void) {
+    test_rebind();
     CFDictionaryRef info = (CFDictionaryRef)1;
     assert(as_MISValidateSignatureAndCopyInfo((void *)1, (void *)2, &info) == 0);
     assert(calls == 1 && info);
