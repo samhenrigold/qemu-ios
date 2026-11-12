@@ -129,6 +129,13 @@ extern unsigned long CFStringGetTypeID(void);
 extern int snprintf(char *, unsigned long, const char *, ...);
 static void executable_signature_info(CFStringRef, CFStringRef *, CFTypeRef *);
 
+// The cdhash of the binary last parsed by executable_signature_info: the SHA-1
+// (or SHA-256, truncated to 20) of its best CS_CodeDirectory, as cdhash.m does.
+extern void CC_SHA1(const void *, unsigned, unsigned char *);
+extern void CC_SHA256(const void *, unsigned, unsigned char *);
+static unsigned char as_cdhash[20];
+static int as_have_cdhash;
+
 /* Modern installation services pass a bundle directory. Resolve only its
  * declared executable; the embedded signature remains the metadata source. */
 static int bundle_signature_info(const char *bundle, CFStringRef *ident, CFTypeRef *ents) {
@@ -202,10 +209,25 @@ static void executable_signature_info(CFStringRef path, CFStringRef *ident, CFTy
             if (siglen < 24 || o > siglen - 24) continue;   /* o + 24 could wrap */
             unsigned magic = be32(b + o), len = be32(b + o + 4);
             if (len < 8 || len > siglen - o) continue;   /* the entitlements' len - 8 must not wrap */
-            if (magic == 0xfade0c02 && !*ident) {
-                unsigned io = be32(b + o + 20);
-                if (io < len && memchr(b + o + io, 0, len - io))
-                    *ident = CFStringCreateWithCString(kCFAllocatorDefault, (char *)b + o + io, 0x08000100);
+            if (magic == 0xfade0c02) {
+                // CS_CodeDirectory.hashType is byte 36; 1 = SHA1, 2/3 = SHA256.
+                if (!as_have_cdhash && o + 37 <= siglen) {
+                    unsigned char digest[32];
+                    unsigned char hashType = b[o + 36];
+                    if (hashType == 1) {
+                        CC_SHA1(b + o, len, digest);
+                        as_have_cdhash = 1;
+                    } else if (hashType == 2 || hashType == 3) {
+                        CC_SHA256(b + o, len, digest);
+                        as_have_cdhash = 1;
+                    }
+                    for (int z = 0; as_have_cdhash && z < 20; z++) as_cdhash[z] = digest[z];
+                }
+                if (!*ident) {
+                    unsigned io = be32(b + o + 20);
+                    if (io < len && memchr(b + o + io, 0, len - io))
+                        *ident = CFStringCreateWithCString(kCFAllocatorDefault, (char *)b + o + io, 0x08000100);
+                }
             } else if (magic == 0xfade7171 && !*ents) {
                 CFDataRef x = CFDataCreate(kCFAllocatorDefault, b + o + 8, len - 8);
                 CFTypeRef pl = x ? CFPropertyListCreateFromXMLData(kCFAllocatorDefault, x, 0, 0) : 0;
@@ -226,13 +248,32 @@ static void signature_info(CFStringRef path, CFStringRef *ident, CFTypeRef *ents
     if (!bundle_signature_info(file, ident, ents)) executable_signature_info(path, ident, ents);
 }
 
+// The original MISValidateSignatureAndCopyInfo, reached through the inline
+// hook's trampoline (set in the constructor); the test leaves it 0 and the
+// dlsym fallback below reaches its mock.
+static int (*as_orig_mis)(void *, void *, CFDictionaryRef *);
+extern const void *const kCFBooleanFalse;
+extern void *CFNumberCreate(CFAllocatorRef, long, const void *);
+extern CFTypeRef CFDateCreate(CFAllocatorRef, double);
+extern double CFAbsoluteTimeGetCurrent(void);
+
+// AppSync Unified's fakeInfo keys (literal strings installd reads, cdhash.m).
+static CFStringRef as_key(const char *name) {
+    return CFStringCreateWithCString(kCFAllocatorDefault, name, 0x08000100);
+}
+
 static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
                                              CFDictionaryRef *info) {
-    int (*real)(void *, void *, CFDictionaryRef *) =
-        dlsym(RTLD_NEXT, "MISValidateSignatureAndCopyInfo");
     // Copy APIs may leave the out parameter untouched on failure.
     if (info) *info = 0;
-    int result = real ? real(path, options, info) : -1;
+    int result;
+    if (as_orig_mis) {
+        result = as_orig_mis(path, options, info);
+    } else {
+        int (*real)(void *, void *, CFDictionaryRef *) =
+            dlsym(RTLD_NEXT, "MISValidateSignatureAndCopyInfo");
+        result = real ? real(path, options, info) : -1;
+    }
     if (!in_installd()) return result;
     if (info && !*info) {
         CFMutableDictionaryRef d = CFDictionaryCreateMutable(
@@ -242,22 +283,39 @@ static int as_MISValidateSignatureAndCopyInfo(void *path, void *options,
         CFDataRef der = CFDataCreate(kCFAllocatorDefault,
                                     kAppSyncCertDER, (CFIndex)kAppSyncCertDERLen);
         if (!der) { CFRelease((CFTypeRef)d); return -1; }
-        CFDictionarySetValue(d, kMISValidationInfoValidatedByProfile, kCFBooleanTrue);
+        // AppSync Unified treats a fakesigned app as a profile-free App Store app.
+        CFDictionarySetValue(d, kMISValidationInfoValidatedByProfile, kCFBooleanFalse);
         CFDictionarySetValue(d, kMISValidationInfoSignerCertificate, der);
         CFRelease((CFTypeRef)der);
+        int signerType = 2, signatureVersion = 0x20100;  // App Store app
+        CFTypeRef st = CFNumberCreate(kCFAllocatorDefault, 9, &signerType);          // kCFNumberIntType
+        CFTypeRef sv = CFNumberCreate(kCFAllocatorDefault, 9, &signatureVersion);
+        CFStringRef kst = as_key("SignerType"), ksv = as_key("SignatureVersion"), ktime = as_key("SigningTime");
+        CFTypeRef now = CFDateCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent());
+        if (st) { CFDictionarySetValue(d, kst, st); CFRelease(st); }
+        if (sv) { CFDictionarySetValue(d, ksv, sv); CFRelease(sv); }
+        if (now) { CFDictionarySetValue(d, ktime, now); CFRelease(now); }
+        CFRelease((CFTypeRef)kst); CFRelease((CFTypeRef)ksv); CFRelease((CFTypeRef)ktime);
+        as_have_cdhash = 0;
         const CFStringRef *ik = dlsym(RTLD_DEFAULT, "kMISValidationInfoSigningID");
         const CFStringRef *ek = dlsym(RTLD_DEFAULT, "kMISValidationInfoEntitlements");
+        CFStringRef ident = 0;
+        CFTypeRef ents = 0;
+        signature_info((CFStringRef)path, &ident, &ents);  // also fills as_cdhash
+        if (as_have_cdhash) {
+            CFDataRef cd = CFDataCreate(kCFAllocatorDefault, as_cdhash, 20);
+            CFStringRef kcd = as_key("CdHash");
+            if (cd) { CFDictionarySetValue(d, kcd, cd); CFRelease((CFTypeRef)cd); }
+            CFRelease((CFTypeRef)kcd);
+        }
         if (ik || ek) {
-            CFStringRef ident = 0;
-            CFTypeRef ents = 0;
-            signature_info((CFStringRef)path, &ident, &ents);
             if (!ents) ents = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
                 &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
             if (ik && ident) CFDictionarySetValue(d, *ik, ident);
             if (ek && ents) CFDictionarySetValue(d, *ek, ents);
-            if (ident) CFRelease((CFTypeRef)ident);
-            if (ents) CFRelease(ents);
         }
+        if (ident) CFRelease((CFTypeRef)ident);
+        if (ents) CFRelease(ents);
         *info = d; // Copy ownership passes to the caller.
     }
     return 0;
@@ -288,157 +346,90 @@ static CFStringRef as_SecCertificateCopySubjectSummary(SecCertificateRef c) {
     return real ? real(c) : 0;
 }
 
-// ---- fishhook-style rebinding for iOS 7+ -----------------------------------
-// On iOS 7+ the signature check runs inside the dyld shared cache
-// (MobileSystemServices for installd, amfid for exec), and those cache images
-// call libmis through their own __got / __la_symbol_ptr slots, bound to the
-// real libmis before this dylib loaded. Interposition reaches only an image's
-// own imports, so it misses the cache-internal calls. Rewrite the bound
-// pointers directly, the way fishhook does: walk each image's indirect symbol
-// table and replace the slots whose undefined symbol names a hook. Addresses
-// use unsigned long so the same code is exact on the ILP32 guest and the LP64
-// host test.
-struct as_mach_header { unsigned magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags; };
-struct as_load_command { unsigned cmd, cmdsize; };
-struct as_segment_command {
-    unsigned cmd, cmdsize; char segname[16];
-    unsigned vmaddr, vmsize, fileoff, filesize; int maxprot, initprot; unsigned nsects, flags;
-};
-struct as_section {
-    char sectname[16], segname[16];
-    unsigned addr, size, offset, align, reloff, nreloc, flags, reserved1, reserved2;
-};
-struct as_symtab_command { unsigned cmd, cmdsize, symoff, nsyms, stroff, strsize; };
-struct as_dysymtab_command {
-    unsigned cmd, cmdsize, ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym,
-        tocoff, ntoc, modtaboff, nmodtab, extrefsymoff, nextrefsyms,
-        indirectsymoff, nindirectsyms, extreloff, nextrel, locreloff, nlocrel;
-};
-struct as_nlist { unsigned n_strx; unsigned char n_type, n_sect; short n_desc; unsigned n_value; };
-#define AS_LC_SEGMENT 0x1
-#define AS_LC_SYMTAB 0x2
-#define AS_LC_DYSYMTAB 0xb
-#define AS_IS_PTR_SECTION(f) (((f) & 0xff) == 6 || ((f) & 0xff) == 7)  // NON_LAZY / LAZY
-#define AS_INDIRECT_SKIP 0xc0000000u                                   // LOCAL | ABS
-
-struct as_hook { const char *name; const void *fn; };
-
-// Diagnostics for the one-time rebind: how many MIS pointers were seen in the
-// cache images, how many were rewritten, how many could not be made writable.
-static unsigned as_bind_seen, as_bind_done, as_bind_failed;
-
-#ifdef APPSYNC_TEST
-extern int as_make_writable(void *addr, unsigned len);  // the test owns the memory
-#else
-extern unsigned mach_task_self_;
-extern int vm_protect(unsigned, unsigned long, unsigned long, int, int);
-static int as_make_writable(void *addr, unsigned len) {
-    // Cache __DATA_CONST slots are read-only after fixups; COPY (0x10) forces a
-    // private writable page. READ|WRITE is 3.
-    return vm_protect(mach_task_self_, (unsigned long)addr, len, 0, 3 | 0x10) == 0;
-}
-#endif
-
-static void appsync_rebind_image(const struct as_mach_header *mh, long slide,
-                                 const struct as_hook *hooks, unsigned nhooks) {
-    if (!mh || mh->magic != 0xfeedface) return;  // 32-bit Mach-O only
-    const struct as_symtab_command *st = 0;
-    const struct as_dysymtab_command *dy = 0;
-    unsigned long linkedit_base = 0;
-    int have_linkedit = 0;
-    const char *p = (const char *)mh + sizeof *mh;
-    for (unsigned i = 0; i < mh->ncmds; i++) {
-        const struct as_load_command *lc = (const struct as_load_command *)p;
-        if (lc->cmdsize < sizeof *lc) return;
-        if (lc->cmd == AS_LC_SEGMENT) {
-            const struct as_segment_command *sg = (const struct as_segment_command *)p;
-            if (!strcmp(sg->segname, "__LINKEDIT")) {
-                linkedit_base = (unsigned long)slide + sg->vmaddr - sg->fileoff;
-                have_linkedit = 1;
-            }
-        } else if (lc->cmd == AS_LC_SYMTAB) {
-            st = (const struct as_symtab_command *)p;
-        } else if (lc->cmd == AS_LC_DYSYMTAB) {
-            dy = (const struct as_dysymtab_command *)p;
-        }
-        p += lc->cmdsize;
-    }
-    if (!st || !dy || !have_linkedit) return;
-    const struct as_nlist *symtab = (const struct as_nlist *)(linkedit_base + st->symoff);
-    const char *strtab = (const char *)(linkedit_base + st->stroff);
-    const unsigned *indirect = (const unsigned *)(linkedit_base + dy->indirectsymoff);
-    p = (const char *)mh + sizeof *mh;
-    for (unsigned i = 0; i < mh->ncmds; i++) {
-        const struct as_load_command *lc = (const struct as_load_command *)p;
-        if (lc->cmd == AS_LC_SEGMENT) {
-            const struct as_segment_command *sg = (const struct as_segment_command *)p;
-            const struct as_section *sec = (const struct as_section *)(sg + 1);
-            for (unsigned s = 0; s < sg->nsects; s++) {
-                if (!AS_IS_PTR_SECTION(sec[s].flags)) continue;
-                unsigned count = sec[s].size / 4;
-                void **slots = (void **)((unsigned long)slide + sec[s].addr);
-                const unsigned *isym = indirect + sec[s].reserved1;
-                for (unsigned k = 0; k < count; k++) {
-                    unsigned idx = isym[k];
-                    if (idx & AS_INDIRECT_SKIP) continue;
-                    if (idx >= st->nsyms) continue;
-                    unsigned strx = symtab[idx].n_strx;
-                    if (strx >= st->strsize) continue;
-                    const char *name = strtab + strx;  // external names lead with '_'
-                    for (unsigned h = 0; h < nhooks; h++) {
-                        if (name[0] == '_' && !strcmp(name + 1, hooks[h].name)) {
-                            as_bind_seen++;
-                            if (slots[k] != hooks[h].fn) {
-                                if (as_make_writable(&slots[k], sizeof slots[k])) {
-                                    slots[k] = (void *)hooks[h].fn;
-                                    as_bind_done++;
-                                } else {
-                                    as_bind_failed++;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        p += lc->cmdsize;
-    }
-}
-
-// dyld interposition: replace/original pairs in __DATA,__interpose.
+// ---- inline hook of libmis for iOS 7+ --------------------------------------
+// Ported from AppSync Unified (AppSyncUnified-installd.x, cdhash.m) by
+// Karen/あけみ (akemi) and Linus Yang. On iOS 7+ the signature check runs inside
+// the dyld shared cache: MobileSystemServices calls libmis for installd, past
+// any interposition. So hook the libmis function body itself, the way AppSync
+// Unified does with MSHookFunction, and every caller is intercepted. The 14G61
+// kernel boots cs_enforcement_disable=1 (KBoot.defaultBootArgs), so a modified
+// cache text page executes.
 #ifndef APPSYNC_TEST
+// Interposition still serves the 2.x-6.x direct-import path and amfid's own
+// MISValidateSignature import; the cache byte-patch keeps amfid's exec working.
 typedef struct { const void *replacement; const void *original; } interpose_t;
 __attribute__((used)) static const interpose_t as_interposers[]
     __attribute__((section("__DATA,__interpose"))) = {
     { (const void *)as_MISValidateSignature,        (const void *)MISValidateSignature },
-    { (const void *)as_MISValidateSignatureAndCopyInfo, (const void *)MISValidateSignatureAndCopyInfo },
     { (const void *)as_SecCertificateCreateWithData,     (const void *)SecCertificateCreateWithData },
     { (const void *)as_SecCertificateCopySubjectSummary, (const void *)SecCertificateCopySubjectSummary },
 };
 
-extern unsigned _dyld_image_count(void);
-extern const struct as_mach_header *_dyld_get_image_header(unsigned);
-extern long _dyld_get_image_vmaddr_slide(unsigned);
-
-static const struct as_hook as_hooks[] = {
-    { "MISValidateSignature", (const void *)as_MISValidateSignature },
-    { "MISValidateSignatureAndCopyInfo", (const void *)as_MISValidateSignatureAndCopyInfo },
-    { "SecCertificateCreateWithData", (const void *)as_SecCertificateCreateWithData },
-    { "SecCertificateCopySubjectSummary", (const void *)as_SecCertificateCopySubjectSummary },
-};
-
-// iOS 7+ (installd via MobileSystemServices, amfid on exec) reaches libmis only
-// through cache-internal pointers interposition cannot touch; rebind them here.
+extern void *mmap(void *, unsigned long, int, int, int, long);
+extern int mprotect(void *, unsigned long, int);
+extern void sys_icache_invalidate(void *, unsigned long);
+extern void *dlopen(const char *, int);
 extern void syslog(int, const char *, ...);
+extern int *__error(void);
+
+static int as_mprotect_rc, as_mprotect_errno;
+
+// Make [addr, addr+len) writable+executable. The cache page is shared RX;
+// cs_enforcement_disable lets the modified page run. Page-align the span.
+static int as_make_rwx(void *addr, unsigned len) {
+    unsigned long page = 4096;
+    unsigned long start = (unsigned long)addr & ~(page - 1);
+    unsigned long end = ((unsigned long)addr + len + page - 1) & ~(page - 1);
+    as_mprotect_rc = mprotect((void *)start, end - start, 1 | 2 | 4);  // R|W|X
+    as_mprotect_errno = as_mprotect_rc ? *__error() : 0;
+    return as_mprotect_rc == 0;
+}
+
+// Thumb instruction length at p: 4 for a Thumb-32 (first halfword 0b111{01,10,11}xxxxx), else 2.
+static unsigned as_thumb_len(const unsigned char *p) {
+    unsigned short hw = *(const unsigned short *)p;
+    return (hw & 0xf800) >= 0xe800 ? 4 : 2;
+}
+
+// Inline-hook a Thumb function: copy the displaced prologue into an RWX
+// trampoline, append an absolute branch back, and write an absolute branch to
+// `hook` at the entry. Returns a Thumb-callable pointer to the original, or 0.
+static void *as_inline_hook(void *target, void *hook) {
+    unsigned long addr = (unsigned long)target & ~1UL;
+    unsigned char *fn = (unsigned char *)addr;
+    // The `ldr.w pc,[pc,#0]` literal is read from Align(PC,4); a 4-byte-aligned
+    // entry keeps the appended word where the instruction expects it.
+    if (addr & 3) return 0;
+    unsigned short first = *(unsigned short *)fn;
+    // Only a push prologue (16-bit PUSH or 32-bit PUSH.W): its displaced bytes
+    // are frame setup, safe to copy verbatim.
+    if ((first & 0xfe00) != 0xb400 && first != 0xe92d) return 0;
+    unsigned n = 0;
+    while (n < 8) n += as_thumb_len(fn + n);   // whole instructions, >= 8 bytes
+    unsigned char *tramp = mmap(0, n + 12, 1 | 2 | 4, 0x1000 | 0x0002, -1, 0);  // MAP_ANON|MAP_PRIVATE
+    if (tramp == (void *)-1) return 0;
+    for (unsigned i = 0; i < n; i++) tramp[i] = fn[i];
+    unsigned t = n;
+    if (t & 2) { tramp[t] = 0x00; tramp[t + 1] = 0xbf; t += 2; }         // nop, to 4-align the literal
+    tramp[t+0]=0xdf; tramp[t+1]=0xf8; tramp[t+2]=0x00; tramp[t+3]=0xf0;  // ldr.w pc,[pc,#0]
+    *(unsigned *)(tramp + t + 4) = (unsigned)(unsigned long)(addr + n) | 1;
+    sys_icache_invalidate(tramp, t + 8);
+    if (!as_make_rwx(fn, 8)) return 0;
+    fn[0]=0xdf; fn[1]=0xf8; fn[2]=0x00; fn[3]=0xf0;                      // ldr.w pc,[pc,#0]
+    *(unsigned *)(fn + 4) = (unsigned)(unsigned long)hook | 1;
+    sys_icache_invalidate(fn, 8);
+    return (void *)((unsigned long)tramp | 1);
+}
+
 __attribute__((constructor)) static void appsync_install_hooks(void) {
     if (!in_installd()) return;
-    unsigned n = _dyld_image_count();
-    for (unsigned i = 0; i < n; i++)
-        appsync_rebind_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i),
-                             as_hooks, sizeof as_hooks / sizeof *as_hooks);
-    syslog(3, "appsync: %s MIS rebind seen=%u done=%u protect_failed=%u images=%u",
-           getprogname(), as_bind_seen, as_bind_done, as_bind_failed, n);
+    void *h = dlopen("/usr/lib/libmis.dylib", 0x10 | 0x2);  // RTLD_NOLOAD|RTLD_NOW
+    void *target = h ? dlsym(h, "MISValidateSignatureAndCopyInfo") : 0;
+    if (target) as_orig_mis = as_inline_hook(target, (void *)as_MISValidateSignatureAndCopyInfo);
+    unsigned char *fn = target ? (unsigned char *)((unsigned long)target & ~1UL) : 0;
+    syslog(3, "appsync: %s hook libmis MIS target=%p orig=%p mprotect=%d errno=%d prologue=%02x%02x%02x%02x",
+           getprogname(), target, (void *)as_orig_mis, as_mprotect_rc, as_mprotect_errno,
+           fn ? fn[0] : 0, fn ? fn[1] : 0, fn ? fn[2] : 0, fn ? fn[3] : 0);
 }
 
 #endif
