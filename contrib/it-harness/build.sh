@@ -86,3 +86,20 @@ rm -f "$OUT/Harness.ipa"
     Payload/Harness.app/{stereo.wav,aac.m4a,tone.mp3,lossless.m4a,h264.mp4,mpeg4.mp4})
 rm -f "$OUT/harness.o"
 echo "Installable app: $OUT/Harness.ipa"
+# iOS 10 (the iPhone 5's) runs no armv6 code: the same app for armv7, linked normally, as Harness-armv7.ipa.
+A7="$OUT/armv7/Payload/Harness.app"
+rm -rf "$OUT/armv7"
+mkdir -p "$A7"
+cp "$APP"/{Info.plist,stereo.wav,aac.m4a,tone.mp3,lossless.m4a,h264.mp4,mpeg4.mp4} "$A7/"
+LEGACY_LINK=0 GUEST_ARCH=armv7 cc6 "$HERE/harness.c" "$OUT/harness-armv7.o" \
+    -idirafter "$(xcrun clang -print-resource-dir)/include" \
+    -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-cast-function-type-mismatch
+LEGACY_LINK=0 GUEST_ARCH=armv7 link6 -execute "$A7/Harness" "$OUT/harness-armv7.o"
+chmod 755 "$A7/Harness"
+ldid -S "$A7/Harness"
+xcrun otool -h "$A7/Harness" | awk 'NR == 4 && !($2 == 12 && $3 == 9 && $5 == 2) { exit 1 }' ||
+    { echo "Harness-armv7 is not an armv7 executable" >&2; exit 1; }
+rm -f "$OUT/Harness-armv7.ipa" "$OUT/harness-armv7.o"
+(cd "$OUT/armv7" && zip -q -X ../Harness-armv7.ipa Payload/Harness.app/Harness Payload/Harness.app/Info.plist \
+    Payload/Harness.app/{stereo.wav,aac.m4a,tone.mp3,lossless.m4a,h264.mp4,mpeg4.mp4})
+echo "Installable app (armv7): $OUT/Harness-armv7.ipa"

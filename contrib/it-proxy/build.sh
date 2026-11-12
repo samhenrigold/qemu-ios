@@ -11,6 +11,11 @@ LEGACY_LINK=1 cc6 "$HERE/httpget.c" "$HERE/httpget.o"
 LEGACY_LINK=1 link6 -execute "$HERE/httpget" "$HERE/httpget.o"
 rm -f "$HERE/httpget.o"
 "${LDID:-ldid}" -S "$HERE/httpget"
+# iOS 10 (the iPhone 5's) runs no armv6 code: the same client for armv7, linked normally.
+GUEST_ARCH=armv7 cc6 "$HERE/httpget.c" "$HERE/httpget-armv7.o"
+GUEST_ARCH=armv7 link6 -execute "$HERE/httpget-armv7" "$HERE/httpget-armv7.o"
+rm -f "$HERE/httpget-armv7.o"
+"${LDID:-ldid}" -S "$HERE/httpget-armv7"
 
 cc6 "$HERE/ittrust.c" "$HERE/ittrust.o"
 link6 -execute "$HERE/ittrust" "$HERE/ittrust.o" -e __start
