@@ -108,6 +108,7 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
 #define GLES_OP_DELETE_SHAREGROUP 0x1005
 #define GLES_OP_NEW_CONTEXT 0x1006
 #define GLES_OP_DELETE_CONTEXT 0x1007
+#define GLES_OP_SET_ERROR 0x100b    /* gles.h: a refusal of the shim's own, as the context's GL error */
 
 /* api and sg are glishim.c's (the GLEngine replacement, which #includes this
  * file); the MBX path leaves them zero. */

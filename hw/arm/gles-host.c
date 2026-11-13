@@ -7231,6 +7231,62 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
     return true;
 }
 
+/*
+ * The error the guest's glGetError reads for a host GL error. The tokens ES shares with desktop GL pass as they are;
+ * ES 2.0 has no matrix stack, so no stack errors, and neither API has desktop's imaging and table errors, which take
+ * INVALID_OPERATION, the error ES gives an operation it does not support.
+ */
+static GLenum gles_es_error(GLenum error)
+{
+    switch (error) {
+    case GL_NO_ERROR:
+    case GL_INVALID_ENUM:
+    case GL_INVALID_VALUE:
+    case GL_INVALID_OPERATION:
+    case GL_OUT_OF_MEMORY:
+    case 0x0506:   /* INVALID_FRAMEBUFFER_OPERATION: ES 2.0's, and OES_framebuffer_object's in ES 1.1 */
+        return error;
+    case GL_STACK_OVERFLOW:
+    case GL_STACK_UNDERFLOW:
+        return gh.api_version == 2 ? GL_INVALID_OPERATION : error;
+    default:
+        return GL_INVALID_OPERATION;
+    }
+}
+
+/* glGetError: the context's first error since the guest last asked, else the host's, in ES terms; reading clears it. */
+static GLenum gles_take_error(void)
+{
+    GLenum error = gh.error;
+
+    gh.error = GL_NO_ERROR;
+    return gles_es_error(error ? error : glGetError());
+}
+
+/*
+ * The host's error after the guest's call `slot` (strict mode drained it before the call): logged and counted as
+ * before, and kept as the context's error, the first since the guest last asked, which its next glGetError returns.
+ * The strict drain used to swallow it, so a call the host refused looked to the app like one that worked. Engine
+ * operations (GLES_OP_*) are not GL calls the app made: their errors are only counted.
+ */
+static void gles_host_error(uint32_t slot, uint32_t argc, const uint32_t *a)
+{
+    GLenum e = glGetError();
+
+    if (e == GL_NO_ERROR) {
+        return;
+    }
+    if (slot < GLES_OP_BASE) {
+        gles_reject(e);
+    }
+    if (gles_refuse("glerror:%u:0x%x", slot, e)) {
+        fprintf(stderr, "[gles] slot %u raised GL error 0x%x "
+                "(args 0x%x 0x%x 0x%x)\n", slot, e,
+                argc > 0 ? a[0] : 0, argc > 1 ? a[1] : 0,
+                argc > 2 ? a[2] : 0);
+    }
+}
+
 static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 uint32_t argc, const uint32_t *a);
 
@@ -7292,6 +7348,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                        : 0;
     case GLES_OP_BIND_SURFACE:      /* the ninth word, when a shim sends it, is the IOSurface ID */
         return argc == 8 || argc == 9 ? gles_bind_surface(cpu, a, argc == 9 ? a[8] : 0) : -1;
+    case GLES_OP_SET_ERROR:
+        if (argc != 1) return -1;
+        gles_reject(gles_es_error(a[0]));
+        return 0;
     case GLES_OP_DRAWABLE_STORAGE:
         return argc == 2 ? (gles_a6 ? gles_layer_storage : gles_drawable_storage)(a[0], a[1]) : -1;
 
@@ -9092,11 +9152,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         glFlush();
         return gles_sync_surface(cpu) ? -1 : gles_surface_flush(cpu, 0);
 
-    case GLES_SLOT_GET_ERROR: {
-        GLenum error = gh.error;
-        gh.error = GL_NO_ERROR;
-        return error ? error : glGetError();
-    }
+    case GLES_SLOT_GET_ERROR:
+        return gles_take_error();
 
     /*
      * OES framebuffer objects, executed rather than answered.
@@ -9574,8 +9631,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             }
         }
         /* Unimplemented on purpose -- see SCOPE at the top. Returning 0 rather
-         * than an error keeps a guest that touches an unhandled state setter
-         * running, so the call stream can still be observed end to end.
+         * than failing the trap keeps a guest that touches an unhandled state
+         * setter running, so the call stream can still be observed end to end.
          *
          * But say so, and count it. Silence here cost real debugging time:
          * Super Monkey Ball's 3D world came through as static noise, and the
@@ -9588,6 +9645,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                     "returning 0; the guest will render wrong\n",
                     gles_id_name(slot), slot, argc);
         }
+        /* And tell the app, as the device tells it of an operation it does not support. */
+        gles_reject(GL_INVALID_OPERATION);
         if (slot == GLES_ID_glDrawRangeElements) gles_debug_mark();     /* a draw that went nowhere */
         return 0;
     }
@@ -9846,15 +9905,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
             /* drain whatever was pending from before this call */
         }
         r = gles_host_call_1(cpu, slot, ctx, argc, a);
-        {
-            GLenum e = glGetError();
-            if (e != GL_NO_ERROR && gles_refuse("glerror:%u:0x%x", slot, e)) {
-                fprintf(stderr, "[gles] slot %u raised GL error 0x%x "
-                        "(args 0x%x 0x%x 0x%x)\n", slot, e,
-                        argc > 0 ? a[0] : 0, argc > 1 ? a[1] : 0,
-                        argc > 2 ? a[2] : 0);
-            }
-        }
+        gles_host_error(slot, argc, a);
     } else {
         r = gles_host_call_1(cpu, slot, ctx, argc, a);
     }

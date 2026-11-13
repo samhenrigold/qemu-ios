@@ -9,7 +9,7 @@
  * SLICE hw/arm/gles-host.c range /* The ES half-float type | /* GL_UNPACK_ALIGNMENT in force
  * SLICE hw/arm/gles-host.c fn gles_texture_object gles_debug_texture gles_surface_bpp
  * SLICE:shim contrib/it-gles/mbxshim.c range static char *put_dec( | static int guest_fault_read(
- * SLICE:shim contrib/it-gles/gles_dispatch.c fn gles_unknown_slot gles_stub
+ * SLICE:shim contrib/it-gles/gles_dispatch.c fn gles_unsupported gles_unknown_slot gles_stub
  * CFLAGS -I$ROOT/include -Wno-pointer-to-int-cast -Wno-pointer-bool-conversion -framework OpenGL -framework VideoToolbox -framework CoreVideo -framework CoreMedia -framework CoreFoundation
  * PKG glib-2.0
  */
@@ -24,6 +24,8 @@ static void wd(unsigned v) { char b[12]; snprintf(b, sizeof(b), "%u", v); w(b); 
 static struct { const char *field[GLES_MAX_SLOTS]; } gli;
 static const struct { unsigned id; } gles_fns[] = { { GLES_ID_glFogx } };
 static int gles_row_of_name(const char *name) { return strcmp(name, "glFogx") ? -1 : 0; }
+#define A(...) (const unsigned[]){ __VA_ARGS__ }
+static long long qc(unsigned slot, void *gc, unsigned argc, const unsigned *args) { assert(0); return 0; }
 #include "shim.h"
 int main(void)
 {
@@ -68,16 +70,16 @@ int main(void)
     /* the runtime dispatch's stubs: a row it cannot forward is counted by its gl name (and said once),
      * a firmware field no row names by that field, and the inert hint not at all */
     shimlog[0] = 0;
-    gles_stub("glFogx"); gles_stub("glFogx");
+    gles_stub(0, "glFogx"); gles_stub(0, "glFogx");
     assert(strstr(shimlog, "[gles-reject] shim:unimpl:glFogx 1\n") && strstr(shimlog, "[gles-reject] shim:unimpl:glFogx 2\n"));
     {
         const char *said = strstr(shimlog, "unimplemented GL entry point glFogx");
         assert(said && !strstr(said + 1, "unimplemented GL entry point glFogx"));
     }
     shimlog[0] = 0;
-    assert(!gles_stub("glDiscardFramebufferEXT") && !shimlog[0]);
+    assert(!gles_stub(0, "glDiscardFramebufferEXT") && !shimlog[0]);
     gli.field[830] = "fancy_new_field_APPLE";
-    gles_unknown_slot(830); gles_unknown_slot(830);
+    gles_unknown_slot(0, 830); gles_unknown_slot(0, 830);
     assert(strstr(shimlog, "(field fancy_new_field_APPLE, dispatch slot 830)") &&
            strstr(shimlog, "[gles-reject] shim:unimpl:field:fancy_new_field_APPLE 1\n") &&
            strstr(shimlog, "[gles-reject] shim:unimpl:field:fancy_new_field_APPLE 2\n"));

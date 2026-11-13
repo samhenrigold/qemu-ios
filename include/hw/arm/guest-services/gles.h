@@ -384,6 +384,9 @@ static inline const char *gles_id_name(uint32_t id)
 #define GLES_CAP_MAP_BUFFER             2u
 #define GLES_CAP_NATIVE_DISPATCH        4u
 #define GLES_CAP_FENCE_FINISH           8u
+/* args: an ES error. A call the guest shim refuses itself (gles_stub: an entry point with no host implementation)
+ * sets the context's error the way a refusal on the host does, so the app's glGetError sees it. */
+#define GLES_OP_SET_ERROR               (GLES_OP_BASE + 11)
 #define GLES_BATCH_MAX_WORDS            4096
 
 /* Surface pixel formats, as IOSurfaceGetPixelFormat reports them (FourCC). */

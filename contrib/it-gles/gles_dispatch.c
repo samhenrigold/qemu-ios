@@ -41,12 +41,12 @@ enum {
 #undef GLES_FN
 
 /* A by-name stub: the table knows the function but cannot forward it (no argc). */
-static int gles_stub(const char *name);
+static int gles_stub(void *gc, const char *name);
 
 /* The forwarders: one per row, sending argc 32-bit words under the row's id. Arguments are
  * declared `unsigned` even where GL says `float`: soft-float AAPCS delivers floats as bit
  * patterns in the core registers, which is what the host wants. */
-#define GLES_FWD_NA(n, id) static int fn_##n(void *gc) { (void)gc; return gles_stub(#n); }
+#define GLES_FWD_NA(n, id) static int fn_##n(void *gc) { return gles_stub(gc, #n); }
 #define GLES_FWD_0(n, id) static int fn_##n(void *gc) { return (int)qc(id, gc, 0, A(0)); }
 #define GLES_FWD_1(n, id) static int fn_##n(void *gc, unsigned a0) { return (int)qc(id, gc, 1, A(a0)); }
 #define GLES_FWD_2(n, id) static int fn_##n(void *gc, unsigned a0, unsigned a1) { return (int)qc(id, gc, 2, A(a0, a1)); }
@@ -492,8 +492,14 @@ static unsigned gles_fill(void **fw, unsigned n, void *const *hand)
     return n;
 }
 
+/* What the device answers a call it does not support: INVALID_OPERATION, for the app's next glGetError. */
+static void gles_unsupported(void *gc)
+{
+    if (gc) qc(GLES_OP_SET_ERROR, gc, 1, A(0x0502));
+}
+
 /* A slot the name table has no row for: say so once, by the firmware's field name. */
-static int gles_unknown_slot(unsigned slot)
+static int gles_unknown_slot(void *gc, unsigned slot)
 {
     static unsigned char seen[GLES_MAX_SLOTS];
     const char *field = slot < GLES_MAX_SLOTS && gli.field[slot] ? gli.field[slot] : "?";
@@ -503,10 +509,11 @@ static int gles_unknown_slot(unsigned slot)
         w(") -- the app will render wrong\n");
     }
     refused("unimpl:field:", field, ~0u);
+    gles_unsupported(gc);
     return 0;
 }
 
-static int gles_stub(const char *name)
+static int gles_stub(void *gc, const char *name)
 {
     static unsigned char seen[GLES_ID_MAX + 1];
     int k;
@@ -517,5 +524,6 @@ static int gles_stub(const char *name)
         w("[gles] unimplemented GL entry point "); w(name); w(" -- the app will render wrong\n");
     }
     refused("unimpl:", name, ~0u);
+    gles_unsupported(gc);
     return 0;
 }
