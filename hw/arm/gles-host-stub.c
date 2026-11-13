@@ -41,6 +41,7 @@ int gles_host_context_count(void) { return 0; }
 /* No bridge, so nothing is ever refused by it. */
 bool gles_host_refuse(const char *fmt, ...) { return false; }
 char *gles_host_rejects(void) { return g_strdup(""); }
+char *gles_host_refusals(uint64_t *serial) { return NULL; }
 void gles_host_set_debug(bool on) { }
 bool gles_host_debug(void) { return false; }
 uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len) { return 0; }

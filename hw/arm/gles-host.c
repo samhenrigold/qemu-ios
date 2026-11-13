@@ -734,6 +734,7 @@ void gles_angle_host_reset(void);
 int gles_angle_host_context_count(void);
 bool gles_angle_host_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
 char *gles_angle_host_rejects(void);
+char *gles_angle_host_refusals(uint64_t *serial);
 void gles_angle_host_set_debug(bool on);
 bool gles_angle_host_debug(void);
 uint64_t gles_angle_host_ram_gen(uint64_t addr, uint64_t len);
@@ -2205,13 +2206,23 @@ static int64_t gles_reject(GLenum error)
  * one, and under gles-debug=on paints what it would have left black magenta,
  * so a screenshot shows it too.
  */
+typedef struct GLESReject {
+    uint64_t count;
+    uint64_t serial;    /* gles_rejects_serial when the count last moved */
+} GLESReject;
 static GHashTable *gles_rejects;
+/* Moves with every count that does, so a host polling gles_host_refusals hears of each. The
+ * table has its own lock: the host reads it from its own threads. */
+static uint64_t gles_rejects_serial;
+static GMutex gles_rejects_lock;
 static bool gles_debug;
 
 static bool gles_reject_note(const char *name, uint64_t n, bool at_least)
 {
-    uint64_t *count;
+    GLESReject *r;
+    uint64_t count;
 
+    g_mutex_lock(&gles_rejects_lock);
     if (!gles_rejects) {
         gles_rejects = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     }
@@ -2219,14 +2230,21 @@ static bool gles_reject_note(const char *name, uint64_t n, bool at_least)
     if (g_hash_table_size(gles_rejects) >= 1024 && !g_hash_table_contains(gles_rejects, name)) {
         name = "refusals:more";
     }
-    count = g_hash_table_lookup(gles_rejects, name);
-    if (count) {
-        *count = at_least ? MAX(*count, n) : *count + n;
+    r = g_hash_table_lookup(gles_rejects, name);
+    if (r) {
+        count = at_least ? MAX(r->count, n) : r->count + n;
+        if (count != r->count) {
+            r->count = count;
+            r->serial = ++gles_rejects_serial;
+        }
+        g_mutex_unlock(&gles_rejects_lock);
         return false;
     }
-    count = g_new(uint64_t, 1);
-    *count = n;
-    g_hash_table_insert(gles_rejects, g_strdup(name), count);
+    r = g_new(GLESReject, 1);
+    r->count = n;
+    r->serial = ++gles_rejects_serial;
+    g_hash_table_insert(gles_rejects, g_strdup(name), r);
+    g_mutex_unlock(&gles_rejects_lock);
     fprintf(stderr, "[gles] REFUSED %s\n", name);
     return true;
 }
@@ -2260,20 +2278,78 @@ static gint gles_strcmp_data(gconstpointer a, gconstpointer b, gpointer d)
     return strcmp(a, b);
 }
 
-char *gles_host_rejects(void)
+/* The GL call a refusal is about: the function of the wire id that is the first field after
+ * these kinds' prefix, or the entry point a guest shim counted as unimplemented; "" for the rest. */
+static const char *gles_reject_call(const char *name)
 {
-    GLES_ON_ANGLE(gles_angle_host_rejects());
+    static const char *const by_id[] = {
+        "slot:", "glerror:", "bad-call:argc:", "bad-call:no-spill:", "guest-read:spill:",
+    };
+    static const char unimplemented[] = "shim:unimpl:";
+
+    for (size_t i = 0; i < sizeof(by_id) / sizeof(by_id[0]); i++) {
+        if (g_str_has_prefix(name, by_id[i])) {
+            const char *digits = name + strlen(by_id[i]);
+            char *end;
+            unsigned long id = strtoul(digits, &end, 10);
+            const char *fn = end > digits && (*end == ':' || !*end) && id <= UINT32_MAX ?
+                gles_id_name(id) : "?";
+            return strcmp(fn, "?") ? fn : "";
+        }
+    }
+    if (g_str_has_prefix(name, unimplemented) && !g_str_has_prefix(name, "shim:unimpl:field:")) {
+        return name + strlen(unimplemented);
+    }
+    return "";
+}
+
+/* The table, sorted by name: every entry (since NULL), or those whose count moved after *since. */
+static char *gles_rejects_list(const uint64_t *since)
+{
     GString *out = g_string_new(NULL);
     GList *keys = gles_rejects ?
         g_list_sort_with_data(g_hash_table_get_keys(gles_rejects),
                               gles_strcmp_data, NULL) : NULL;
 
     for (GList *k = keys; k; k = k->next) {
-        g_string_append_printf(out, "%s\t%" PRIu64 "\n", (char *)k->data,
-                               *(uint64_t *)g_hash_table_lookup(gles_rejects, k->data));
+        const GLESReject *r = g_hash_table_lookup(gles_rejects, k->data);
+        if (!since) {
+            g_string_append_printf(out, "%s\t%" PRIu64 "\n", (char *)k->data, r->count);
+        } else if (r->serial > *since) {
+            g_string_append_printf(out, "%s\t%" PRIu64 "\t%s\n", (char *)k->data, r->count,
+                                   gles_reject_call(k->data));
+        }
     }
     g_list_free(keys);
     return g_string_free(out, false);
+}
+
+char *gles_host_rejects(void)
+{
+    GLES_ON_ANGLE(gles_angle_host_rejects());
+    char *out;
+
+    g_mutex_lock(&gles_rejects_lock);
+    out = gles_rejects_list(NULL);
+    g_mutex_unlock(&gles_rejects_lock);
+    return out;
+}
+
+char *gles_host_refusals(uint64_t *serial)
+{
+    GLES_ON_ANGLE(gles_angle_host_refusals(serial));
+    char *out = NULL;
+
+    if (!serial) {
+        return NULL;
+    }
+    g_mutex_lock(&gles_rejects_lock);
+    if (*serial != gles_rejects_serial) {
+        out = gles_rejects_list(serial);
+        *serial = gles_rejects_serial;
+    }
+    g_mutex_unlock(&gles_rejects_lock);
+    return out;
 }
 
 void gles_host_set_debug(bool on)

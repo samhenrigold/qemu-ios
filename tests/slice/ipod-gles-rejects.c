@@ -38,6 +38,20 @@ int main(void)
     out = gles_host_rejects();
     assert(!strcmp(out, "slot:807\t1\nteximage:0x1906/0x8033\t3\n"));
     free(out);
+    /* a host polling with a serial hears of each name whose count moved, with the GL call it is about */
+    uint64_t serial = 0;
+    out = gles_host_refusals(&serial);
+    assert(!strcmp(out, "slot:807\t1\tglCurrentPaletteMatrixOES\nteximage:0x1906/0x8033\t3\t\n"));
+    free(out);
+    assert(!gles_host_refusals(&serial) && !gles_host_refusals(NULL));
+    assert(gles_refuse("glerror:%u:0x%x", 174, 0x500) && !gles_refuse("slot:%u", 807));
+    out = gles_host_refusals(&serial);
+    assert(!strcmp(out, "glerror:174:0x500\t1\tglMatrixMode\nslot:807\t2\tglCurrentPaletteMatrixOES\n"));
+    free(out);
+    assert(gles_refuse("slot:%u", 9999) && gles_refuse("slot:x"));
+    out = gles_host_refusals(&serial);
+    assert(!strcmp(out, "slot:9999\t1\t\nslot:x\t1\t\n"));
+    free(out);
     /* the shim's line: a floor the host keeps the largest of; anything else on the log channel is not one */
     assert(gles_shim_reject_line("[gles-reject] shim:unimpl:glFogxv 4\n"));
     assert(gles_shim_reject_line("[gles-reject] shim:unimpl:glFogxv 2\n"));
@@ -46,6 +60,11 @@ int main(void)
     out = gles_host_rejects();
     assert(strstr(out, "shim:unimpl:glFogxv\t4\n") && strstr(out, "shim:surface:A008\t1\n"));
     free(out);
+    /* a shim's unimplemented entry point is its call; a floor that doesn't raise the count moves nothing */
+    out = gles_host_refusals(&serial);
+    assert(!strcmp(out, "shim:surface:A008\t1\t\nshim:unimpl:glFogxv\t4\tglFogxv\n"));
+    free(out);
+    assert(gles_shim_reject_line("[gles-reject] shim:unimpl:glFogxv 3\n") && !gles_host_refusals(&serial));
     /* four printable bytes, or hex */
     char f[12];
     assert(!strcmp(gles_fourcc(0x41303038, f), "A008"));

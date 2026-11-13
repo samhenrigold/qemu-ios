@@ -454,6 +454,11 @@ int gles_host_context_count(void);
 bool gles_host_refuse(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
 /* "NAME\tCOUNT\n" per name, sorted: the machine's gles-rejects property. Caller frees. */
 char *gles_host_rejects(void);
+/* The names whose count moved since *serial (0 at first), which this updates, as "NAME\tCOUNT\tCALL\n"
+ * per name, sorted: CALL is the GL function the refusal is about (gles_id_name of the wire id in
+ * slot:ID or glerror:ID:ERROR, a shim's shim:unimpl:NAME), or empty. NULL when none moved. Any
+ * thread; caller frees. */
+char *gles_host_refusals(uint64_t *serial);
 /* gles-debug=on: a refused texture or surface samples magenta and a refused draw paints
  * the viewport magenta, so a screenshot shows the gap; off, the least-bad fallback stays. */
 void gles_host_set_debug(bool on);

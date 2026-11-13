@@ -743,6 +743,13 @@ int qemu_ios_gles_contexts(void)
     return qemu_ios_ui_ready() ? gles_host_context_count() : 0;
 }
 
+/* hw/arm/gles-host.c; the table's own lock, so no BQL or ready check needed. */
+extern char *gles_host_refusals(uint64_t *serial);
+char *qemu_ios_gles_refusals(uint64_t *serial)
+{
+    return gles_host_refusals(serial);
+}
+
 /* hw/arm/guest-package.c; its own lock, so no BQL or ready check needed. */
 extern bool guest_pkg_last_report(int64_t *serial, int32_t *result);
 extern int32_t guest_pkg_gles_protocol(int64_t *serial);

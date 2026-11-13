@@ -122,13 +122,20 @@ int32_t qemu_ios_gles_protocol(int64_t *serial);
 
 /* Live host GL contexts cannot be included in a snapshot. */
 int qemu_ios_gles_contexts(void);
+/* The GL bridge's refusals (the machine's gles-rejects, under gles-host.c's own lock): every name whose
+ * count moved since *serial (0 at first), which this updates, as "NAME\tCOUNT\tCALL\n" lines sorted by
+ * name, COUNT the calls refused under it since the emulator started and CALL the GL function it is
+ * about, or empty (gles_host_refusals). NULL when nothing moved. A name is "KIND:FIELD:..." built by
+ * the host from numbers and its own words, except a guest shim's (shim:...), which the guest wrote:
+ * parse it as untrusted. Free it with free(). Any thread. API 2.5. */
+char *qemu_ios_gles_refusals(uint64_t *serial);
 /* Loaded Mach-O UUID; NULL if unavailable. */
 const char *qemu_ios_build_id(void);
 
 /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
  * a major bump removes or changes one, and a host built for another major refuses
  * the dylib. */
-#define QEMU_IOS_API_VERSION ((2u << 16) | 4u)
+#define QEMU_IOS_API_VERSION ((2u << 16) | 5u)
 uint32_t qemu_ios_api_version(void);
 
 /* Machine controls. */

@@ -13,6 +13,7 @@
 #define gles_host_context_count gles_angle_host_context_count
 #define gles_host_refuse gles_angle_host_refuse
 #define gles_host_rejects gles_angle_host_rejects
+#define gles_host_refusals gles_angle_host_refusals
 #define gles_host_set_debug gles_angle_host_set_debug
 #define gles_host_debug gles_angle_host_debug
 #define gles_host_ram_gen gles_angle_host_ram_gen
