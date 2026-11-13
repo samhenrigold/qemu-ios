@@ -42,9 +42,10 @@ int main(void)
                               "GL_IMG_texture_compression_pvrtc \0GL_APPLE_texture_rectangle \0";
     assert(!strcmp(fe_cstring(mbx, sizeof mbx, "PowerVR "), "PowerVR MBXLite with VGPLite"));
     assert(!strcmp(ver(FE_MBX, mbx, sizeof mbx), "OpenGL ES-CM 1.1 (48)"));
-    /* OES_matrix_palette is the MBX's but has no host implementation */
+    /* OES_matrix_palette is the MBX's, which the bridge skins itself */
     assert(!strcmp(ext(FE_MBX, mbx, sizeof mbx),
-                   "GL_APPLE_texture_rectangle GL_IMG_texture_compression_pvrtc GL_OES_framebuffer_object"));
+                   "GL_APPLE_texture_rectangle GL_IMG_texture_compression_pvrtc GL_OES_framebuffer_object "
+                   "GL_OES_matrix_palette"));
     /* 2.x: the engine is the OpenGLES this replaces, so the 2.2.1 list the bridge implements, no 4.x additions */
     assert(strstr(ext(FE_MBX, 0, 0), "GL_OES_draw_texture") && !strstr(ext(FE_MBX, 0, 0), "discard"));
     assert(!strcmp(ver(FE_MBX, 0, 0), "OpenGL ES-CM 1.1"));
@@ -76,6 +77,10 @@ int main(void)
                    "GL_IMG_texture_compression_pvrtc GL_OES_depth_texture GL_OES_packed_depth_stencil"));
     assert(!strcmp(ext(FE_SGX1, ge421, sizeof ge421),
                    "GL_IMG_texture_compression_pvrtc GL_OES_draw_texture GL_OES_packed_depth_stencil"));
+    /* 5.1.1 (9B206): OES_matrix_palette, which the bridge skins itself, is ES 1.1's only */
+    static const char ge511[] = "GL_OES_mapbuffer\0GL_OES_matrix_palette\0GL_OES_packed_depth_stencil\0";
+    assert(!strcmp(ext(FE_SGX1, ge511, sizeof ge511), "GL_OES_matrix_palette GL_OES_packed_depth_stencil"));
+    assert(!strcmp(ext(FE_SGX2, ge511, sizeof ge511), "GL_OES_packed_depth_stencil"));
     assert(!strcmp(ext(FE_SGX2, ge616, sizeof ge616), "GL_APPLE_sync GL_OES_texture_float"));
     /* Buffer mapping is advertised only where the host reports it (the A6's), whatever the engine names. */
     static const char maps[] = "GL_OES_mapbuffer\0GL_EXT_map_buffer_range\0GL_APPLE_sync\0";
@@ -100,6 +105,10 @@ int main(void)
     v[0] = 31; assert(fe_limit(FE_SGX2, 0x8DFC, v, 1) == 1 && v[0] == 8);              /* MAX_VARYING_VECTORS */
     v[0] = 16; assert(fe_limit(FE_SGX2, 0x8872, v, 1) == 1 && v[0] == 8);              /* MAX_TEXTURE_IMAGE_UNITS */
     v[0] = 16; assert(fe_limit(FE_SGX2, 0x8B4C, v, 1) == 1 && v[0] == 0);              /* no vertex texture fetch */
+    v[0] = 11; assert(fe_limit(FE_MBX, 0x8842, v, 1) == 1 && v[0] == 9);               /* MAX_PALETTE_MATRICES_OES */
+    v[0] = 11; assert(fe_limit(FE_SGX1, 0x8842, v, 1) == 1 && v[0] == 11);
+    v[0] = 4; assert(fe_limit(FE_MBX, 0x86A4, v, 1) == 1 && v[0] == 3);                /* MAX_VERTEX_UNITS_OES */
+    assert(fe_limit(FE_SGX2, 0x86A4, v, 0) == 0);                                     /* not an ES 2.0 limit */
     v[0] = 512; assert(fe_limit(FE_MBX, 0x0D33, v, 1) == 1 && v[0] == 512);            /* a smaller host stays */
     assert(fe_limit(FE_SGX2, 0x0B50, v, 0) == 0);                                     /* not a limit */
     puts("PASS: the front end reports the device's GPU: strings, extensions and limits");

@@ -1384,8 +1384,8 @@ static int fe_names(const char *text, unsigned long size, const char *name)
  * Left out though the hardware reports them, for want of a host implementation: APPLE_copy_texture_levels,
  * APPLE_framebuffer_multisample, APPLE_rgb_422, EXT_debug_label, EXT_debug_marker,
  * EXT_separate_shader_objects, EXT_shader_texture_lod, EXT_texture_storage,
- * OES_element_index_uint, OES_matrix_palette, OES_stencil8 (a stencil-only renderbuffer the host's
- * framebuffers don't take) and OES_vertex_array_object. APPLE_texture_rectangle and APPLE_core_surface_texture are
+ * OES_element_index_uint, OES_stencil8 (a stencil-only renderbuffer the host's framebuffers don't take) and
+ * OES_vertex_array_object. OES_matrix_palette, which the Mac's GL lacks, the bridge skins itself (gles_skin). APPLE_texture_rectangle and APPLE_core_surface_texture are
  * the MBX engine's private pair, which 2.x CoreAnimation needs before it composites with GL. */
 #define FE_X_MBX  1
 #define FE_X_SGX1 2
@@ -1419,6 +1419,7 @@ static const struct { const char *name; unsigned char on; } fe_ext_table[] = {
     { "GL_OES_draw_texture",               FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
     { "GL_OES_fbo_render_mipmap",          FE_X_SGX1 | FE_X_SGX2 },
     { "GL_OES_framebuffer_object",         FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
+    { "GL_OES_matrix_palette",             FE_X_MBX | FE_X_SGX1 },
     { "GL_OES_packed_depth_stencil",       FE_X_SGX1 | FE_X_SGX2 },
     { "GL_OES_point_size_array",           FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
     { "GL_OES_point_sprite",               FE_X_MBX | FE_X_SGX1 | FE_X_OLD },
@@ -1517,7 +1518,9 @@ static const char *fe_getString(void *gc, unsigned name)
  * units) are larger: an app sizes its atlases and picks its paths from these, and CoreAnimation tiles any layer
  * larger than MAX_TEXTURE_SIZE, as on the device. MBX: MBXGLEngine's get (3.1.3, run on each name). SGX 535: Apple's
  * "OpenGL ES Hardware Platform Guide for iOS" tables 1-2 and 1-3, which agree with the driver's configuration
- * (IMGSGX535GLDriver glrSetConfigData, 3.2: 2048, 511.0, 16.0, 4.0). -1: not this GPU's or not clamped (the SGX's
+ * (IMGSGX535GLDriver glrSetConfigData, 3.2: 2048, 511.0, 16.0, 4.0). OES_matrix_palette's two: 3.1.3 MBXGLEngine
+ * _DoGet's 9 and 3 (0x6f20, 0x6f28), and on the SGX table 1-3's 11 and 4, as 3.2.2 GLEngine (0xb0ea) and the
+ * driver's cfg+0x6C give them. -1: not this GPU's or not clamped (the SGX's
  * anisotropy and smooth widths, which neither source gives). A pair is a range (low, high) except VIEWPORT_DIMS. */
 static const struct { unsigned short pname, n; short v[3][2]; } fe_limit_table[] = {
     /*                                  MBX          SGX ES 1.1   SGX ES 2.0 */
@@ -1535,6 +1538,8 @@ static const struct { unsigned short pname, n; short v[3][2]; } fe_limit_table[]
     { 0x0D36, 1, { { 16 },       { 16 },       { -1 } } },          /* MAX_MODELVIEW_STACK_DEPTH */
     { 0x0D38, 1, { { 2 },        { 2 },        { -1 } } },          /* MAX_PROJECTION_STACK_DEPTH */
     { 0x0D39, 1, { { 4 },        { 4 },        { -1 } } },          /* MAX_TEXTURE_STACK_DEPTH */
+    { 0x8842, 1, { { 9 },        { 11 },       { -1 } } },          /* MAX_PALETTE_MATRICES_OES */
+    { 0x86A4, 1, { { 3 },        { 4 },        { -1 } } },          /* MAX_VERTEX_UNITS_OES */
     { 0x84FD, 1, { { 2 },        { 4 },        { -1 } } },          /* MAX_TEXTURE_LOD_BIAS_EXT */
     { 0x84FF, 1, { { 2 },        { -1 },       { -1 } } },          /* MAX_TEXTURE_MAX_ANISOTROPY_EXT */
     { 0x8869, 1, { { -1 },       { -1 },       { 16 } } },          /* MAX_VERTEX_ATTRIBS */

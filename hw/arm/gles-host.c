@@ -262,6 +262,35 @@ static inline bool gles_array_range(uint64_t ptr, uint64_t stride, uint64_t esz,
 /* Bit positions in the bound-array mask: the three non-texture arrays take
  * 0..2, then one bit per texture unit. */
 #define GLES_TEXCOORD_BIT  3u
+/* Set when the draw is skinned (gles_skin): the host's modelview was pushed. */
+#define GLES_SKIN_BIT      (GLES_TEXCOORD_BIT + GLES_MAX_TEXUNITS)
+
+/*
+ * OES_matrix_palette, which the bridge implements itself: the Mac's GL has no ARB_matrix_palette, and ANGLE's ES1
+ * none either. The limits are the SGX's, 11 palette matrices and 4 vertex units (3.2.2 GLEngine _gleGetState's
+ * constant at 0xb0ea, IMGSGX535GLDriver glrSetConfigData's cfg+0x6C; Apple's "OpenGL ES Hardware Platform Guide
+ * for iOS", table 1-3, agrees); the guest library lowers them to the MBX's 9 and 3 (fe_limit).
+ */
+#define GLES_MAX_PALETTE      11u
+#define GLES_MAX_VERTEX_UNITS 4u
+#ifndef GL_MATRIX_PALETTE_OES
+#define GL_MAX_VERTEX_UNITS_OES                   0x86A4
+#define GL_WEIGHT_ARRAY_TYPE_OES                  0x86A9
+#define GL_WEIGHT_ARRAY_STRIDE_OES                0x86AA
+#define GL_WEIGHT_ARRAY_SIZE_OES                  0x86AB
+#define GL_WEIGHT_ARRAY_POINTER_OES               0x86AC
+#define GL_WEIGHT_ARRAY_OES                       0x86AD
+#define GL_MATRIX_PALETTE_OES                     0x8840
+#define GL_MAX_PALETTE_MATRICES_OES               0x8842
+#define GL_CURRENT_PALETTE_MATRIX_OES             0x8843
+#define GL_MATRIX_INDEX_ARRAY_OES                 0x8844
+#define GL_MATRIX_INDEX_ARRAY_SIZE_OES            0x8846
+#define GL_MATRIX_INDEX_ARRAY_TYPE_OES            0x8847
+#define GL_MATRIX_INDEX_ARRAY_STRIDE_OES          0x8848
+#define GL_MATRIX_INDEX_ARRAY_POINTER_OES         0x8849
+#define GL_WEIGHT_ARRAY_BUFFER_BINDING_OES        0x889E
+#define GL_MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES  0x8B9E
+#endif
 
 #ifndef GL_POINT_SIZE_ARRAY_OES
 #define GL_POINT_SIZE_ARRAY_OES       0x8B9C
@@ -491,6 +520,15 @@ typedef struct {
     /* GL_POINT_SIZE_ARRAY_OES: per-point sizes for point sprites. Desktop GL
      * has no such array, so the draw path emulates it (see GLES_SLOT_DRAW_ARRAYS). */
     GLESArray pointsize;
+    /* OES_matrix_palette (GLES_MAX_PALETTE): its two arrays, its enable, whether it is the matrix mode (the host
+     * keeps the mode before it), the current palette matrix and the palette. A draw with it enabled is skinned
+     * here (gles_skin), into `skin`. */
+    GLESArray weight, matrix_index;
+    bool palette_on, palette_mode;
+    uint32_t palette_current;
+    float palette[GLES_MAX_PALETTE][16];
+    float *skin;
+    size_t skin_size;
 
     /* Scratch for glDrawElements' index list. */
     uint8_t *ibuf;
@@ -1203,6 +1241,19 @@ static GLenum gles_rb_format(uint32_t fmt)
     }
 }
 
+/* OES_matrix_palette as a new context has it: disabled, matrix 0 current, the arrays unset (type 0, which glGet
+ * answers as the initial FLOAT and UNSIGNED_BYTE), every palette matrix identity. */
+static void gles_palette_reset(GLESHost *h)
+{
+    h->palette_on = h->palette_mode = false;
+    h->palette_current = 0;
+    h->weight.client_state = GL_WEIGHT_ARRAY_OES;
+    h->matrix_index.client_state = GL_MATRIX_INDEX_ARRAY_OES;
+    for (unsigned i = 0; i < GLES_MAX_PALETTE; i++) {
+        for (unsigned k = 0; k < 16; k++) h->palette[i][k] = k % 5 == 0;
+    }
+}
+
 static bool gles_host_init(void)
 {
     if (gh.inited) {
@@ -1340,6 +1391,7 @@ static bool gles_host_init(void)
     gh.normal.size = 3;
     gh.pointsize.client_state = GL_POINT_SIZE_ARRAY_OES;
     gh.pointsize.size = 1;
+    gles_palette_reset(&gh);
 
     gh.drawable_width = GLES_FB_WIDTH;
     gh.drawable_height = GLES_FB_HEIGHT;
@@ -1509,24 +1561,25 @@ static int64_t gles_set_pointer(GLESArray *a, uint32_t size, uint32_t type,
     return 0;
 }
 
-static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
-                            uint32_t count)
+/* The bytes of elements [first, first + count) of an enabled array, from its
+ * buffer or read from the guest into its scratch, and its stride; NULL if it
+ * has none or they cannot be had. */
+static const uint8_t *gles_array_bytes(CPUState *cpu, GLESArray *a, uint32_t first,
+                                       uint32_t count, uint32_t *stride_out)
 {
     uint32_t esz, stride;
     uint64_t need, off;
     const uint8_t *base;
-    const void *data;
-    GLenum type;
 
     /* A zero `ptr` is a legitimate offset into a bound buffer -- offset 0 is
      * where geometry usually starts -- so the null-pointer guard only applies
      * to the guest-VA case. */
     if (!a->enabled || (!a->ptr && !a->vbo) || !count) {
-        return false;
+        return NULL;
     }
     esz = gles_type_size(a->type) * a->size;
     if (!esz) {
-        return false;
+        return NULL;
     }
     stride = a->stride ? a->stride : esz;
 
@@ -1544,14 +1597,14 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
                         gles_array_name(a->client_state), a->ptr, a->vbo->size);
             }
             gles_debug_mark();
-            return false;
+            return NULL;
         }
         base = a->vbo->data + off;
     } else {
         if (!gles_array_range(a->ptr, stride, esz, first, count, UINT64_C(1) << 32, &off, &need) ||
             !gles_scratch(&a->buf, &a->buf_size, need, "array")) {
             gles_debug_mark();
-            return false;
+            return NULL;
         }
         {
             uint64_t t0 = gles_t();
@@ -1563,12 +1616,26 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
                     fprintf(stderr, "[gles] failed to read %" PRIu64 " bytes of array data "
                             "at guest 0x%08x\n", need, a->ptr);
                 }
-                return false;
+                return NULL;
             }
         }
         base = a->buf;
     }
+    *stride_out = stride;
+    return base;
+}
 
+static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
+                            uint32_t count)
+{
+    uint32_t stride;
+    const uint8_t *base = gles_array_bytes(cpu, a, first, count, &stride);
+    const void *data;
+    GLenum type;
+
+    if (!base) {
+        return false;
+    }
     data = base;
     type = a->type;
 
@@ -1835,14 +1902,117 @@ static void gles_draw_tex(float x, float y, float z, float w, float h)
 #endif
 }
 
+/* Component c of an array element as GL reads it; `norm` scales the integer
+ * types to [-1, 1] as GL does a normal's. */
+static float gles_elem(const uint8_t *p, GLenum type, unsigned c, bool norm)
+{
+    switch (type) {
+    case GL_FLOAT: { float v; memcpy(&v, p + 4 * c, 4); return v; }
+    case GLES_FIXED: { int32_t v; memcpy(&v, p + 4 * c, 4); return v / 65536.0f; }
+    case GL_SHORT: { int16_t v; memcpy(&v, p + 2 * c, 2); return norm ? (2.0f * v + 1) / 65535 : v; }
+    case GL_BYTE: return norm ? (2.0f * (int8_t)p[c] + 1) / 255 : (int8_t)p[c];
+    default: return 0;
+    }
+}
+
+/*
+ * OES_matrix_palette on the CPU: each vertex's eye position is the weighted sum
+ * of its units' palette matrices applied to it, and with lighting on its
+ * normal the weighted sum of their upper 3x3s' inverse transposes applied to
+ * it (the extension's second formulation). The host draws those under an
+ * identity modelview (pushed here, popped by gles_unbind_arrays), the
+ * projection as it is. The bound-array bits, or 0 to draw unskinned: the
+ * palette is off or an array is missing.
+ */
+static uint32_t gles_skin(CPUState *cpu, uint32_t first, uint32_t count)
+{
+    GLESArray *v = &gh.vertex, *n = &gh.normal, *mi = &gh.matrix_index, *wt = &gh.weight;
+    bool normals;
+    uint32_t vs, ms, ws, ns = 0;
+    const uint8_t *vp, *mp, *wp, *np = NULL;
+    float it[GLES_MAX_PALETTE][9];
+    GLint mode = GL_MODELVIEW;
+
+    if (!gh.palette_on || !mi->enabled || !wt->enabled) {
+        return 0;
+    }
+    normals = n->enabled && glIsEnabled(GL_LIGHTING);
+    vp = gles_array_bytes(cpu, v, first, count, &vs);
+    mp = gles_array_bytes(cpu, mi, first, count, &ms);
+    wp = gles_array_bytes(cpu, wt, first, count, &ws);
+    if (normals) {
+        np = gles_array_bytes(cpu, n, first, count, &ns);
+    }
+    if (!vp || !mp || !wp || (normals && !np) ||
+        !gles_scratch(&gh.skin, &gh.skin_size, (size_t)count * 7 * sizeof(float), "skin")) {
+        return 0;
+    }
+    for (unsigned m = 0; normals && m < GLES_MAX_PALETTE; m++) {
+        const float *M = gh.palette[m];       /* column-major: row r, column c at M[c * 4 + r] */
+        float a = M[0], b = M[4], c = M[8], d = M[1], e = M[5], f = M[9], g = M[2], h = M[6], i = M[10];
+        float cof[9] = { e * i - f * h, f * g - d * i, d * h - e * g,
+                         c * h - b * i, a * i - c * g, b * g - a * h,
+                         b * f - c * e, c * d - a * f, a * e - b * d };
+        float det = a * cof[0] + b * cof[1] + c * cof[2];
+        for (unsigned k = 0; k < 9; k++) {
+            it[m][k] = det ? cof[k] / det : 0;   /* the inverse transpose, row-major */
+        }
+    }
+    for (uint32_t k = 0; k < count; k++) {
+        const uint8_t *vr = vp + (size_t)vs * k, *mr = mp + (size_t)ms * k, *wr = wp + (size_t)ws * k;
+        float in[4] = { 0, 0, 0, 1 }, nin[3] = { 0 };
+        float *out = gh.skin + (size_t)k * 4, *nout = gh.skin + (size_t)count * 4 + (size_t)k * 3;
+
+        for (unsigned c = 0; c < v->size; c++) {
+            in[c] = gles_elem(vr, v->type, c, false);
+        }
+        for (unsigned c = 0; normals && c < 3; c++) {
+            nin[c] = gles_elem(np + (size_t)ns * k, n->type, c, true);
+        }
+        memset(out, 0, 4 * sizeof(float));
+        memset(nout, 0, 3 * sizeof(float));
+        for (unsigned u = 0; u < mi->size; u++) {
+            float w = u < wt->size ? gles_elem(wr, wt->type, u, false) : 0;
+            const float *M;
+
+            if (mr[u] >= GLES_MAX_PALETTE || !w) {
+                continue;
+            }
+            M = gh.palette[mr[u]];
+            for (unsigned r = 0; r < 4; r++) {
+                out[r] += w * (M[r] * in[0] + M[4 + r] * in[1] + M[8 + r] * in[2] + M[12 + r] * in[3]);
+            }
+            for (unsigned r = 0; normals && r < 3; r++) {
+                const float *T = it[mr[u]] + r * 3;
+                nout[r] += w * (T[0] * nin[0] + T[1] * nin[1] + T[2] * nin[2]);
+            }
+        }
+    }
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(4, GL_FLOAT, 0, gh.skin);
+    if (normals) {
+        glEnableClientState(GL_NORMAL_ARRAY);
+        glNormalPointer(GL_FLOAT, 0, gh.skin + (size_t)count * 4);
+    }
+    glGetIntegerv(GL_MATRIX_MODE, &mode);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glMatrixMode(mode);
+    return 1u | (normals ? 4u : 0) | 1u << GLES_SKIN_BIT;
+}
+
 static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
                                      uint32_t count)
 {
     GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
-    uint32_t bound = 0;
+    uint32_t bound = gles_skin(cpu, first, count);
     unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
+        if (bound & (1u << i)) {
+            continue;                           /* skinned */
+        }
         if (gles_bind_array(cpu, arrays[i], first, count)) {
             bound |= 1u << i;
         }
@@ -2241,6 +2411,11 @@ static unsigned gles_query_count(uint32_t pname)
         return 2;
     case GL_ACTIVE_TEXTURE:
     case GL_CLIENT_ACTIVE_TEXTURE:
+    case GL_MATRIX_PALETTE_OES: case GL_MAX_PALETTE_MATRICES_OES: case GL_MAX_VERTEX_UNITS_OES:
+    case GL_CURRENT_PALETTE_MATRIX_OES: case GL_MATRIX_INDEX_ARRAY_OES: case GL_MATRIX_INDEX_ARRAY_SIZE_OES:
+    case GL_MATRIX_INDEX_ARRAY_TYPE_OES: case GL_MATRIX_INDEX_ARRAY_STRIDE_OES:
+    case GL_MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES: case GL_WEIGHT_ARRAY_OES: case GL_WEIGHT_ARRAY_SIZE_OES:
+    case GL_WEIGHT_ARRAY_TYPE_OES: case GL_WEIGHT_ARRAY_STRIDE_OES: case GL_WEIGHT_ARRAY_BUFFER_BINDING_OES:
     case GL_ALPHA_TEST:
     case GL_ALPHA_TEST_FUNC:
     case GL_ALPHA_TEST_REF:
@@ -3000,6 +3175,13 @@ static void gles_unbind_arrays(uint32_t bound)
         }
     }
     glClientActiveTexture(GL_TEXTURE0 + gh.client_active_unit);
+    if (bound & (1u << GLES_SKIN_BIT)) {
+        GLint mode = GL_MODELVIEW;
+        glGetIntegerv(GL_MATRIX_MODE, &mode);
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(mode);
+    }
 }
 
 /*
@@ -4232,7 +4414,7 @@ static GLESBuffer *gles_buffer_bound(uint32_t target)
  */
 static void gles_buffer_forget(const GLESBuffer *b)
 {
-    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
+    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal, &gh.weight, &gh.matrix_index };
     unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
@@ -7050,10 +7232,55 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
 }
 
 static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                uint32_t argc, const uint32_t *a);
+
+/* Whether `slot` changes the current matrix, which in MATRIX_PALETTE_OES mode is the current palette matrix. */
+static bool gles_palette_op(uint32_t slot)
+{
+    static const uint32_t ops[] = {
+        GLES_SLOT_LOAD_IDENTITY, GLES_SLOT_LOAD_MATRIXF, GLES_SLOT_LOAD_MATRIXX, GLES_SLOT_MULT_MATRIXF,
+        GLES_SLOT_MULT_MATRIXX, GLES_SLOT_TRANSLATEF, GLES_SLOT_TRANSLATEX, GLES_SLOT_SCALEF, GLES_SLOT_SCALEX,
+        GLES_SLOT_ROTATEF, GLES_SLOT_ROTATEX, GLES_SLOT_ORTHOF, GLES_SLOT_ORTHOX, GLES_SLOT_FRUSTUMF,
+        GLES_SLOT_FRUSTUMX, GLES_SLOT_PUSH_MATRIX, GLES_SLOT_POP_MATRIX,
+    };
+    for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
+        if (ops[i] == slot) return true;
+    }
+    return false;
+}
+
+/* A gles_palette_op slot in MATRIX_PALETTE_OES mode: the call itself, run on the host's modelview loaded with the
+ * current palette matrix, which takes the result; the modelview and the host's matrix mode are put back. The
+ * palette has no stack (the extension: "Not required"), so a push overflows and a pop underflows it. */
+static int64_t gles_palette_call(CPUState *cpu, uint32_t slot, uint32_t ctx, uint32_t argc, const uint32_t *a)
+{
+    GLint mode = GL_MODELVIEW;
+    int64_t r;
+
+    if (slot == GLES_SLOT_PUSH_MATRIX || slot == GLES_SLOT_POP_MATRIX) {
+        return gles_reject(slot == GLES_SLOT_PUSH_MATRIX ? GL_STACK_OVERFLOW : GL_STACK_UNDERFLOW);
+    }
+    glGetIntegerv(GL_MATRIX_MODE, &mode);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadMatrixf(gh.palette[gh.palette_current]);
+    gh.palette_mode = false;
+    r = gles_host_call_1(cpu, slot, ctx, argc, a);
+    gh.palette_mode = true;
+    glGetFloatv(GL_MODELVIEW_MATRIX, gh.palette[gh.palette_current]);
+    glPopMatrix();
+    glMatrixMode(mode);
+    return r;
+}
+
+static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
                                 uint32_t argc, const uint32_t *a)
 {
     if (!gles_host_init()) {
         return -1;
+    }
+    if (gh.palette_mode && gles_palette_op(slot)) {
+        return gles_palette_call(cpu, slot, ctx, argc, a);
     }
 
     switch (slot) {
@@ -7189,6 +7416,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gh.clip_enabled |= 1u << (a[0]-0x3000); return 0;
         }
 #endif
+        if (a[0] == GL_MATRIX_PALETTE_OES && gh.api_version != 2) {
+            gh.palette_on = true;
+            return 0;
+        }
         glEnable(a[0]);
         return 0;
 
@@ -7198,6 +7429,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             gh.clip_enabled &= ~(1u << (a[0]-0x3000)); return 0;
         }
 #endif
+        if (a[0] == GL_MATRIX_PALETTE_OES && gh.api_version != 2) {
+            gh.palette_on = false;
+            return 0;
+        }
         glDisable(a[0]);
         return 0;
 
@@ -7213,7 +7448,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case GL_COLOR_ARRAY:         gh.color.enabled = on;    break;
         case GL_NORMAL_ARRAY:        gh.normal.enabled = on;   break;
         case GL_POINT_SIZE_ARRAY_OES: gh.pointsize.enabled = on; break;
-        default:                     /* OES_matrix_palette's two arrays, or garbage */
+        case GL_WEIGHT_ARRAY_OES:    gh.weight.enabled = on;   break;
+        case GL_MATRIX_INDEX_ARRAY_OES: gh.matrix_index.enabled = on; break;
+        default:
             if (on) gles_refuse("clientstate:0x%x", a[0]);
             break;
         }
@@ -7241,6 +7478,30 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_NORMAL_POINTER:              /* type,stride,ptr */
         return gles_set_pointer(&gh.normal, 3, a[0], a[1], a[2]);  /* always 3, per GL */
+
+    /* OES_matrix_palette: up to GLES_MAX_VERTEX_UNITS unsigned byte indices, weights in float or fixed. */
+    case GLES_ID_glMatrixIndexPointerOES:       /* size,type,stride,ptr */
+    case GLES_ID_glWeightPointerOES: {
+        bool index = slot == GLES_ID_glMatrixIndexPointerOES;
+        if (a[0] > GLES_MAX_VERTEX_UNITS) {
+            return gles_reject(GL_INVALID_VALUE);
+        }
+        if (index ? a[1] != GL_UNSIGNED_BYTE : a[1] != GL_FLOAT && a[1] != GLES_FIXED) {
+            return gles_reject(GL_INVALID_ENUM);
+        }
+        return gles_set_pointer(index ? &gh.matrix_index : &gh.weight, a[0], a[1], a[2], a[3]);
+    }
+
+    case GLES_ID_glCurrentPaletteMatrixOES:     /* index */
+        if (a[0] >= GLES_MAX_PALETTE) {
+            return gles_reject(GL_INVALID_VALUE);
+        }
+        gh.palette_current = a[0];
+        return 0;
+
+    case GLES_ID_glLoadPaletteFromModelViewMatrixOES:
+        glGetFloatv(GL_MODELVIEW_MATRIX, gh.palette[gh.palette_current]);
+        return 0;
 
     case GLES_SLOT_DRAW_ARRAYS: {               /* mode, first, count */
         uint32_t mode = a[0], first = a[1], count = a[2];
@@ -8080,6 +8341,22 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
             break;
 #endif
         case GL_VERTEX_ARRAY: v.i[0] = gh.vertex.enabled; break;
+        case GL_MATRIX_PALETTE_OES: v.i[0] = gh.palette_on; break;
+        case GL_CURRENT_PALETTE_MATRIX_OES: v.i[0] = gh.palette_current; break;
+        case GL_MAX_PALETTE_MATRICES_OES: v.i[0] = GLES_MAX_PALETTE; break;
+        case GL_MAX_VERTEX_UNITS_OES: v.i[0] = GLES_MAX_VERTEX_UNITS; break;
+        case GL_MATRIX_INDEX_ARRAY_OES: v.i[0] = gh.matrix_index.enabled; break;
+        case GL_MATRIX_INDEX_ARRAY_SIZE_OES: v.i[0] = gh.matrix_index.size; break;
+        case GL_MATRIX_INDEX_ARRAY_TYPE_OES:
+            v.i[0] = gh.matrix_index.type ? gh.matrix_index.type : GL_UNSIGNED_BYTE; break;
+        case GL_MATRIX_INDEX_ARRAY_STRIDE_OES: v.i[0] = gh.matrix_index.stride; break;
+        case GL_MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES:
+            v.i[0] = gh.matrix_index.vbo ? gh.matrix_index.vbo->name : 0; break;
+        case GL_WEIGHT_ARRAY_OES: v.i[0] = gh.weight.enabled; break;
+        case GL_WEIGHT_ARRAY_SIZE_OES: v.i[0] = gh.weight.size; break;
+        case GL_WEIGHT_ARRAY_TYPE_OES: v.i[0] = gh.weight.type ? gh.weight.type : GL_FLOAT; break;
+        case GL_WEIGHT_ARRAY_STRIDE_OES: v.i[0] = gh.weight.stride; break;
+        case GL_WEIGHT_ARRAY_BUFFER_BINDING_OES: v.i[0] = gh.weight.vbo ? gh.weight.vbo->name : 0; break;
         case GL_COLOR_ARRAY: v.i[0] = gh.color.enabled; break;
         case GL_NORMAL_ARRAY: v.i[0] = gh.normal.enabled; break;
         case GL_TEXTURE_COORD_ARRAY:
@@ -8144,6 +8421,12 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case 0x8DFA: v.i[0] = 1; break;             /* SHADER_COMPILER */
         case 0x8DF9: v.i[0] = 0; break;             /* NUM_SHADER_BINARY_FORMATS */
         case 0x8D57: v.i[0] = 0; break;             /* MAX_SAMPLES_APPLE: no multisampling here */
+        case GL_MATRIX_MODE:
+            if (gh.palette_mode) {
+                v.i[0] = GL_MATRIX_PALETTE_OES;
+                break;
+            }
+            /* fall through */
         default:
             emulated = false;
             if (boolean) {
@@ -8178,6 +8461,8 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case GL_NORMAL_ARRAY_POINTER: ptr = gh.normal.ptr; break;
         case GL_TEXTURE_COORD_ARRAY_POINTER:
             ptr = gh.texcoord[gh.client_active_unit].ptr; break;
+        case GL_MATRIX_INDEX_ARRAY_POINTER_OES: ptr = gh.matrix_index.ptr; break;
+        case GL_WEIGHT_ARRAY_POINTER_OES: ptr = gh.weight.ptr; break;
         default:
             gles_refuse("getpointer:0x%x", a[0]);
             return gles_reject(GL_INVALID_ENUM);
@@ -8190,7 +8475,14 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
 
     case GLES_SLOT_MATRIX_MODE:
         gles_trace_matrix_op("glMatrixMode", a[0]);
+        if (a[0] == GL_MATRIX_PALETTE_OES && gh.api_version != 2) {
+            gh.palette_mode = true;             /* the host keeps the mode before it */
+            return 0;
+        }
         glMatrixMode(a[0]);
+        if (a[0] - GL_MODELVIEW <= GL_TEXTURE - GL_MODELVIEW) {
+            gh.palette_mode = false;
+        }
         return 0;
 
     case GLES_SLOT_LOAD_IDENTITY:
@@ -8403,6 +8695,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (gh.api_version == 2 && a[0] >= 0x3000 && a[0] < 0x3008)
             return !!(gh.clip_enabled & (1u << (a[0]-0x3000)));
 #endif
+        if (a[0] == GL_MATRIX_PALETTE_OES && gh.api_version != 2) {
+            return gh.palette_on;
+        }
         return glIsEnabled(a[0]);
     case GLES_SLOT_IS_TEXTURE:
         return gles_guest_name_ok(a[0]) && glIsTexture(a[0]);
@@ -9337,7 +9632,8 @@ static void gles_group_unref(GLESGroup *group)
 static void gles_context_free(GLESHost *state)
 {
     if (state->vaos) { g_hash_table_destroy(state->vaos); }
-    GLESArray *arrays[] = { &state->vertex, &state->color, &state->normal, &state->pointsize };
+    GLESArray *arrays[] = { &state->vertex, &state->color, &state->normal, &state->pointsize,
+                            &state->weight, &state->matrix_index };
     for (unsigned i = 0; i < ARRAY_SIZE(arrays); i++) {
         gles_buffer_destroy(arrays[i]->vbo);
         g_free(arrays[i]->buf); g_free(arrays[i]->fbuf);
@@ -9353,7 +9649,7 @@ static void gles_context_free(GLESHost *state)
     gles_buffer_destroy(state->array_buffer);
     gles_buffer_destroy(state->element_buffer);
     g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);
-    g_free(state->decbuf); g_free(state->readback);
+    g_free(state->decbuf); g_free(state->readback); g_free(state->skin);
     if (state->fbo_drawable) g_hash_table_destroy(state->fbo_drawable);
     if (state->glsl) g_hash_table_destroy(state->glsl);
     if (state->uloc) g_hash_table_destroy(state->uloc);

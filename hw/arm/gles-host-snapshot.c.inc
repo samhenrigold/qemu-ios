@@ -23,7 +23,7 @@
  */
 
 #define SNAP_MAGIC   0x534c4731u     /* "1GLS" */
-#define SNAP_VERSION 7                /* 7: surfaces' page lists; 3 to 6 load without them */
+#define SNAP_VERSION 8                /* 8: OES_matrix_palette; 7: surfaces' page lists; 3 to 7 load without them */
 #define SNAP_SCAN_GAP 256            /* names probed past the last live one */
 
 static uint32_t gles_group_handle(GLESGroup *group);
@@ -996,6 +996,12 @@ static void snap_put_host(SnapW *w, GLESHost *h)
     }
     sw32(w, h->program);
     swbytes(w, &h->default_pvrtc, sizeof(h->default_pvrtc));
+    snap_put_array(w, &h->weight);
+    snap_put_array(w, &h->matrix_index);
+    sw32(w, h->palette_on);
+    sw32(w, h->palette_mode);
+    sw32(w, h->palette_current);
+    swbytes(w, h->palette, sizeof(h->palette));
 }
 
 static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
@@ -1054,6 +1060,25 @@ static void snap_get_host(SnapR *r, GLESHost *h, uint32_t version)
         size_t expected = version >= 5 ? sizeof(h->default_pvrtc) : offsetof(GLESPVRTC, immutable_levels);
         if (p && len == expected) memcpy(&h->default_pvrtc, p, len);
         else r->bad = true;
+    }
+    gles_palette_reset(h);                  /* before 8: as a new context has it */
+    if (version >= 8) {
+        const uint8_t *p;
+        snap_get_array(r, &h->weight, h->buffers, GL_WEIGHT_ARRAY_OES);
+        snap_get_array(r, &h->matrix_index, h->buffers, GL_MATRIX_INDEX_ARRAY_OES);
+        h->palette_on = sr32(r);
+        h->palette_mode = sr32(r);
+        h->palette_current = sr32(r);
+        p = srbytes(r, &len);
+        if (p && len == sizeof(h->palette)) memcpy(h->palette, p, len);
+        else r->bad = true;
+        /* as gles_set_pointer and glCurrentPaletteMatrixOES leave them */
+        if (h->weight.size > GLES_MAX_VERTEX_UNITS || h->matrix_index.size > GLES_MAX_VERTEX_UNITS ||
+            (h->weight.type && h->weight.type != GL_FLOAT && h->weight.type != GLES_FIXED) ||
+            (h->matrix_index.type && h->matrix_index.type != GL_UNSIGNED_BYTE) ||
+            h->palette_current >= GLES_MAX_PALETTE) {
+            r->bad = true;
+        }
     }
 }
 
