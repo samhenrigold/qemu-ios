@@ -149,6 +149,12 @@ enum {
      * should not trap to EL2 when HCR_EL2.NV is set.
      */
     ARM_CP_NV_NO_TRAP            = 1 << 22,
+    /*
+     * Flag: with ARM_CP_IO, the read function only reads the virtual clock
+     * and this CPU's own state (the generic timer's counters), so it runs
+     * without the BQL.
+     */
+    ARM_CP_IO_READ_UNLOCKED      = 1 << 23,
 };
 
 /*
