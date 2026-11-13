@@ -54,7 +54,8 @@ static void glFramebufferRenderbufferEXT(GLenum t, GLenum p, GLenum rt, GLuint n
 
 #define TRACE_PRINTF(...) ((void)0)
 static void gles_record_drawable_attachment(const uint32_t *a) { (void)a; }
-static bool gles_a6;   /* the attach path is the same on every board; only the native record is the A6's */
+static void gles_drawable_depth_stencil(void) {}
+static void glBindFramebufferEXT(GLenum t, GLuint name) { (void)t; (void)name; }
 #include "slice.h"
 static int64_t gles_sync_surface(CPUState *cpu) { return gles_sync_surface_1(cpu); }
 

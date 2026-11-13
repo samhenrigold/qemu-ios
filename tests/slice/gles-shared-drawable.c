@@ -3,7 +3,7 @@
  * SLICE:gles-refusals hw/arm/gles-host.c range /* ---------------------------------------------------------------- refusals | /* Only expose formats our decoder accepts
  * SLICE hw/arm/gles-host.c range /* ---------------------------------------------------------- GPU memory | /*\n * Profiling and strictness
  * SLICE hw/arm/gles-host.c range #define GLES_PRIVATE_NAME | static bool gles_is_drawable(
- * SLICE hw/arm/gles-host.c fn gles_reject gles_texture_object gles_is_drawable gles_host_fbo gles_set_drawable gles_texture_begin gles_drawable_storage gles_refresh_drawable_binding gles_layer_storage gles_record_drawable_attachment gles_resolve_drawable
+ * SLICE hw/arm/gles-host.c fn gles_reject gles_texture_object gles_is_drawable gles_host_fbo gles_attachment gles_drawable_depth_stencil gles_set_drawable gles_texture_begin gles_drawable_storage gles_refresh_drawable_binding gles_layer_storage gles_record_drawable_attachment gles_resolve_drawable
  * CFLAGS -I$ROOT/include -Wno-pointer-to-int-cast -Wno-pointer-bool-conversion -framework OpenGL -framework VideoToolbox -framework CoreVideo -framework CoreMedia -framework CoreFoundation
  * PKG glib-2.0
  */
@@ -43,11 +43,11 @@ int main(void)
     glGenRenderbuffersEXT(1, &color);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, color);
     a.bound_renderbuffer = color;
-    assert(gles_layer_storage(640, 1136) == 0);
+    assert(gles_layer_storage(640, 1136, false) == 0);
     assert(a.drawable_renderbuffer == color);
     CGLSetCurrentContext(cb);
     gh_current = &b;
-    assert(gles_drawable_storage(320, 480) == 0);
+    assert(gles_drawable_storage(320, 480, false) == 0);
     GLuint fb;
     glGenFramebuffersEXT(1, &fb);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fb);

@@ -31,6 +31,7 @@
 #define gles2x_once fe_once
 #define gles2x_key_init fe_key_init
 static const struct {unsigned ifmt;} gles2x_configs[3]={{0x8058},{0x8058},{0x8058}};
+#define fe_configs gles2x_configs
   #define EGL_BAD_DISPLAY 0x3008
   #define EGL_BAD_CONTEXT 0x3006
   #define EGL_BAD_SURFACE 0x300d
@@ -51,9 +52,9 @@ static const struct {unsigned ifmt;} gles2x_configs[3]={{0x8058},{0x8058},{0x805
    if(!strcmp(name,"glDeleteFramebuffers")||!strcmp(name,"glDeleteTextures")) releases++; }
   #define GL(gc,name,...) mock_gl(gc,#name)
   static int GLESDestroyGC(void *g){GuestGC *gc=g;assert(gc->host);deletes++;free(gc);return 0;}
-  static int fe_bind_layer(GuestGC *gc,void *layer){assert(gc->host);(void)layer;binds++;return 1;}
+  static int fe_bind_layer(GuestGC *gc,void *layer,unsigned format){assert(gc->host);(void)layer;(void)format;binds++;return 1;}
   static int GLESBindView(GuestGC *gc,void *layer,void *format,void *unused)
-{(void)format;(void)unused;return fe_bind_layer(gc,layer);}
+{(void)unused;return fe_bind_layer(gc,layer,(unsigned)(unsigned long)format);}
 static int GLESBindCoreSurface(GuestGC *gc,unsigned target,void *s){assert(gc->host);(void)target;(void)s;return 1;}
   static void refused(const char*a,const char*b,unsigned c){(void)a;(void)b;(void)c;abort();}
   static void w(const char*s){(void)s;}

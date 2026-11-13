@@ -593,7 +593,7 @@ void *eglCreatePixmapSurface(void *dpy, void *config, void *pixmap, const EGLint
     return s;
 }
 
-static int fe_bind_layer(GuestGC *gc, void *drawable);
+static int fe_bind_layer(GuestGC *gc, void *drawable, unsigned format);
 
 /* A native window is the closure EAGL binds (fe_bind_layer): 2.x QuartzCore's -nativeWindow shape. */
 void *eglCreateWindowSurface(void *dpy, void *config, void *win, const EGLint *attribs);
@@ -620,7 +620,7 @@ static void egl_release_names(egl_surf_t *s)
         GL(s->gc, glDeleteFramebuffers, 1, (unsigned)(unsigned long)&s->fbo);
         GL(s->gc, glDeleteTextures, 1, (unsigned)(unsigned long)&s->tex);
     }
-    if (s->kind == EGL_WINDOW_BIT && s->gc) fe_bind_layer(s->gc, 0);
+    if (s->kind == EGL_WINDOW_BIT && s->gc) fe_bind_layer(s->gc, 0, 0);
     if (s->owner) {
         egl_surf_t **link = &s->owner->surfaces;
         while (*link && *link != s) link = &(*link)->owner_next;
@@ -664,7 +664,7 @@ static int egl_attach(egl_ctx_t *owner, egl_surf_t *s)
     if (s->gc && s->gc != gc) egl_release_names(s);
     egl_surface_owner(owner, s);
     if (s->kind == EGL_WINDOW_BIT) {
-        if (!s->gc && !fe_bind_layer(gc, s->native)) {
+        if (!s->gc && !fe_bind_layer(gc, s->native, fe_configs[s->config].ifmt)) {
             refused("egl:", "window", ~0u);
             return 0;
         }
@@ -857,8 +857,10 @@ static int fe_drawable_fits(GuestGC *gc, unsigned w, unsigned h)
     return 0;
 }
 
-/* NULL releases the layer (unbinds it: CA refuses a second bind while the layer still belongs to the first). */
-static int fe_bind_layer(GuestGC *gc, void *drawable)
+/* NULL releases the layer (unbinds it: CA refuses a second bind while the layer still belongs to the first).
+ * `format`: the GL color format the layer asked for (GL_RGB565_OES, GL_RGBA8_OES...), which the host's drawable
+ * takes, so a 565 layer's alpha reads 1.0 as on the device, though its surface stays 32-bit. */
+static int fe_bind_layer(GuestGC *gc, void *drawable, unsigned format)
 {
     void **vt = drawable;
     ca_view_t *v = ca_view_for_gc(gc, drawable != 0);
@@ -907,7 +909,7 @@ static int fe_bind_layer(GuestGC *gc, void *drawable)
     }
     wd_ = v->width; ht = v->height;
     if (flags & 4) { unsigned t = wd_; wd_ = ht; ht = t; }
-    if (!fe_drawable_fits(gc, wd_, ht) || qc(GLES_OP_DRAWABLE_STORAGE, gc, 2, A(wd_, ht)) < 0) {
+    if (!fe_drawable_fits(gc, wd_, ht) || qc(GLES_OP_DRAWABLE_STORAGE, gc, 3, A(wd_, ht, format)) < 0) {
         ca_detach_view(v);
         return 0;
     }
@@ -967,7 +969,8 @@ static int fe_attach_renderbuffer(GuestGC *gc, void *surf)
     fe_own(v, surf);
     v->need_buffer = 0;
     return fe_drawable_fits(gc, v->width, v->height) &&
-           qc(GLES_OP_DRAWABLE_STORAGE, gc, 2, A(v->width, v->height)) >= 0;
+           qc(GLES_OP_DRAWABLE_STORAGE, gc, 3,
+              A(v->width, v->height, v->format == 0x4c353635 ? 0x8D62 : 0x8058)) >= 0;   /* 'L565': RGB565 */
 }
 
 /* 5.x makes some layer IOSurfaces with no pixel format (IOSurfaceGetPixelFormat 0: the home screen's icon labels)
@@ -1731,14 +1734,16 @@ __attribute__((visibility("default")))
 }
 - (NSString *)debugLabel { return _private->debug_label; }
 
-/* The drawable's -nativeWindow (and its color format, which the host does not need: see fe_bind_layer); a nil
- * drawable releases the storage. */
+/* The drawable's -nativeWindow and its color format (kEAGLColorFormatRGBA8 when it names none, as EAGL defaults);
+ * a nil drawable releases the storage. */
 - (BOOL)renderbufferStorage:(NSUInteger)target fromDrawable:(id)drawable
 {
     void *win = 0;
+    unsigned gl_format = 0x8058;                                        /* GL_RGBA8_OES */
     (void)target;
     if (drawable && [drawable respondsToSelector:@selector(drawableProperties)]) {
         id format = [[drawable drawableProperties] objectForKey:kEAGLDrawablePropertyColorFormat];
+        if ([format isEqual:kEAGLColorFormatRGB565]) gl_format = 0x8D62;    /* GL_RGB565_OES */
         if ([format isEqual:kEAGLColorFormatSRGB_XR10] || [format isEqual:kEAGLColorFormatSRGB_XR10_A8_2P] ||
             [format isEqual:kEAGLColorFormatSRGBA_XR10_64BPP] || [format isEqual:kEAGLColorFormatRGBA_XR10_64BPP]) {
             refused("eagl:", "XR10 drawable", ~0u);
@@ -1749,7 +1754,7 @@ __attribute__((visibility("default")))
         refused("eagl:", "drawable", ~0u);
         return 0;
     }
-    return fe_bind_layer(_private->gc, win) != 0;
+    return fe_bind_layer(_private->gc, win, gl_format) != 0;
 }
 
 - (BOOL)presentRenderbuffer:(NSUInteger)target

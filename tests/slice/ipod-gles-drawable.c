@@ -17,7 +17,7 @@
 typedef struct { unsigned host;  void *group; } GuestGC;
 static unsigned deleted;
 static long long qc(unsigned op,void *gc,unsigned argc,const unsigned *args)
-{ if(op==GLES_OP_DRAWABLE_STORAGE) { assert(argc==2 && args[0] && args[1]);return 0; }
+{ if(op==GLES_OP_DRAWABLE_STORAGE) { assert(argc==3 && args[0] && args[1] && args[2]==0x8058);return 0; }  /* the app's format */
   assert(op==GLES_OP_DELETE_CONTEXT);deleted++;return 0; }
 static void iosurface_init(void) {}
 static void w(const char *s) {}

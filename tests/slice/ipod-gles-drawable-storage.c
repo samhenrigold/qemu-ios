@@ -47,7 +47,7 @@ static struct {
  size_t readback_size;
  GHashTable *rb_sized;
  GLenum error;
- bool iosurface,fb_dirty,depth_cleared_this_frame,drawable_announced;
+ bool iosurface,fb_dirty,depth_cleared_this_frame,drawable_announced,drawable_rgb;
  uint64_t presents;
 } gh;
 #define RAM_BASE 0x10000000
@@ -64,6 +64,7 @@ static int64_t gles_reject(GLenum error) {if(!gh.error)gh.error=error;return -1;
 static bool gles_refuse(const char *fmt, ...) {return true;}
 static const char *gles_fourcc(uint32_t f, char out[12]) {snprintf(out,12,"%08x",f);return out;}
 static GLuint gles_host_fbo(uint32_t name) {return name?name:gh.fbo;}
+static void gles_drawable_depth_stencil(void) {}   /* ipod-gles-drawable-format.c */
 static int gles_swizzle;
 static const uint8_t *gles_frame_lock(size_t *stride) {return NULL;}
 static void gles_platform_frame_unlock(void) {}
@@ -136,7 +137,7 @@ int main(void)
  unsigned sizes[][2]={{320,480},{480,320},{321,201},{320,480}};
  for(unsigned n=0;n<ARRAY_SIZE(sizes);n++) {
   unsigned width=sizes[n][0],height=sizes[n][1];
-  assert(!gles_drawable_storage(width,height));
+  assert(!gles_drawable_storage(width,height,false));
   GLint value,viewport[4];
   glGetIntegerv(GL_TEXTURE_BINDING_2D,&value);assert(value==texture);
   glGetIntegerv(GL_RENDERBUFFER_BINDING_EXT,&value);assert(value==renderbuffer);
@@ -152,9 +153,9 @@ int main(void)
   check_pixels(width,height,GLES_SURFACE_RGB565);
   glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&value);assert(value==offscreen);
   GLuint fbo=gh.fbo;
-  assert(!gles_drawable_storage(width,height) && gh.fbo==fbo);
-  assert(gles_drawable_storage(0,height)<0 && gh.fbo==fbo);
-  assert(gles_drawable_storage(UINT32_MAX,height)<0 && gh.fbo==fbo);
+  assert(!gles_drawable_storage(width,height,false) && gh.fbo==fbo);
+  assert(gles_drawable_storage(0,height,false)<0 && gh.fbo==fbo);
+  assert(gles_drawable_storage(UINT32_MAX,height,false)<0 && gh.fbo==fbo);
   assert(gh.error==GL_INVALID_VALUE);gh.error=0;
  }
  /* A shim that never announces storage keeps the legacy panel-sized crop. */
@@ -163,18 +164,18 @@ int main(void)
  gh.drawable_announced=true;
  /* A resize while the actual drawable is bound rebinds its replacement. */
  glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,gh.fbo);gh.bound_framebuffer=0;
- assert(!gles_drawable_storage(480,320));
+ assert(!gles_drawable_storage(480,320,false));
  GLint value;glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&value);assert(value==gh.fbo);
  /* Host-private objects stay out of the guest's name range: an app that
     binds its first texture as 1 must not get the render target (issue 12). */
- assert(gh.tex>=GLES_PRIVATE_NAME && gh.depth>=GLES_PRIVATE_NAME && gh.fbo>=GLES_PRIVATE_NAME);
+ assert(gh.tex>=GLES_PRIVATE_NAME && !gh.depth && gh.fbo>=GLES_PRIVATE_NAME);
  {GLuint next;glGenTextures(1,&next);assert(next<GLES_PRIVATE_NAME);glDeleteTextures(1,&next);}
  assert(glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT)==GL_FRAMEBUFFER_COMPLETE_EXT);
  assert(gles_present_to_surface(NULL,RAM_BASE,320*4,320,480,GLES_SURFACE_BGRA32)<0);
  /* A drawable larger than the readback buffer it has (a restore used to give every context a panel-sized one):
     the present refuses instead of reading 1024x1024 pixels into it. Here the buffer ends at an inaccessible page. */
  {
-  assert(!gles_drawable_storage(1024,1024));
+  assert(!gles_drawable_storage(1024,1024,false));
   size_t panel=(size_t)GLES_FB_WIDTH*GLES_FB_HEIGHT*4,page=getpagesize(),span=(panel+page-1)/page*page;
   uint8_t *map=mmap(NULL,span+page,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
   assert(map!=MAP_FAILED && !mprotect(map+span,page,PROT_NONE));
@@ -183,19 +184,19 @@ int main(void)
   assert(gles_present_to_surface(NULL,RAM_BASE,1024*4,1024,1024,GLES_SURFACE_BGRA32)<0);
   gh.readback=saved;gh.readback_size=saved_size;munmap(map,span+page);
  }
- /* The drawable is charged against GLES_MAX_GPU_BYTES (color, depth-stencil and readback): one byte past the cap is
+ /* The drawable is charged against GLES_MAX_GPU_BYTES (color and readback): one byte past the cap is
     GL_OUT_OF_MEMORY with the old drawable kept, at the cap it is made, and a smaller one gives the difference back. */
  {
-  uint64_t big=(uint64_t)2048*2048*12;
-  assert(gles_held_bytes==(uint64_t)1024*1024*12);
+  uint64_t big=(uint64_t)2048*2048*8;
+  assert(gles_held_bytes==(uint64_t)1024*1024*8);
   gles_buffer_bytes=GLES_MAX_GPU_BYTES-big+1;
   GLuint fbo=gh.fbo;
-  assert(gles_drawable_storage(2048,2048)<0 && gh.error==GL_OUT_OF_MEMORY);
-  assert(gh.fbo==fbo && gh.drawable_width==1024 && gles_held_bytes==(uint64_t)1024*1024*12);
+  assert(gles_drawable_storage(2048,2048,false)<0 && gh.error==GL_OUT_OF_MEMORY);
+  assert(gh.fbo==fbo && gh.drawable_width==1024 && gles_held_bytes==(uint64_t)1024*1024*8);
   gh.error=0;gles_buffer_bytes--;
-  assert(!gles_drawable_storage(2048,2048) && gh.drawable_width==2048 && gles_held_bytes==big);
+  assert(!gles_drawable_storage(2048,2048,false) && gh.drawable_width==2048 && gles_held_bytes==big);
   gles_buffer_bytes=0;
-  assert(!gles_drawable_storage(320,480) && gles_held_bytes==(uint64_t)320*480*12);
+  assert(!gles_drawable_storage(320,480,false) && gles_held_bytes==(uint64_t)320*480*8);
  }
  glDeleteTextures(1,&gh.tex);glDeleteRenderbuffersEXT(1,&gh.depth);glDeleteFramebuffersEXT(1,&gh.fbo);
  glDeleteTextures(1,&texture);glDeleteRenderbuffersEXT(1,&renderbuffer);glDeleteFramebuffersEXT(1,&offscreen);

@@ -490,6 +490,10 @@ typedef struct {
     GLuint fetch_position_buffer;     /* private transform-feedback scratch */
     size_t fetch_position_bytes;
     uint32_t drawable_width, drawable_height;
+    /* The drawable's color has no alpha: the layer asked for kEAGLColorFormatRGB565 (or its EGL config is 5,6,5,0),
+     * so GL_DST_ALPHA reads 1.0 and a read gives alpha 255, as on the device. Not saved: a restored drawable texture
+     * comes back RGBA, and a later bind of the layer gives it its format again. */
+    bool drawable_rgb;
     /* Set once the guest shim reports its CA layer size. Shims that predate
      * GLES_OP_DRAWABLE_STORAGE keep the legacy panel-sized crop. */
     bool drawable_announced;
@@ -886,10 +890,12 @@ static void gles_charge_forget_textures(const uint32_t *ids, uint32_t n)
 }
 
 /* A context's drawable: its color and depth-stencil storage and its readback. */
+/* The drawable's color and its readback buffer, 4 bytes a pixel each: its depth and stencil are the guest's own
+ * renderbuffers (gles_drawable_depth_stencil), charged as theirs. */
 static bool gles_charge_drawable(uint32_t width, uint32_t height, uint64_t *old)
 {
     return gles_charge(gles_charge_table(true), gles_charge_key(GLES_CHARGE_DRAWABLE, 0, 0, 0),
-                       (uint64_t)width * height * 12, old);
+                       (uint64_t)width * height * 8, old);
 }
 
 /* The last gles_charge_texture, which gles_texture_end takes back if the host refuses the upload. */
@@ -1197,6 +1203,8 @@ static GLuint gles_host_fbo(uint32_t name)
  * the live binding has to follow it -- otherwise the calls between here and the
  * next glBindFramebuffer land on the wrong target.
  */
+static void gles_drawable_depth_stencil(void);
+
 static void gles_set_drawable(uint32_t name, uint32_t renderbuffer)
 {
     if (!name) {
@@ -1211,6 +1219,7 @@ static void gles_set_drawable(uint32_t name, uint32_t renderbuffer)
     }
     if (was_drawable != !!renderbuffer && gh.bound_framebuffer == name) {
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(name));
+        gles_drawable_depth_stencil();
     }
 }
 
@@ -1309,17 +1318,8 @@ static bool gles_host_init(void)
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                               GL_TEXTURE_2D, gh.tex, 0);
 
-    /* Depth AND stencil, packed: OES_packed_depth_stencil and OES_stencil8 are on
-     * every one of these devices, and an app that attaches a stencil renderbuffer
-     * to its drawable framebuffer (which resolves to this one) gets it here. */
-    gh.depth = gles_private_name(glIsRenderbufferEXT);
-    glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, gh.depth);
-    glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT,
-                             GLES_FB_WIDTH, GLES_FB_HEIGHT);
-    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
-                                 GL_RENDERBUFFER_EXT, gh.depth);
-    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT,
-                                 GL_RENDERBUFFER_EXT, gh.depth);
+    /* No depth or stencil of its own: the drawable takes what the guest attaches
+     * to its framebuffer (gles_drawable_depth_stencil). */
 
     /*
      * An IOSurface attachment that the driver accepts and then cannot render to
@@ -4737,10 +4737,73 @@ static int64_t gles_tex_storage_2d(const uint32_t *a)
     return 0;
 }
 
-static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
+/* The bound framebuffer's attachment at `point`: {object type, name, texture level}, all 0 for none. */
+static void gles_attachment(GLenum point, GLint out[3])
+{
+    out[0] = out[1] = out[2] = 0;
+    glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT, point, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT,
+                                             &out[0]);
+    if (out[0] == GL_TEXTURE || out[0] == GL_RENDERBUFFER_EXT) {
+        glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT, point,
+                                                 GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &out[1]);
+    } else {
+        out[0] = 0;
+    }
+    if (out[0] == GL_TEXTURE) {
+        glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT, point,
+                                                 0x8CD2 /* FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL */, &out[2]);
+    }
+}
+
+/*
+ * The drawable's depth and stencil are the ones the guest attached to the framebuffer it has bound, as on the
+ * device, where a framebuffer with no depth attachment passes every depth test and one with no stencil attachment
+ * every stencil test: gh.fbo takes the named framebuffer's own DEPTH and STENCIL attachments (which
+ * GLES_SLOT_FB_RENDERBUFFER and GLES_SLOT_FB_TEXTURE_2D record there), or none, framebuffer 0 (an EGL surface, whose
+ * configs have neither) none. It used to keep a private D24S8 whatever the app attached, so a 2D engine that left
+ * GL_DEPTH_TEST on with no depth buffer lost every sprite drawn at the depth of the one before, and a stencil test
+ * ran against a buffer the app never made. Called with a drawable bound, which it leaves bound (gh.fbo).
+ */
+static void gles_drawable_depth_stencil(void)
+{
+    static const GLenum points[2] = { GL_DEPTH_ATTACHMENT_EXT, GL_STENCIL_ATTACHMENT_EXT };
+    GLint want[2][3] = { { 0 } }, have[2][3];
+    uint32_t name = gh.bound_framebuffer;
+
+    if (!gh.fbo || !gles_is_drawable(name)) {
+        return;
+    }
+    if (name) {
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, name);
+        for (unsigned k = 0; k < 2; k++) {
+            gles_attachment(points[k], want[k]);
+            /* one the app deleted since: GL detached it only where it was bound */
+            if ((want[k][0] == GL_TEXTURE && !glIsTexture(want[k][1])) ||
+                (want[k][0] == GL_RENDERBUFFER_EXT && !glIsRenderbufferEXT(want[k][1]))) {
+                want[k][0] = want[k][1] = want[k][2] = 0;
+            }
+        }
+    }
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
+    for (unsigned k = 0; k < 2; k++) {
+        gles_attachment(points[k], have[k]);
+        if (!memcmp(want[k], have[k], sizeof(have[k]))) {
+            continue;
+        }
+        if (want[k][0] == GL_TEXTURE) {
+            glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, points[k], GL_TEXTURE_2D, want[k][1], want[k][2]);
+        } else {
+            glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, points[k], GL_RENDERBUFFER_EXT, want[k][1]);
+        }
+        gh.fb_dirty = true;
+    }
+}
+
+/* The drawable's storage: a w x h color texture, RGB where the layer has no alpha (`rgb`), else RGBA. */
+static int64_t gles_drawable_storage(uint32_t width, uint32_t height, bool rgb)
 {
     GLint texture, renderbuffer, framebuffer;
-    GLuint color = 0, depth = 0, fbo = 0;
+    GLuint color = 0, fbo = 0;
     GLenum error, status;
     uint8_t *readback;
     uint64_t charged;
@@ -4750,7 +4813,7 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
         return gles_reject(GL_INVALID_VALUE);
     }
     gh.drawable_announced = true;
-    if (width == gh.drawable_width && height == gh.drawable_height) return 0;
+    if (width == gh.drawable_width && height == gh.drawable_height && rgb == gh.drawable_rgb) return 0;
     if (!gles_charge_drawable(width, height, &charged)) {
         return gles_reject(GL_OUT_OF_MEMORY);
     }
@@ -4767,21 +4830,14 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
     color = gles_private_name(glIsTexture);
     glBindTexture(GL_TEXTURE_2D, color);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, rgb ? GL_RGB : GL_RGBA, width, height,
+                 0, rgb ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    depth = gles_private_name(glIsRenderbufferEXT);
-    glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, depth);
-    glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT, width, height);
     fbo = gles_private_name(glIsFramebufferEXT);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fbo);
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                               GL_TEXTURE_2D, color, 0);
-    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
-                                 GL_RENDERBUFFER_EXT, depth);
-    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT,
-                                 GL_RENDERBUFFER_EXT, depth);
     status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
     error = glGetError();
     if (error == GL_NO_ERROR && status != GL_FRAMEBUFFER_COMPLETE_EXT)
@@ -4789,13 +4845,16 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     if (error != GL_NO_ERROR) gles_refuse("drawable:storage:0x%x", error);
     if (error == GL_NO_ERROR) {
         if ((GLuint)texture == gh.tex) texture = color;
-        if ((GLuint)renderbuffer == gh.depth) renderbuffer = depth;
         if ((GLuint)framebuffer == gh.fbo) framebuffer = fbo;
         glDeleteTextures(1, &gh.tex);
-        glDeleteRenderbuffersEXT(1, &gh.depth);
+        if (gh.depth) {                 /* the private depth an older build (or its snapshot) made */
+            if ((GLuint)renderbuffer == gh.depth) renderbuffer = 0;
+            glDeleteRenderbuffersEXT(1, &gh.depth);
+        }
         glDeleteFramebuffersEXT(1, &gh.fbo);
         g_free(gh.readback);
-        gh.tex = color; gh.depth = depth; gh.fbo = fbo;
+        gh.tex = color; gh.depth = 0; gh.fbo = fbo;
+        gh.drawable_rgb = rgb;
         gh.readback = readback;
         gh.readback_size = (size_t)width * height * 4;
         gh.drawable_width = width; gh.drawable_height = height;
@@ -4806,7 +4865,6 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
         gh.depth_cleared_this_frame = false;
     } else {
         glDeleteTextures(1, &color);
-        glDeleteRenderbuffersEXT(1, &depth);
         glDeleteFramebuffersEXT(1, &fbo);
         g_free(readback);
         gles_charge(gles_charge_table(true), gles_charge_key(GLES_CHARGE_DRAWABLE, 0, 0, 0), charged, NULL);
@@ -4814,6 +4872,9 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     glBindTexture(GL_TEXTURE_2D, texture);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, renderbuffer);
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, framebuffer);
+    if (error == GL_NO_ERROR && (GLuint)framebuffer == gh.fbo) {
+        gles_drawable_depth_stencil();      /* the new gh.fbo takes the bound framebuffer's */
+    }
     return error == GL_NO_ERROR ? 0 : gles_reject(error);
 }
 
@@ -4830,9 +4891,10 @@ static void gles_refresh_drawable_binding(void)
     }
 }
 
-static int64_t gles_layer_storage(uint32_t width, uint32_t height)
+static int64_t gles_layer_storage(uint32_t width, uint32_t height, bool rgb)
 {
-    int64_t result = gles_drawable_storage(width, height);
+    int64_t result = gles_drawable_storage(width, height, rgb);
+    GLenum wanted = rgb ? GL_RGB8 : GL_RGBA8;
     if (result < 0) return result;
 #ifndef GLES_HOST_EAGL
     GLuint rb = gh.bound_renderbuffer;
@@ -4851,8 +4913,8 @@ static int64_t gles_layer_storage(uint32_t width, uint32_t height)
         glGetRenderbufferParameterivEXT(GL_RENDERBUFFER_EXT, GL_RENDERBUFFER_HEIGHT_EXT, &h);
         glGetRenderbufferParameterivEXT(GL_RENDERBUFFER_EXT, GL_RENDERBUFFER_INTERNAL_FORMAT_EXT, &format);
         gles_texture_begin();
-        if (w != width || h != height || format != GL_RGBA8) {
-            glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_RGBA8, width, height);
+        if (w != width || h != height || format != (GLint)wanted) {
+            glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, wanted, width, height);
         }
         GLenum error = glGetError();
         glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, previous);
@@ -4903,7 +4965,7 @@ static bool gles_resolve_drawable(void)
     glGetRenderbufferParameterivEXT(GL_RENDERBUFFER_EXT, GL_RENDERBUFFER_WIDTH_EXT, &width);
     glGetRenderbufferParameterivEXT(GL_RENDERBUFFER_EXT, GL_RENDERBUFFER_HEIGHT_EXT, &height);
     glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, bound);
-    if (width <= 0 || height <= 0 || gles_drawable_storage(width, height) < 0) return false;
+    if (width <= 0 || height <= 0 || gles_drawable_storage(width, height, gh.drawable_rgb) < 0) return false;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &read);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT, &draw);
     glGetBooleanv(GL_COLOR_WRITEMASK, mask);
@@ -7361,8 +7423,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         if (argc != 1) return -1;
         gles_reject(gles_es_error(a[0]));
         return 0;
-    case GLES_OP_DRAWABLE_STORAGE:
-        return argc == 2 ? (gles_a6 ? gles_layer_storage : gles_drawable_storage)(a[0], a[1]) : -1;
+    case GLES_OP_DRAWABLE_STORAGE: {     /* width, height[, the layer's GL color format: RGB565 has no alpha] */
+        bool rgb = argc == 3 && (a[2] == 0x8D62 || a[2] == 0x8051);   /* RGB565, RGB8_OES */
+        if (argc != 2 && argc != 3) return -1;
+        return (gles_a6 ? gles_layer_storage : gles_drawable_storage)(a[0], a[1], rgb);
+    }
 
     case GLES_OP_PRESENT: {
         uint64_t t0 = gles_t();
@@ -9412,6 +9477,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.bound_framebuffer = a[1];
         gh.fb_dirty = true;
         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gles_host_fbo(a[1]));
+        gles_drawable_depth_stencil();      /* this framebuffer's depth and stencil, if it is the drawable */
         return 0;
 
     case GLES_SLOT_RENDERBUFFER_STORAGE: { /* target, internalformat, w, h */
@@ -9466,9 +9532,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gh.fb_dirty = true;
         if (gles_is_drawable(gh.bound_framebuffer)) {
             /* Keep the native named attachment too, so a later allocation
-             * of this shared renderbuffer can stop using the surrogate. */
-            if (gles_a6) {
-                gles_record_drawable_attachment(a);
+             * of this shared renderbuffer can stop using the surrogate, and
+             * the drawable takes the depth and stencil the app attached. */
+            gles_record_drawable_attachment(a);
+            if (attach != GL_COLOR_ATTACHMENT0_EXT) {
+                gles_drawable_depth_stencil();
             }
             return 0;
         }
@@ -9498,6 +9566,13 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         gles_trace_attach("glFramebufferTexture2D", a[1], a[3]);
         gh.fb_dirty = true;
         if (gles_is_drawable(gh.bound_framebuffer)) {
+            /* A depth texture on the drawable's framebuffer (OES_depth_texture):
+             * on the named framebuffer, then the drawable takes it. */
+            if (gh.bound_framebuffer) {
+                glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.bound_framebuffer);
+                glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, a[1], a[2], a[3], a[4]);
+            }
+            gles_drawable_depth_stencil();
             return 0;
         }
         glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, a[1], a[2], a[3], a[4]);

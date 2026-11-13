@@ -39,8 +39,9 @@ static int ca_next_buffer(ca_view_t *v)
     return 1;
 }
 static int GLESPresentView(void *gc, void *view_) { assert(view.ref); presented++; view.need_buffer = 1; return 1; }
+static unsigned storage_format;
 static long long qc(unsigned op, void *gc, unsigned argc, const unsigned *a)
-{ assert(op == GLES_OP_DRAWABLE_STORAGE && argc == 2); storage_w = a[0]; storage_h = a[1]; return 0; }
+{ assert(op == GLES_OP_DRAWABLE_STORAGE && argc == 3); storage_w = a[0]; storage_h = a[1]; storage_format = a[2]; return 0; }
 static int fe_drawable_fits(GuestGC *gc, unsigned w, unsigned h) { return w <= 2048 && h <= 2048; }
 static int bind(void *drawable, unsigned fourcc, void **block) { assert(fourcc == CA_FOURCC_BGRA); return 1; }
 #include "slice.h"
@@ -48,16 +49,16 @@ int main(void)
 {
     GuestGC gc = {1};
     void *layer[5] = {(void *)1, (void *)bind}, *other[5] = {(void *)1, (void *)bind};   /* version 1 closures */
-    assert(fe_bind_layer(&gc, layer) && storage_w == 960 && storage_h == 640);
+    assert(fe_bind_layer(&gc, layer, 0x8D62) && storage_w == 960 && storage_h == 640 && storage_format == 0x8D62);
     assert(fe_present(&gc) && presented == 1);
     /* The same layer again, both buffers still out: the bind keeps their size, and frames wait for one. */
     storage_w = 0;
-    assert(fe_bind_layer(&gc, layer) && !refusals && storage_w == 960 && storage_h == 640 && view.drawable == layer);
+    assert(fe_bind_layer(&gc, layer, 0x8058) && !refusals && storage_w == 960 && storage_h == 640 && view.drawable == layer);
     assert(fe_present(&gc) && fe_present(&gc) && presented == 1);
     free_buffers = 1;
     assert(fe_present(&gc) && presented == 2);
     /* Another layer with nothing to give fails, as before. */
     detaches = 0;
-    assert(!fe_bind_layer(&gc, other) && refusals == 1 && detaches == 2 && !view.drawable);
+    assert(!fe_bind_layer(&gc, other, 0x8058) && refusals == 1 && detaches == 2 && !view.drawable);
     puts("PASS: a rebound layer waits for its next free buffer at the next frame; a new layer with none still fails");
 }

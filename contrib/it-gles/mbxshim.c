@@ -1869,8 +1869,9 @@ static int GLESBindView(void *gc, void *drawable, void *ifmt, void *flags)
     }
     /* Storage follows the accepted CA layer, not the physical panel. Tell the
      * host before the app queries its renderbuffer size or draws into it.
-     * Older hosts ignore this new operation and retain their legacy size. */
-    if (qc(GLES_OP_DRAWABLE_STORAGE, gc, 2, A(v->width, v->height)) < 0) {
+     * Older hosts ignore this new operation and retain their legacy size. The
+     * format the app asked for goes too: a 565 drawable has no alpha. */
+    if (qc(GLES_OP_DRAWABLE_STORAGE, gc, 3, A(v->width, v->height, f)) < 0) {
         ca_detach_view(v);
         return 0;
     }
