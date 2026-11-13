@@ -2772,10 +2772,14 @@ static void vmsa_ttbcr_write(CPUARMState *env, const ARMCPRegInfo *ri,
         }
     }
 
-    if (arm_feature(env, ARM_FEATURE_LPAE)) {
+    if (arm_feature(env, ARM_FEATURE_LPAE) &&
+        ((raw_read(env, ri) | value) & TTBCR_EAE)) {
         /*
          * With LPAE the TTBCR could result in a change of ASID
-         * via the TTBCR.A1 bit, so do a TLB flush.
+         * via the TTBCR.A1 bit, so do a TLB flush. With the
+         * Short-descriptor format before and after (EAE clear),
+         * the ASID is CONTEXTIDR's and N, PD0 and PD1 only steer
+         * walks, as on a core without LPAE.
          */
         tlb_flush(CPU(cpu));
     }
