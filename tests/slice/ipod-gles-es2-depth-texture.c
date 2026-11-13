@@ -6,10 +6,7 @@
  * back null and the game crashed on it when a mission loaded (issue 23). The list now takes each from the stock
  * GLEngine's own extension names: 4.2.1's has both, 3.2's only OES_packed_depth_stencil.
  *
- * SLICE:fe contrib/gles-public/opengles.c range enum { FE_MBX | static int fe_gpu
- * SLICE:fe contrib/gles-public/opengles.c fn fe_find fe_names
- * SLICE:fe contrib/gles-public/opengles.c range #define FE_X_MBX | /* The list for `gpu`
- * SLICE:fe contrib/gles-public/opengles.c fn fe_extensions
+ * SLICE:fe contrib/it-gles/gles_gpus.h range enum { FE_MBX | /*\n * glGet's implementation limits
  * SLICE hw/arm/gles-host.c range /* The ES half-float type | /* The pixel type the host takes
  * CFLAGS -Wno-deprecated-declarations -framework OpenGL
  */
@@ -18,7 +15,8 @@
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
 #include <assert.h>
-#define GLES_CAP_MAP_BUFFER 2u   /* include/hw/arm/guest-services/gles.h */
+#define GLES_CAP_FRAMEBUFFER_FETCH 1u   /* include/hw/arm/guest-services/gles.h */
+#define GLES_CAP_MAP_BUFFER 2u
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,7 +27,7 @@ static unsigned slen(const char *s) { return (unsigned)strlen(s); }
 static const char *list(const char *text, unsigned long size)
 {
     static char out[1024];
-    fe_extensions(out, sizeof out, FE_SGX2, text, size);
+    fe_extensions(out, sizeof out, FE_SGX2, 0, text, size);
     return out;
 }
 

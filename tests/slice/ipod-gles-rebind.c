@@ -41,6 +41,7 @@ static int ca_next_buffer(ca_view_t *v)
 static int GLESPresentView(void *gc, void *view_) { assert(view.ref); presented++; view.need_buffer = 1; return 1; }
 static long long qc(unsigned op, void *gc, unsigned argc, const unsigned *a)
 { assert(op == GLES_OP_DRAWABLE_STORAGE && argc == 2); storage_w = a[0]; storage_h = a[1]; return 0; }
+static int fe_drawable_fits(GuestGC *gc, unsigned w, unsigned h) { return w <= 2048 && h <= 2048; }
 static int bind(void *drawable, unsigned fourcc, void **block) { assert(fourcc == CA_FOURCC_BGRA); return 1; }
 #include "slice.h"
 int main(void)

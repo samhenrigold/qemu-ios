@@ -198,8 +198,11 @@ void gles_eagl_iosurface_unlock(void);
 #endif
 
 /* The physical LCD remains portrait. Individual CA drawables can be landscape
- * or smaller layers; their storage is tracked separately per graphics context. */
-#define GLES_FB_MAX    2048
+ * or smaller layers; their storage is tracked separately per graphics context.
+ * GLES_FB_MAX is the largest GPU's MAX_RENDERBUFFER_SIZE (the SGX 543MP3's,
+ * contrib/it-gles/gles_gpus.h); the guest front end holds each drawable to its
+ * own GPU's, 2048 on the SGX 535 and 1024 on the MBX. */
+#define GLES_FB_MAX    4096
 static unsigned gles_fb_w = 320, gles_fb_h = 480;   /* the iPod panel: lcd->pw/ph at init */
 #define GLES_FB_WIDTH  gles_fb_w
 #define GLES_FB_HEIGHT gles_fb_h
@@ -2368,6 +2371,12 @@ static const GLint gles_compressed_formats[] = {
     0x8B90, 0x8B91, 0x8B92, 0x8B93, 0x8B94, /* 4-bit palettes */
     0x8B95, 0x8B96, 0x8B97, 0x8B98, 0x8B99, /* 8-bit palettes */
 };
+/* How many of them glGet lists: the SGX driver's ES 2.0 context gives the PVRTC four alone, as ES 2.0 has no
+ * OES_compressed_paletted_texture (NUM_COMPRESSED_TEXTURE_FORMATS 4; 14 in ES 1.1, the GLEngine adding the ten). */
+static unsigned gles_compressed_count(void)
+{
+    return gh.api_version == 2 ? 4 : ARRAY_SIZE(gles_compressed_formats);
+}
 
 /* glGet has no capacity argument. Reject unknown pnames BEFORE host dispatch. */
 static unsigned gles_query_count(uint32_t pname)
@@ -2385,7 +2394,7 @@ static unsigned gles_query_count(uint32_t pname)
     case 0x8CA3: case 0x8CA4: case 0x8CA5:
         return 1;
     case GL_COMPRESSED_TEXTURE_FORMATS:
-        return ARRAY_SIZE(gles_compressed_formats);
+        return gles_compressed_count();
     case GL_MODELVIEW_MATRIX:
     case GL_PROJECTION_MATRIX:
     case GL_TEXTURE_MATRIX:
@@ -4736,7 +4745,7 @@ static int64_t gles_drawable_storage(uint32_t width, uint32_t height)
     uint8_t *readback;
     uint64_t charged;
 
-    if (!width || !height || width > 2048 || height > 2048) {
+    if (!width || !height || width > GLES_FB_MAX || height > GLES_FB_MAX) {
         gles_refuse("drawable:size:%ux%u", width, height);
         return gles_reject(GL_INVALID_VALUE);
     }
@@ -8422,10 +8431,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
         case GL_TEXTURE_COORD_ARRAY:
             v.i[0] = gh.texcoord[gh.client_active_unit].enabled; break;
         case GL_COMPRESSED_TEXTURE_FORMATS:
-            memcpy(v.i, gles_compressed_formats, sizeof(gles_compressed_formats));
+            memcpy(v.i, gles_compressed_formats, gles_compressed_count() * sizeof(GLint));
             break;
         case GL_NUM_COMPRESSED_TEXTURE_FORMATS:
-            v.i[0] = ARRAY_SIZE(gles_compressed_formats);
+            v.i[0] = gles_compressed_count();
             break;
         case GL_PACK_ALIGNMENT:
             v.i[0] = gh.pack_alignment ? gh.pack_alignment : 4;

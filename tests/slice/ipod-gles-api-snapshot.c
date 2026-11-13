@@ -96,7 +96,7 @@ static bool restores(void (*change)(GLESHost *)) {
     return !r.bad;
 }
 static void same(GLESHost *h) {}
-static void drawable(GLESHost *h) { h->drawable_width=4096; }
+static void drawable(GLESHost *h) { h->drawable_width=GLES_FB_MAX+1; }
 static void no_drawable(GLESHost *h) { h->drawable_height=0; }
 static void stride(GLESHost *h) { h->vertex.stride=0x80000000u; }
 static void components(GLESHost *h) { h->attr[3].size=0x40000001; h->attr[3].type=0x140C; }

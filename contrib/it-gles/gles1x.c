@@ -12,6 +12,11 @@
 
 #include <pthread.h>
 
+/* 1.x's MBX: its OpenGLES's extension list and limits (gles_gpus.h). */
+static int fe_gpu(void *gc);
+#include "gles_gpus.h"
+static int fe_gpu(void *gc) { (void)gc; return FE_MBX1; }
+
 #define GLES_FN(n, f, id, argc, fl) GLES_ROW_##n,
 enum {
 #include "../../include/hw/arm/guest-services/gles-names.h"
@@ -61,6 +66,9 @@ static void gles2x_hello(void)
     done = 1;
     gles_layout_reset();
     gles_hand_table(gles2x_hand);
+    gles2x_hand[GLES_ID_glGetIntegerv] = (void *)fe_getIntegerv;
+    gles2x_hand[GLES_ID_glGetFloatv] = (void *)fe_getFloatv;
+    gles2x_hand[GLES_ID_glGetBooleanv] = (void *)fe_getBooleanv;
     hello = gles_hello();
 #define GLES2X_FWD(export, row) n++; if (gles_fns[GLES_ROW_##row].id < GLES_N_HAND && gles2x_hand[gles_fns[GLES_ROW_##row].id]) hand++;
 #include "gles2x_exports.h"
@@ -119,26 +127,18 @@ void glTexImageCoreSurfaceAPPLE(unsigned target, void *buffer)
     if (gc) GLESBindCoreSurface(gc, target, buffer);
 }
 
-/* The core's strings, plus the two extensions QuartzCore 2.x refuses GL compositing without
- * ("CoreAnimation: unsupported graphics hardware; need APPLE_texture_rectangle extension; need
- * APPLE_core_surface_texture extension"). Both are real here: glTexImageCoreSurfaceAPPLE is the
- * core's BindCoreSurface, and the host samples GL_TEXTURE_RECTANGLE (3.x CA uses it too). */
+/* The core's strings, but GL_EXTENSIONS is 1.x's own list (1.0's and 1.1.4's OpenGLES build the same one), of
+ * which the bridge implements all: APPLE_texture_rectangle is the core's BindCoreSurface target, which the host
+ * samples as GL_TEXTURE_RECTANGLE. */
 const char *glGetString(unsigned name);
 const char *glGetString(unsigned name)
 {
-    static char ext[256];
-    const char *s;
+    static char ext[512];
     GuestGC *gc = gles2x_gc();
     if (!gc) return 0;
-    s = (const char *)(unsigned long)GL(gc, glGetString, name);
-    if (name == 0x1F03 && s && !ext[0]) {
-        const char *add = " GL_APPLE_texture_rectangle GL_APPLE_core_surface_texture";
-        unsigned i = 0, k = 0;
-        while (s[k] && i < sizeof ext - 1) ext[i++] = s[k++];
-        for (k = 0; add[k] && i < sizeof ext - 1;) ext[i++] = add[k++];
-        ext[i] = 0;
-    }
-    return name == 0x1F03 && ext[0] ? ext : s;
+    if (name != 0x1F03) return (const char *)(unsigned long)GL(gc, glGetString, name);
+    if (!ext[0]) fe_extensions(ext, sizeof ext, FE_MBX1, 0, 0, 0);
+    return ext;
 }
 
 void glFinishTextureAPPLE(unsigned target);

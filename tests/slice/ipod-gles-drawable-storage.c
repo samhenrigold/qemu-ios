@@ -32,6 +32,7 @@
 #define GLES_SURFACE_RGB565 0x4c353635
 #define GLES_BGRA_READ_TYPE GL_UNSIGNED_INT_8_8_8_8_REV
 #define GLES_FB_WIDTH 320
+#define GLES_FB_MAX 4096
 #define GLES_FB_HEIGHT 480
 #define GLES_MAX_TEX_BYTES ((size_t)4096*4096*4)
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))

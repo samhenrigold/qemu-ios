@@ -10,7 +10,7 @@
  * SLICE hw/arm/gles-host.c define GLES_FIXED
  * SLICE hw/arm/gles-host.c fn gles_f gles_x gles_reject gles_buffer_destroy gles_buffer_bind gles_type_size gles_needs_widen gles_array_name gles_pointer_ok gles_array_layout_ok gles_set_pointer
  * SLICE hw/arm/gles-host.c fn gles_array_bytes gles_bind_array gles_elem gles_skin gles_bind_all_arrays gles_unbind_arrays
- * SLICE hw/arm/gles-host.c fn gles_palette_reset gles_palette_op gles_palette_call gles_query_count gles_unpack gles_fetch_params gles_trace_matrix_op gles_matrix_stack_check
+ * SLICE hw/arm/gles-host.c fn gles_palette_reset gles_palette_op gles_palette_call gles_compressed_count gles_query_count gles_unpack gles_fetch_params gles_trace_matrix_op gles_matrix_stack_check
  * SLICE:route hw/arm/gles-host.c range     if (gh.palette_mode && gles_palette_op(slot)) { |     switch (slot) {
  * SLICE:cases hw/arm/gles-host.c range     case GLES_SLOT_ENABLE: |     case GLES_SLOT_DRAW_ELEMENTS: {
  * SLICE:cases hw/arm/gles-host.c range     case GLES_SLOT_GET_INTEGERV: |     case GLES_SLOT_SCALEX:
