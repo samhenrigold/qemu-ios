@@ -251,6 +251,8 @@ struct S5L8950State {
     USBBus *hsic_bus;
     Chardev *gauge;
     uint32_t level[6], software[6], mask[6], destination[A6_IRQS];
+    /* destination's bits 0-2 (AP CPU 0, AP CPU 1, the IOP) per word of sources */
+    uint32_t routed[3][6];
     uint32_t global_config, ipi[2], ipi_mask[2];
     uint32_t pmgr[0x7000 / 4];
     uint64_t pmgr_transition_done;
@@ -411,29 +413,52 @@ static hwaddr a6_jpeg_xlate(void *opaque, unsigned sid, uint32_t va)
     return s5l8930_dart_dev_xlate(opaque, sid, va);
 }
 
+static void a6_set_destination(S5L8950State *s, int irq, uint32_t value)
+{
+    s->destination[irq] = value;
+    for (int target = 0; target < 3; target++) {
+        if (value & (1u << target)) {
+            s->routed[target][irq / 32] |= 1u << (irq & 31);
+        } else {
+            s->routed[target][irq / 32] &= ~(1u << (irq & 31));
+        }
+    }
+}
+
+/*
+ * Drive @cpu's IRQ line only when @level differs from what the CPU holds:
+ * every raise, even of a line already up, is a cpu_interrupt that sends the
+ * CPU out of its chained TBs to look at it, and this runs on every AIC access
+ * and every source's edge. The CPU's own interrupt_request is the reference,
+ * so a CPU reset (which clears it) gets the line again on the next update.
+ */
+static void a6_irq_drive(ARMCPU *cpu, bool level)
+{
+    bool held = qatomic_read(&CPU(cpu)->interrupt_request) & CPU_INTERRUPT_HARD;
+
+    if (level != held) {
+        qemu_set_irq(qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_IRQ), level);
+    }
+}
+
 static void a6_irq_update(S5L8950State *s)
 {
-    if (s->iop_cpu) {
-        bool pending = (s->iop_timer_status & 1) && !(s->iop_other_mask & 2);
-        for (int irq = 0; irq < A6_IRQS; irq++) {
-            uint32_t bit = 1u << (irq & 31);
-            pending |= ((s->level[irq / 32] | s->software[irq / 32]) &
-                        ~s->mask[irq / 32] & bit) &&
-                       (s->destination[irq] & 4);
+    uint32_t pending[3] = {0};
+
+    for (int w = 0; w < 6; w++) {
+        uint32_t active = (s->level[w] | s->software[w]) & ~s->mask[w];
+
+        for (int target = 0; target < 3; target++) {
+            pending[target] |= active & s->routed[target][w];
         }
-        qemu_set_irq(qdev_get_gpio_in(DEVICE(s->iop_cpu), ARM_CPU_IRQ),
-                     pending);
+    }
+    if (s->iop_cpu) {
+        a6_irq_drive(s->iop_cpu, pending[2] || ((s->iop_timer_status & 1) &&
+                                                !(s->iop_other_mask & 2)));
     }
     for (int cpu = 0; cpu < 2; cpu++) {
-        bool pending = (s->ipi[cpu] & ~s->ipi_mask[cpu]) != 0;
-        for (int irq = 0; irq < A6_IRQS; irq++) {
-            uint32_t bit = 1u << (irq & 31);
-            pending |= ((s->level[irq / 32] | s->software[irq / 32]) &
-                        ~s->mask[irq / 32] & bit) &&
-                       (s->destination[irq] & (1u << cpu));
-        }
-        qemu_set_irq(qdev_get_gpio_in(DEVICE(s->cpu[cpu]), ARM_CPU_IRQ),
-                     pending);
+        a6_irq_drive(s->cpu[cpu], pending[cpu] ||
+                     (s->ipi[cpu] & ~s->ipi_mask[cpu]) != 0);
     }
 }
 
@@ -655,7 +680,7 @@ static void a6_aic_write(void *opaque, hwaddr offset, uint64_t value,
     else if (offset == 0x2028)
         s->ipi_mask[cpu] &= ~value;
     else if (offset >= 0x3000 && offset < 0x3000 + A6_IRQS * 4)
-        s->destination[(offset - 0x3000) / 4] = value;
+        a6_set_destination(s, (offset - 0x3000) / 4, value);
     else if (offset >= 0x4000 && offset < 0x4018)
         s->software[(offset - 0x4000) / 4] |= value;
     else if (offset >= 0x4080 && offset < 0x4098)
@@ -1178,7 +1203,7 @@ static void a6_reset_soc(S5L8950State *s)
         a6_ae2_hold(s);
     }
     for (int i = 0; i < A6_IRQS; i++)
-        s->destination[i] = 1;
+        a6_set_destination(s, i, 1);
 }
 
 /* AP hibernate retains the independently powered IOP and its NAND queues,
@@ -1191,7 +1216,7 @@ static void a6_reset_ap(S5L8950State *s)
     memset(s->ipi, 0, sizeof(s->ipi));
     memset(s->ipi_mask, 0, sizeof(s->ipi_mask));
     for (unsigned i = 0; i < A6_IRQS; i++) {
-        s->destination[i] = 1;
+        a6_set_destination(s, i, 1);
     }
 }
 
