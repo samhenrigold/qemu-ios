@@ -151,8 +151,9 @@ typedef struct H2FMIBus {
     uint8_t id_pos;                     /* next READ ID byte for a byte-wide read (go 0x10) */
     uint32_t row;
     bool read_pending; /* new NAND read awaits its first FMI transfer */
-    /* "explicit-start": CEs whose latched page no transfer has taken yet, and
-     * whether a control 5 has started a write transfer not yet complete */
+    /* "explicit-start": CEs whose latched page no transfer has taken yet; and
+     * (every board) whether a control 5 has started a write transfer not yet
+     * complete: each start moves one page into the chip's register */
     uint8_t unread;
     bool write_armed;
     uint32_t read_format; /* last completed phase of the latched read */
@@ -905,7 +906,7 @@ static void h2fmi_write_check(H2FMIBus *b)
         h2fmi_seq_run(b);
         return;
     }
-    if ((b->fmi[FMI_CONTROL / 4] & 7) != 5 || (b->s->explicit_start && !b->write_armed)) {
+    if ((b->fmi[FMI_CONTROL / 4] & 7) != 5 || !b->write_armed) {
         return;
     }
     if (b->s->iop) {
@@ -1587,6 +1588,9 @@ static int h2fmi_post_load(void *opaque, int version_id)
         H2FMIBus *b = &s->bus[i];
         if (b->read_format == UINT32_MAX) {
             b->read_format = h2fmi_format(b);
+        }
+        if (!s->explicit_start) {       /* not in the stream: a transfer started and not yet DONE */
+            b->write_armed = (b->fmi[FMI_CONTROL / 4] & 7) == 5 && !(b->fmi[FMI_STATUS / 4] & FMI_ST_DONE);
         }
         if (b->data_len > sizeof(b->data) || b->meta_len > sizeof(b->meta) ||
             b->wdata_len > sizeof(b->wdata) || b->wmeta_len > sizeof(b->wmeta) ||

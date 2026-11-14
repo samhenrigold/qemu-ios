@@ -10,6 +10,10 @@
  *     order without re-shifting the buffer.
  *   - A page program completes only once the FIFOs hold the page's data AND its
  *     metadata (the 3.2.2 IOP-panic fix).
+ *   - A write transfer moves one page per control-5 start: with control left at 5 and its DONE acknowledged, the
+ *     next page reaching the FIFOs waits for the next start (the A4 IOP firmware's two-plane write polls a chip
+ *     between pages; a page the CDMA delivered then went to the wrong page register, and a 248-page write ended
+ *     one page short: "247 of 248 operations completed").
  *   - Any command but READ ID ends ID mode: a program right after the ID reads
  *     (the IOP firmware's first op on a bus after a hibernate wake) has its
  *     status poll (go 0x50) read the status, ready and not write-protected, not
@@ -190,6 +194,17 @@ int main(void) {
     h2fmi_write(wp, FMC_BASE + FMC_GO, 0x1, 4);
     assert(g_prog.called == 1 && g_prog.len == g_page_bytes);
     assert(g_prog.data[0] == 0xa3 && g_prog.data[1] == 0xa2);
+    /* Control stays 5, DONE is acknowledged, the next page arrives: it waits for the next start. */
+    h2fmi_write(wp, FMI_STATUS, 2, 4);
+    for (unsigned i = 0; i < g_page_bytes; i += 4) {
+        h2fmi_write(wp, FMI_DATA, 0xc0c1c2c3, 4);
+    }
+    for (unsigned i = 0; i < 10; i += 2) {
+        h2fmi_write(wp, FMI_META, 0xcccc, 4);
+    }
+    assert(wp->wpage_len[0] == 0 && !(wp->fmi[FMI_STATUS / 4] & (1u << 1)) && wp->wdata_len == g_page_bytes);
+    h2fmi_write(wp, FMI_CONTROL, 5, 4);                 /* the start */
+    assert(wp->wpage_len[0] == g_page_bytes && (wp->fmi[FMI_STATUS / 4] & (1u << 1)) && wp->wdata_len == 0);
 
     /* --- READ ID, then a program: the status poll reads the status --- */
     S5L8930H2FMIState *isp = calloc(1, sizeof *isp);
@@ -267,5 +282,5 @@ int main(void) {
     free(ps); free(p);
     free(sp); free(bp); free(wsp); free(wp); free(isp); free(ip);
     puts("PASS: H2FMI transfer-start rule, O(1) FIFO reads in order, write waits for data + metadata, "
-         "status after READ ID, queued PPN read status/data/column ordering");
+         "one write page per control-5 start, status after READ ID, queued PPN read status/data/column ordering");
 }
