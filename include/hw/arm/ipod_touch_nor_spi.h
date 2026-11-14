@@ -40,6 +40,9 @@ typedef struct IPodTouchNORSPIState {
     uint8_t page[NOR_PAGE_SIZE];
     bool command_active;
     bool nor_initialized;
+    /* The writable copy's write in flight and the range changed since (nor_persist); transient. */
+    bool persisting;
+    uint32_t dirty_start, dirty_end;
 } IPodTouchNORSPIState;
 
 bool ipod_touch_nor_io_failed(void);

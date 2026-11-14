@@ -7,6 +7,8 @@
 #include "qemu/log.h"
 #include "system/block-backend.h"
 #include "system/runstate.h"
+#include "qemu/coroutine.h"
+#include "qemu/aio-wait.h"
 #include "qobject/qdict.h"
 
 #include <zlib.h>
@@ -144,6 +146,7 @@ void ipod_touch_nor_spi_open_overlay(IPodTouchNORSPIState *s, const char *path, 
         error_setg(errp, "Could not attach writable NOR backend");
         return;
     }
+    blk_set_disable_request_queuing(s->blk, true);  /* a drain waits for the write a program made */
     if (blk_getlength(s->blk) != NOR_FLASH_SIZE) {
         error_setg(errp, "Writable NOR must contain exactly %u bytes", NOR_FLASH_SIZE);
         return;
@@ -162,30 +165,65 @@ bool ipod_touch_nor_io_failed(void)
     return qatomic_read(&nor_io_failed);
 }
 
-static int nor_persist(IPodTouchNORSPIState *s, uint32_t start, uint32_t length)
+#define NOR_STATUS_EPE 0x20
+#define NOR_STATUS_SWP 0x0c
+#define NOR_STATUS_SPRL 0x80
+
+/*
+ * The writable copy takes each program or erase as the chip's array does, while the status reads busy (RDY/BSY, bit
+ * 0): a coroutine writes the changed range (FUA), so the host's write and flush wait off the BQL. A change made
+ * meanwhile joins the range written next. None is in flight at a stop or a save (nor_quiesce), so none is migrated.
+ */
+static void coroutine_fn nor_persist_co(void *opaque)
+{
+    IPodTouchNORSPIState *s = opaque;
+
+    while (s->dirty_end > s->dirty_start) {
+        uint32_t start = s->dirty_start, length = s->dirty_end - start;
+        g_autofree uint8_t *copy = g_memdup2(s->nor_data + start, length);
+
+        s->dirty_start = s->dirty_end = 0;
+        int ret = blk_pwrite(s->blk, start, length, copy, BDRV_REQ_FUA);
+        if (ret < 0) {
+            qatomic_set(&nor_io_failed, true);
+            s->status |= NOR_STATUS_EPE;
+            error_report("NOR persistence failed: %s", strerror(-ret));
+            qemu_system_vmstop_request_prepare();
+            qemu_system_vmstop_request(RUN_STATE_IO_ERROR);
+        }
+    }
+    s->persisting = false;
+    aio_wait_kick();
+}
+
+static void nor_persist(IPodTouchNORSPIState *s, uint32_t start, uint32_t length)
 {
     if (!s->blk) {
-        return 0;
+        return;
     }
     if (s->restore_pending) {
         start = 0;
         length = NOR_FLASH_SIZE;
-    }
-    int ret = blk_pwrite(s->blk, start, length, s->nor_data + start, BDRV_REQ_FUA);
-    if (ret < 0) {
-        qatomic_set(&nor_io_failed, true);
-        error_report("NOR persistence failed: %s", strerror(-ret));
-        qemu_system_vmstop_request(RUN_STATE_IO_ERROR);
-    }
-    if (ret == 0) {
         s->restore_pending = false;
     }
-    return ret;
+    uint32_t end = start + length;
+
+    if (s->dirty_end > s->dirty_start) {
+        start = MIN(start, s->dirty_start);
+        end = MAX(end, s->dirty_end);
+    }
+    s->dirty_start = start;
+    s->dirty_end = end;
+    if (!s->persisting) {
+        s->persisting = true;
+        qemu_coroutine_enter(qemu_coroutine_create(nor_persist_co, s));
+    }
 }
 
-#define NOR_STATUS_EPE 0x20
-#define NOR_STATUS_SWP 0x0c
-#define NOR_STATUS_SPRL 0x80
+static void nor_quiesce(IPodTouchNORSPIState *s)
+{
+    AIO_WAIT_WHILE(NULL, s->persisting);
+}
 
 static void nor_reset_transaction(IPodTouchNORSPIState *s)
 {
@@ -264,9 +302,7 @@ static void nor_finish_transaction(IPodTouchNORSPIState *s)
     } else {
         memset(s->nor_data + start, 0xff, length);
     }
-    if (nor_persist(s, start, length) < 0) {
-        s->status |= NOR_STATUS_EPE;
-    }
+    nor_persist(s, start, length);
 }
 
 static int ipod_touch_nor_spi_set_cs(SSIPeripheral *dev, bool level)
@@ -282,7 +318,8 @@ static int ipod_touch_nor_spi_set_cs(SSIPeripheral *dev, bool level)
 static void ipod_touch_nor_spi_reset(DeviceState *dev)
 {
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
-    nor_reset_transaction(s);
+
+    nor_quiesce(s);    nor_reset_transaction(s);
     s->write_enabled = 0;
     s->status = NOR_STATUS_SWP;
 }
@@ -292,9 +329,8 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
     IPodTouchNORSPIState *s = IPOD_TOUCH_NOR_SPI(dev);
     /* Incoming block backends activate after post_load. Synchronize the saved
      * flash before the first bus transaction, once activation has completed. */
-    if (s->restore_pending && nor_persist(s, 0, NOR_FLASH_SIZE) < 0) {
-        s->status |= NOR_STATUS_EPE;
-        return 0xff;
+    if (s->restore_pending) {
+        nor_persist(s, 0, NOR_FLASH_SIZE);
     }
     value &= 0xff;
     if (!s->command_active) {
@@ -345,7 +381,7 @@ static uint32_t ipod_touch_nor_spi_transfer(SSIPeripheral *dev, uint32_t value)
         return 0;
     case NOR_GET_STATUS_CMD:
         s->stream_offset ^= 1;
-        return s->stream_offset ? s->status | 0x10 | (s->write_enabled ? 2 : 0) : 0;
+        return s->stream_offset ? s->status | 0x10 | (s->write_enabled ? 2 : 0) | s->persisting : 0;
     case NOR_GET_JEDECID: {
         static const uint8_t id[] = {0x1f, 0x45, 0x02, 0x00};
         return s->stream_offset < sizeof(id) ? id[s->stream_offset++] : 0xff;
@@ -364,7 +400,8 @@ static void ipod_touch_nor_spi_realize(SSIPeripheral *d, Error **errp)
 static int ipod_touch_nor_spi_pre_save(void *opaque)
 {
     IPodTouchNORSPIState *s = opaque;
-    if (!s->nor_initialized) {
+
+    nor_quiesce(s);         /* the stop drained it already: the copy holds the flash */    if (!s->nor_initialized) {
         initialize_nor(s);
     }
     return 0;

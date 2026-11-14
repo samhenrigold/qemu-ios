@@ -41,6 +41,7 @@
 #include "qemu/error-report.h"
 #include "qemu/bitmap.h"
 #include "qemu/timer.h"
+#include "qemu/coroutine.h"
 #include "system/block-backend.h"
 #include "qemu/host-utils.h"
 #include "qemu/module.h"
@@ -107,6 +108,9 @@ struct PFlashCFI02 {
     unsigned long *sector_erase_map;
     char *name;
     void *storage;
+    /* The image's write in flight and the range changed since (pflash_update). */
+    bool updating;
+    int dirty_start, dirty_end;
 };
 
 /*
@@ -390,21 +394,47 @@ static uint64_t pflash_read(void *opaque, hwaddr offset, unsigned int width)
     return ret;
 }
 
-/* update flash content on disk */
+/*
+ * Update flash content on disk from a coroutine, so the host write waits off the BQL: the array (pfl->storage) has
+ * the change at once, and a change made while a write is in flight joins the range written next. A stop drains the
+ * write (the BlockBackend takes requests while drained, so a drain waits for the next range too).
+ */
+static void coroutine_fn pflash_update_co(void *opaque)
+{
+    PFlashCFI02 *pfl = opaque;
+
+    while (pfl->dirty_end > pfl->dirty_start) {
+        int offset = pfl->dirty_start, len = pfl->dirty_end - offset;
+        g_autofree uint8_t *copy = g_memdup2((uint8_t *)pfl->storage + offset, len);
+        int ret;
+
+        pfl->dirty_start = pfl->dirty_end = 0;
+        ret = blk_pwrite(pfl->blk, offset, len, copy, 0);
+        if (ret < 0) {
+            /* TODO set error bit in status */
+            error_report("Could not update PFLASH: %s", strerror(-ret));
+        }
+    }
+    pfl->updating = false;
+}
+
 static void pflash_update(PFlashCFI02 *pfl, int offset, int size)
 {
     int offset_end;
-    int ret;
     if (pfl->blk) {
         offset_end = offset + size;
         /* widen to sector boundaries */
         offset = QEMU_ALIGN_DOWN(offset, BDRV_SECTOR_SIZE);
         offset_end = QEMU_ALIGN_UP(offset_end, BDRV_SECTOR_SIZE);
-        ret = blk_pwrite(pfl->blk, offset, offset_end - offset,
-                         pfl->storage + offset, 0);
-        if (ret < 0) {
-            /* TODO set error bit in status */
-            error_report("Could not update PFLASH: %s", strerror(-ret));
+        if (pfl->dirty_end > pfl->dirty_start) {
+            offset = MIN(offset, pfl->dirty_start);
+            offset_end = MAX(offset_end, pfl->dirty_end);
+        }
+        pfl->dirty_start = offset;
+        pfl->dirty_end = offset_end;
+        if (!pfl->updating) {
+            pfl->updating = true;
+            qemu_coroutine_enter(qemu_coroutine_create(pflash_update_co, pfl));
         }
     }
 }
@@ -897,6 +927,7 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
         if (ret < 0) {
             return;
         }
+        blk_set_disable_request_queuing(pfl->blk, true);
     } else {
         pfl->ro = 0;
     }

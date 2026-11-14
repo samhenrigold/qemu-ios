@@ -1,12 +1,18 @@
 /* Production NOR command checks: GPIO framing, protection, programming and erase.
  *
+ * A program or erase reaches the writable copy from a coroutine (its host write and flush wait off the BQL) while
+ * the status reads busy (bit 0); here the coroutine runs at once, or, with defer, when the test says the write has
+ * ended. With the change reverted the write runs inside the CS release and the status never reads busy.
+ *
  * SLICE include/hw/arm/ipod_touch_nor_spi.h define NOR_
  * SLICE hw/arm/ipod_touch_nor_spi.c define NOR_STATUS
  * SLICE include/hw/arm/ipod_touch_nor_spi.h typedef IPodTouchNORSPIState
- * SLICE:fns hw/arm/ipod_touch_nor_spi.c fn nor_persist
+ * SLICE:fns hw/arm/ipod_touch_nor_spi.c fn nor_persist_co nor_persist nor_quiesce
  * SLICE:fns hw/arm/ipod_touch_gpio.c fn s5l8900_gpio_write
  * SLICE:fns hw/arm/ipod_touch_nor_spi.c fn nor_reset_transaction nor_finish_transaction ipod_touch_nor_spi_set_cs ipod_touch_nor_spi_reset ipod_touch_nor_spi_transfer ipod_touch_nor_spi_post_load
+ * PKG glib-2.0
  */
+#include <glib.h>
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,10 +44,22 @@ static void initialize_nor(IPodTouchNORSPIState*s) {
 static bool nor_io_failed;
 static int persist_error, storage_stops, full_writes;
 static uint32_t persisted_start, persisted_length;
+static int writes;
+static uint8_t written_first;
 static int blk_pwrite(void *blk,uint32_t start,uint32_t length,const void*data,int flags) {
- assert(blk && flags==BDRV_REQ_FUA);persisted_start=start;persisted_length=length;if(length==NOR_FLASH_SIZE)full_writes++;return persist_error;
+ assert(blk && flags==BDRV_REQ_FUA);persisted_start=start;persisted_length=length;if(length==NOR_FLASH_SIZE)full_writes++;
+ writes++;written_first=*(const uint8_t *)data;return persist_error;
 }
 static void qemu_system_vmstop_request(int state) {assert(state==RUN_STATE_IO_ERROR);storage_stops++;}
+static void qemu_system_vmstop_request_prepare(void) {}
+#define coroutine_fn
+typedef struct { void (*fn)(void *); void *arg; } Coroutine;
+static Coroutine co; static int defer, deferred;
+static Coroutine *qemu_coroutine_create(void (*fn)(void *), void *arg) {co.fn=fn;co.arg=arg;return &co;}
+static void qemu_coroutine_enter(Coroutine *c) {if(defer)deferred++;else c->fn(c->arg);}
+static void run_deferred(void) {assert(deferred==1);deferred=0;co.fn(co.arg);}
+static void aio_wait_kick(void) {}
+#define AIO_WAIT_WHILE(ctx, cond) do { if (cond) { run_deferred(); } assert(!(cond)); } while (0)
 #include "fns.h"
 
 static IPodTouchNORSPIState s;
@@ -91,11 +109,21 @@ int main(void) {
  persist_error=0;s.restore_pending=true;program(4,0);
  assert(!(s.status & NOR_STATUS_EPE) && !s.restore_pending && nor_io_failed);
  assert(full_writes==1 && persisted_start==0 && persisted_length==NOR_PAGE_SIZE);s.blk=NULL;
+ /* In flight: busy, the array already changed; a program meanwhile joins the write; a reset waits for it. */
+ s.blk=(void*)1;defer=1;writes=0;memset(s.nor_data,0xff,4096);program(0x10,0x5a);
+ assert(s.nor_data[0x10]==0x5a && deferred==1 && writes==0);
+ begin(NOR_GET_STATUS_CMD);assert(byte(0xff)&1);end();
+ program(0x1000,0xa5);assert(deferred==1 && writes==0);
+ run_deferred();assert(writes==1 && persisted_start==0 && persisted_length==0x1100 && written_first==0xff);
+ begin(NOR_GET_STATUS_CMD);assert(!(byte(0xff)&1));end();
+ program(0x20,0);ipod_touch_nor_spi_reset(&s.ssidev);assert(writes==2 && !s.persisting && !deferred);
+ defer=0;s.blk=NULL;s.nor_data[0]=0x10;status(0);
  s.nor_size=0;program(0,0);assert((s.status & NOR_STATUS_EPE) && s.nor_data[0]==0x10);s.nor_size=NOR_FLASH_SIZE;
  program(0,0);assert(!(s.status & NOR_STATUS_EPE) && s.nor_data[0]==0);
  assert(ipod_touch_nor_spi_post_load(&s,2)==0);
  s.data_count=257;assert(ipod_touch_nor_spi_post_load(&s,2)==-EINVAL);s.data_count=0;
  s.nor_read_ind=NOR_FLASH_SIZE;assert(ipod_touch_nor_spi_post_load(&s,2)==-EINVAL);
  s.nor_read_ind=0;s.nor_initialized=false;assert(ipod_touch_nor_spi_post_load(&s,2)==-EINVAL);
- puts("PASS: GPIO/CS, status/protection, page wrap/AND, erase sizes, read wrap and snapshot bounds");
+ puts("PASS: GPIO/CS, status/protection, page wrap/AND, erase sizes, read wrap and snapshot bounds; busy while the "
+      "copy's write is in flight, a program meanwhile joins the write, reset waits");
 }
