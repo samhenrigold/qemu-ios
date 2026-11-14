@@ -1608,6 +1608,62 @@ static const TCGLdstHelperParam ldst_helper_param = {
     .ntmp = 1, .tmp = { TCG_REG_TMP0 }
 };
 
+/*
+ * qemu_ld/st neither sync the globals nor free the call-clobbered registers;
+ * their slow paths do what that was for (TCGLdstLive).
+ */
+#define TCG_TARGET_LDST_LIVE 1
+
+/* The stack the slow path's saved registers take: 8 bytes each, 16 a vector. */
+static int ldst_save_size(TCGRegSet save)
+{
+    int size = 0;
+
+    for (int r = 0; r < TCG_TARGET_NB_REGS; r++) {
+        if (tcg_regset_test_reg(save, r)) {
+            size += r < TCG_REG_V0 ? 8 : 16;
+        }
+    }
+    return ROUND_UP(size, 16);
+}
+
+/* Store LIVE's dirty globals and save (or, !SAVE, restore) its registers. */
+static void ldst_live_out(TCGContext *s, const TCGLdstLive *live, bool save)
+{
+    int size, ofs = 0;
+
+    if (!live) {
+        return;
+    }
+    size = ldst_save_size(live->save);
+    if (save) {
+        for (int i = 0; i < live->nsync; i++) {
+            tcg_out_st(s, live->sync[i].type, live->sync[i].reg,
+                       live->sync[i].base, live->sync[i].ofs);
+        }
+        if (size) {
+            tcg_out_insn(s, 3401, SUBI, TCG_TYPE_I64,
+                         TCG_REG_SP, TCG_REG_SP, size);
+        }
+    }
+    for (int r = 0; r < TCG_TARGET_NB_REGS; r++) {
+        if (tcg_regset_test_reg(live->save, r)) {
+            TCGType type = r < TCG_REG_V0 ? TCG_TYPE_I64 : TCG_TYPE_V128;
+
+            if (save) {
+                tcg_out_st(s, type, r, TCG_REG_SP, ofs);
+            } else {
+                tcg_out_ld(s, type, r, TCG_REG_SP, ofs);
+            }
+            ofs += type == TCG_TYPE_I64 ? 8 : 16;
+        }
+    }
+    if (!save && size) {
+        tcg_out_insn(s, 3401, ADDI, TCG_TYPE_I64,
+                     TCG_REG_SP, TCG_REG_SP, size);
+    }
+}
+
 static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *lb)
 {
     MemOp opc = get_memop(lb->oi);
@@ -1616,9 +1672,11 @@ static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *lb)
         return false;
     }
 
+    ldst_live_out(s, lb->live, true);
     tcg_out_ld_helper_args(s, lb, &ldst_helper_param);
     tcg_out_call_int(s, qemu_ld_helpers[opc & MO_SIZE]);
     tcg_out_ld_helper_ret(s, lb, false, &ldst_helper_param);
+    ldst_live_out(s, lb->live, false);
     tcg_out_goto(s, lb->raddr);
     return true;
 }
@@ -1631,8 +1689,10 @@ static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *lb)
         return false;
     }
 
+    ldst_live_out(s, lb->live, true);
     tcg_out_st_helper_args(s, lb, &ldst_helper_param);
     tcg_out_call_int(s, qemu_st_helpers[opc & MO_SIZE]);
+    ldst_live_out(s, lb->live, false);
     tcg_out_goto(s, lb->raddr);
     return true;
 }

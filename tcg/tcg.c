@@ -97,7 +97,27 @@ typedef struct QEMU_PACKED {
     DebugFrameFDEHeader fde;
 } DebugFrameHeader;
 
+/*
+ * What a qemu_ld/st slow path keeps for itself when its op neither syncs
+ * the globals nor frees the call-clobbered registers (TCG_TARGET_LDST_LIVE):
+ * the globals dirty in registers, stored to their slots before the helper is
+ * called, so that a fault, an io recompile or a device finds the guest state
+ * complete; and the call-clobbered registers live across the op, saved
+ * around the call.
+ */
+typedef struct TCGLdstLive {
+    TCGRegSet save;
+    int nsync;
+    struct {
+        TCGType type;
+        TCGReg reg;
+        TCGReg base;
+        intptr_t ofs;
+    } sync[];
+} TCGLdstLive;
+
 struct TCGLabelQemuLdst {
+    TCGLdstLive *live;      /* NULL: the op synced and freed as a call does */
     bool is_ld;             /* qemu_ld: true, qemu_st: false */
     MemOpIdx oi;
     TCGType type;           /* result type of a load */
@@ -640,12 +660,17 @@ static void tcg_out_movext3(TCGContext *s, const TCGMovExtend *i1,
  * Allocate a new TCGLabelQemuLdst entry.
  */
 
+/* What the qemu_ld/st op being emitted leaves to its slow path. */
+static __thread TCGLdstLive *ldst_live;
+
 __attribute__((unused))
 static TCGLabelQemuLdst *new_ldst_label(TCGContext *s)
 {
     TCGLabelQemuLdst *l = tcg_malloc(sizeof(*l));
 
     memset(l, 0, sizeof(*l));
+    l->live = ldst_live;
+    ldst_live = NULL;
     QSIMPLEQ_INSERT_TAIL(&s->ldst_labels, l, next);
 
     return l;
@@ -1097,6 +1122,24 @@ typedef struct TCGOutOpSubtract {
 } TCGOutOpSubtract;
 
 #include "tcg-target.c.inc"
+
+#ifndef TCG_TARGET_LDST_LIVE
+#define TCG_TARGET_LDST_LIVE 0
+#endif
+
+/* Whether OPC leaves syncing and register saving to its slow path. */
+static bool op_ldst_live(TCGOpcode opc)
+{
+    switch (opc) {
+    case INDEX_op_qemu_ld:
+    case INDEX_op_qemu_st:
+    case INDEX_op_qemu_ld2:
+    case INDEX_op_qemu_st2:
+        return TCG_TARGET_LDST_LIVE && tcg_use_softmmu;
+    default:
+        return false;
+    }
+}
 
 #ifndef CONFIG_TCG_INTERPRETER
 /* Validate CPUTLBDescFast placement. */
@@ -3740,6 +3783,37 @@ static void la_global_sync(TCGContext *s, int ng)
 }
 
 /*
+ * liveness analysis: a qemu_ld/st whose slow path stores the globals
+ * (TCG_TARGET_LDST_LIVE). A global used later needn't be in memory here.
+ * One overwritten before any use or sync stays live up to here and dies
+ * here (op->ldst_dying), its value kept for the slow path alone. One
+ * needed in memory later but not in a register (or past the first 64, or
+ * an output of the op) is synced here as before.
+ */
+static void la_ldst_live(TCGContext *s, TCGOp *op, int ng)
+{
+    const TCGOpDef *def = &tcg_op_defs[op->opc];
+
+    op->ldst_dying = 0;
+    for (int i = 0; i < ng; ++i) {
+        TCGTemp *ts = &s->temps[i];
+        bool output = false;
+
+        for (int k = 0; k < def->nb_oargs; k++) {
+            output |= arg_temp(op->args[k]) == ts;
+        }
+        if (ts->state == TS_DEAD && i < 64 && !output) {
+            op->ldst_dying |= 1ull << i;
+            ts->state = 0;
+            la_reset_pref(ts);
+        } else if (ts->state & TS_DEAD) {
+            ts->state |= TS_MEM;
+            la_reset_pref(ts);
+        }
+    }
+}
+
+/*
  * liveness analysis: conditional branch: all temps are dead unless
  * explicitly live-across-conditional-branch, globals and local temps
  * should be synced.
@@ -4198,6 +4272,14 @@ liveness_pass_1(TCGContext *s)
             } else if (def->flags & TCG_OPF_BB_END) {
                 assert_carry_dead(s);
                 la_bb_end(s, nb_globals, nb_temps);
+            } else if (op_ldst_live(opc)) {
+                /*
+                 * The slow path stores the globals itself: each must
+                 * have its value, in a register or its slot, but needn't
+                 * be in its slot.
+                 */
+                assert_carry_dead(s);
+                la_ldst_live(s, op, nb_globals);
             } else if (def->flags & TCG_OPF_SIDE_EFFECTS) {
                 assert_carry_dead(s);
                 la_global_sync(s, nb_globals);
@@ -5137,6 +5219,42 @@ static void tcg_reg_alloc_dup(TCGContext *s, const TCGOp *op)
     }
 }
 
+/*
+ * For the qemu_ld/st op about to be emitted, whose outputs are in OUTPUTS:
+ * the globals dirty in registers (outputs aside) and the call-clobbered
+ * registers holding a value other than an output.
+ */
+static TCGLdstLive *ldst_live_now(TCGContext *s, TCGRegSet outputs)
+{
+    TCGLdstLive *l = tcg_malloc(sizeof(*l) +
+                                s->nb_globals * sizeof(l->sync[0]));
+
+    l->save = 0;
+    l->nsync = 0;
+    for (int i = 0; i < TCG_TARGET_NB_REGS; i++) {
+        if (s->reg_to_temp[i] && !tcg_regset_test_reg(outputs, i) &&
+            tcg_regset_test_reg(tcg_target_call_clobber_regs, i)) {
+            tcg_regset_set_reg(l->save, i);
+        }
+    }
+    for (int i = 0; i < s->nb_globals; i++) {
+        TCGTemp *ts = &s->temps[i];
+
+        if (ts->kind == TEMP_GLOBAL && ts->val_type == TEMP_VAL_REG &&
+            !ts->mem_coherent && !tcg_regset_test_reg(outputs, ts->reg)) {
+            /* No indirect globals: their base may not be in a register. */
+            tcg_debug_assert(!ts->indirect_reg &&
+                             ts->mem_base->kind == TEMP_FIXED);
+            l->sync[l->nsync].type = ts->type;
+            l->sync[l->nsync].reg = ts->reg;
+            l->sync[l->nsync].base = ts->mem_base->reg;
+            l->sync[l->nsync].ofs = ts->mem_offset;
+            l->nsync++;
+        }
+    }
+    return l;
+}
+
 static void tcg_reg_alloc_op(TCGContext *s, const TCGOp *op)
 {
     const TCGLifeData arg_life = op->life;
@@ -5408,19 +5526,39 @@ static void tcg_reg_alloc_op(TCGContext *s, const TCGOp *op)
     } else if (def->flags & TCG_OPF_BB_END) {
         tcg_reg_alloc_bb_end(s, i_allocated_regs);
     } else {
-        if (def->flags & TCG_OPF_CALL_CLOBBER) {
+        if (op_ldst_live(op->opc)) {
+            /*
+             * The slow path stores the globals dirty in registers; sync now
+             * those it can't (a constant, an output of this op).
+             */
             assert_carry_dead(s);
-            /* XXX: permit generic clobber register list ? */
-            for (i = 0; i < TCG_TARGET_NB_REGS; i++) {
-                if (tcg_regset_test_reg(tcg_target_call_clobber_regs, i)) {
-                    tcg_reg_free(s, i, i_allocated_regs);
+            for (i = 0; i < s->nb_globals; i++) {
+                ts = &s->temps[i];
+                if (!ts->mem_coherent && ts->val_type == TEMP_VAL_CONST) {
+                    temp_sync(s, ts, i_allocated_regs, 0, 0);
                 }
             }
-        }
-        if (def->flags & TCG_OPF_SIDE_EFFECTS) {
-            /* sync globals if the op has side effects and might trigger
-               an exception. */
-            sync_globals(s, i_allocated_regs);
+            for (k = 0; k < nb_oargs; k++) {
+                ts = arg_temp(op->args[k]);
+                if (ts->kind == TEMP_GLOBAL) {
+                    temp_sync(s, ts, i_allocated_regs, 0, 0);
+                }
+            }
+        } else {
+            if (def->flags & TCG_OPF_CALL_CLOBBER) {
+                assert_carry_dead(s);
+                /* XXX: permit generic clobber register list ? */
+                for (i = 0; i < TCG_TARGET_NB_REGS; i++) {
+                    if (tcg_regset_test_reg(tcg_target_call_clobber_regs, i)) {
+                        tcg_reg_free(s, i, i_allocated_regs);
+                    }
+                }
+            }
+            if (def->flags & TCG_OPF_SIDE_EFFECTS) {
+                /* sync globals if the op has side effects and might trigger
+                   an exception. */
+                sync_globals(s, i_allocated_regs);
+            }
         }
 
         /* satisfy the output constraints */
@@ -5482,6 +5620,16 @@ static void tcg_reg_alloc_op(TCGContext *s, const TCGOp *op)
             set_temp_val_reg(s, ts, reg);
             ts->mem_coherent = 0;
             new_args[i] = reg;
+        }
+    }
+
+    if (op_ldst_live(op->opc)) {
+        ldst_live = ldst_live_now(s, o_allocated_regs);
+        /* Those only the slow path needs die once it has their registers. */
+        for (i = 0; i < MIN(s->nb_globals, 64); i++) {
+            if (op->ldst_dying & (1ull << i)) {
+                temp_dead(s, &s->temps[i]);
+            }
         }
     }
 

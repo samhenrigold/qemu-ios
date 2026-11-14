@@ -324,6 +324,12 @@ struct TCGOp {
     /* Register preferences for the output(s).  */
     TCGRegSet output_pref[2];
 
+    /*
+     * qemu_ld/st with TCG_TARGET_LDST_LIVE: the globals (by index, the first
+     * 64) whose value only this op's slow path still needs.
+     */
+    uint64_t ldst_dying;
+
     /* Arguments for the opcode.  */
     TCGArg args[];
 };
