@@ -18,6 +18,7 @@
 #include "hw/net/bcm_fullmac.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "hw/core/irq.h"
 #include "qemu/iov.h"
 #include <zlib.h>
 
@@ -48,6 +49,7 @@ struct BCMHSICState {
     uint16_t interrupt_seq, bulk_rx_seq, bulk_tx_seq;
     size_t bulk_rx_offset;
     unsigned bulk_error_log;
+    qemu_irq remote_wake;
 };
 
 static const USBDescStrings bcm_strings = {
@@ -348,6 +350,10 @@ static void bcm_fullmac_output(void *opaque, unsigned channel,
     } else {
         usb_wakeup(usb_ep_get(&s->parent_obj, USB_TOKEN_IN, 2), 0);
     }
+    /* N42 DT wlan function-remote_wake: the module asks a host that has
+     * suspended the HSIC link (the host never enables USB remote wakeup) to
+     * resume, and drops the request once the host polls it again. */
+    qemu_irq_raise(s->remote_wake);
 }
 
 static bool bcm_fullmac_ready(void *opaque)
@@ -501,6 +507,9 @@ static bool bcm_bulk_read(BCMHSICState *s, USBPacket *p)
 static void bcm_data(USBDevice *dev, USBPacket *p)
 {
     BCMHSICState *s = BCM_HSIC(dev);
+    if (p->pid == USB_TOKEN_IN) {
+        qemu_irq_lower(s->remote_wake);
+    }
     if (s->log_count < 256) {
         s->log_count++;
         qemu_log_mask(LOG_UNIMP, "BCM HSIC data pid=%d ep=%d len=%zu\n", p->pid,
@@ -585,6 +594,7 @@ static void bcm_power_reset(void *opaque, int pin, int level)
         s->control_notified = s->control_prefixed = false;
         s->interrupt_seq = s->bulk_rx_seq = s->bulk_tx_seq = 0;
         s->bulk_rx_offset = 0;
+        qemu_irq_lower(s->remote_wake);
     } else if (!dev->attached) {
         usb_device_attach(dev, &error_abort);
     }
@@ -604,6 +614,7 @@ static void bcm_realize(USBDevice *dev, Error **errp)
     usb_desc_init(dev);
     dev->auto_attach = 1;
     qdev_init_gpio_in_named(DEVICE(dev), bcm_power_reset, "reset", 1);
+    qdev_init_gpio_out_named(DEVICE(dev), &s->remote_wake, "remote-wake", 1);
 }
 static void bcm_reset(USBDevice *dev)
 {

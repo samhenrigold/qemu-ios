@@ -2,7 +2,7 @@
  * SLICE hw/usb/dev-mdm9x15.c define MDM_INTERFACES|MDM_MAX_FRAME|MDM_BOOT_SRAM_BASE|MDM_BOOT_SRAM_SIZE|MDM_MAX_IMAGE|MDM_NAS_CLIENTS|MDM_NAS_SERVING|MDM_NAS_SYSTEM|MDM_PDS_SV_IN_FIX
  * SLICE:NAS hw/usb/dev-mdm9x15.c typedef MdmNasClient
  * SLICE hw/usb/dev-mdm9x15.c typedef MdmDownloadState
- * SLICE hw/usb/dev-mdm9x15.c fn mdm_power_filter_reset mdm_power_filter_allows mdm_fuse_serial tlv find_tlv mdm_pds_reset mdm_qmi_ready mdm_sim_pin_state mdm_registered mdm_uim_card_status mdm_uim_file mdm_nas_plmn mdm_nas_serving mdm_nas_system_info mdm_nas_client mdm_nas_register mdm_qmi_trace mdm_qmi_output mdm_pri_version mdm_pri_start mdm_pri_text mdm_pri_end mdm_bsp_parse_pri mdm_bsp_file_write mdm_bsp_file_reset mdm_bsp_file_indicate mdm_nas_indicate mdm_dms_mode mdm_dms_indicate mdm_voice_state mdm_voice_changed mdm_voice_info mdm_voice_indicate mdm_pds_tracking_state mdm_pds_indicate mdm_pds_float mdm_pds_double mdm_pds_position mdm_pds_fix_indicate mdm_wms_smsc mdm_wms_smsc_indicate mdm_wms_indicate mdm_wms_pdu mdm_wms_forget_slot mdm_wms_received mdm_wms_receive_indicate mdm_uim_indicate mdm_qmi_events mdm_qmi_reply mdm_qmi mdm_qmux_receive mdm_dload_crc mdm_hdlc_encode mdm_dload_reply mdm_download_free mdm_sahara_packet mdm_sahara_begin mdm_sahara_read_image mdm_sahara_image_header mdm_sahara_image_data mdm_sahara_finish_image mdm_sahara_receive mdm_dload_boot mdm_dload_command mdm_dload_receive mdm_receive mdm_read
+ * SLICE hw/usb/dev-mdm9x15.c fn mdm_power_filter_reset mdm_power_filter_allows mdm_fuse_serial tlv find_tlv mdm_pds_reset mdm_wake mdm_qmi_ready mdm_sim_pin_state mdm_registered mdm_uim_card_status mdm_uim_file mdm_nas_plmn mdm_nas_serving mdm_nas_system_info mdm_nas_client mdm_nas_register mdm_qmi_trace mdm_qmi_output mdm_pri_version mdm_pri_start mdm_pri_text mdm_pri_end mdm_bsp_parse_pri mdm_bsp_file_write mdm_bsp_file_reset mdm_bsp_file_indicate mdm_nas_indicate mdm_dms_mode mdm_dms_indicate mdm_voice_state mdm_voice_changed mdm_voice_info mdm_voice_indicate mdm_pds_tracking_state mdm_pds_indicate mdm_pds_float mdm_pds_double mdm_pds_position mdm_pds_fix_indicate mdm_wms_smsc mdm_wms_smsc_indicate mdm_wms_indicate mdm_wms_pdu mdm_wms_forget_slot mdm_wms_received mdm_wms_receive_indicate mdm_uim_indicate mdm_qmi_events mdm_qmi_reply mdm_qmi mdm_qmux_receive mdm_dload_crc mdm_hdlc_encode mdm_dload_reply mdm_download_free mdm_sahara_packet mdm_sahara_begin mdm_sahara_read_image mdm_sahara_image_header mdm_sahara_image_data mdm_sahara_finish_image mdm_sahara_receive mdm_dload_boot mdm_dload_command mdm_dload_receive mdm_receive mdm_read
  * SLICE hw/misc/ios_baseband_core.c range static const char *const gsm7_main | static bool gsm7_encodable
  * SLICE hw/misc/ios_baseband_core.c fn digits_to_semi ios_bb_sim_read_file
  * SLICE:CALL include/hw/misc/ios_baseband_core.h range /* +XCALLSTAT states | typedef struct IosBbAtChan
@@ -101,6 +101,7 @@ typedef struct {
     GBytes *qmi_power_filter[14][256];
     uint16_t qmi_protocol[14];
     uint32_t qmi_power_save[14], qmi_uim_events[14];
+    int *remote_wake;
 } MDM9x15State;
 size_t ios_bb_sim_read_file(const IosBbCore *, uint16_t, uint8_t *, size_t);
 static GByteArray *uart_reply;
@@ -225,6 +226,12 @@ static bool ios_bb_release_active(IosBbCore *bb)
 bool ios_bb_gps_set(IosBbGps *, const char *);
 void ios_bb_gps_reset(IosBbGps *);
 int ios_bb_gps_nmea(const IosBbGps *, int64_t, const char *, char *, size_t);
+static void qemu_irq_raise(int *irq)
+{
+    if (irq) {
+        *irq = 1;
+    }
+}
 #include "slice.h"
 static void test_pri_metadata(MDM9x15State *s)
 {

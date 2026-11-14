@@ -85,7 +85,7 @@ typedef struct MDM9x15State {
     void *download;
     void *reconnect_timer;
     bool reconnect_pending, reconnect_detached;
-    int *device_ready, *reset_detect;
+    int *device_ready, *remote_wake, *reset_detect;
 } MDM9x15State;
 #define MDM9X15(dev) ((MDM9x15State *)(dev))
 #define USB_DEVICE(s) (&(s)->parent)
@@ -123,6 +123,12 @@ static void timer_del(QEMUTimer *t)
 static const int mdm_desc, mdm_runtime_desc;
 static void mdm_serial_reset(MDM9x15State *s)
 {
+}
+static void qemu_irq_lower(int *irq)
+{
+    if (irq) {
+        *irq = 0;
+    }
 }
 #include "slice.h"
 

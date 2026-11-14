@@ -1,7 +1,7 @@
 /* Native bootloader request, transfer boundaries, CRC rejection and isolation.
  * SLICE hw/usb/dev-mdm9x15.c define MDM_INTERFACES|MDM_MAX_FRAME|MDM_BOOT_SRAM_BASE|MDM_BOOT_SRAM_SIZE|MDM_MAX_IMAGE
  * SLICE hw/usb/dev-mdm9x15.c typedef MdmDownloadState
- * SLICE hw/usb/dev-mdm9x15.c fn mdm_fuse_serial mdm_dload_crc mdm_hdlc_encode mdm_dload_reply mdm_download_free mdm_sahara_packet mdm_sahara_begin mdm_sahara_read_image mdm_sahara_image_header mdm_sahara_image_data mdm_sahara_finish_image mdm_sahara_receive mdm_dload_boot mdm_dload_command mdm_dload_receive mdm_read
+ * SLICE hw/usb/dev-mdm9x15.c fn mdm_fuse_serial mdm_wake mdm_dload_crc mdm_hdlc_encode mdm_dload_reply mdm_download_free mdm_sahara_packet mdm_sahara_begin mdm_sahara_read_image mdm_sahara_image_header mdm_sahara_image_data mdm_sahara_finish_image mdm_sahara_receive mdm_dload_boot mdm_dload_command mdm_dload_receive mdm_read
  * PKG glib-2.0
  */
 #include <glib.h>
@@ -25,6 +25,7 @@ typedef struct {
     GQueue rx[13];
     GByteArray *tx[13];
     IosBasebandState *baseband;
+    int *remote_wake;
 } MDM9x15State;
 #define USB_DEVICE(x) (x)
 #define USB_TOKEN_IN 1
@@ -82,6 +83,12 @@ static int ios_bb_network_registration(IosBbCore *bb, int64_t now)
 }
 static void timer_mod(void *timer, int64_t deadline)
 {
+}
+static void qemu_irq_raise(int *irq)
+{
+    if (irq) {
+        *irq = 1;
+    }
 }
 #include "slice.h"
 

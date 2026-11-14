@@ -16,6 +16,7 @@ typedef struct {
     unsigned interrupt_seq, bulk_rx_seq, bulk_tx_seq, bulk_rx_offset;
     int fullmac;
     GQueue *control_rx, *data_rx;
+    int *remote_wake;
 } BCMHSICState;
 #define BCM_HSIC(x) ((BCMHSICState *)(x))
 #define USB_DEVICE(x) (&((BCMHSICState *)(x))->dev)
@@ -44,10 +45,18 @@ static void bcm_fullmac_reset(int *f)
     *f = 0;
     cleared++;
 }
+static void qemu_irq_lower(int *irq)
+{
+    if (irq) {
+        *irq = 0;
+    }
+}
 #include "slice.h"
 int main(void)
 {
+    int wake = 1;
     BCMHSICState s = {.dev.attached = true,
+                      .remote_wake = &wake,
                       .running = true,
                       .control_notified = true,
                       .control_prefixed = true,
@@ -64,6 +73,7 @@ int main(void)
     assert(!s.dev.attached && !s.running && detached == 1 && cleared == 1 &&
            firmware_reset == 1);
     assert(g_queue_is_empty(s.control_rx) && g_queue_is_empty(s.data_rx));
+    assert(!wake); /* the module dropped what it was asking the host to fetch */
     assert(!s.control_notified && !s.control_prefixed && !s.interrupt_seq &&
            !s.bulk_rx_seq && !s.bulk_tx_seq && !s.bulk_rx_offset);
     bcm_power_reset(&s, 0, 1);

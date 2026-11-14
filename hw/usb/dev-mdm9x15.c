@@ -287,6 +287,7 @@ struct MDM9x15State {
     MdmSerial *serial;
     qemu_irq device_ready;
     qemu_irq reset_detect;
+    qemu_irq remote_wake;
 };
 
 typedef struct MdmChardev {
@@ -411,6 +412,15 @@ static const uint8_t *find_tlv(const uint8_t *p, size_t n, uint8_t tag,
     }
     return NULL;
 }
+/* Data queued for the host on IN endpoint ep. N42 DT hsic-baseband
+ * function-remote_wake: the modem also asks a host that has suspended the
+ * HSIC link (the host never enables USB remote wakeup) to resume, and drops
+ * the request once the host polls it again (mdm_data). */
+static void mdm_wake(MDM9x15State *s, unsigned ep)
+{
+    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, ep), 0);
+    qemu_irq_raise(s->remote_wake);
+}
 static void mdm_qmi_ready(MDM9x15State *s)
 {
     /* QMI CTL Sync indication: modem reset invalidates previous clients.
@@ -427,7 +437,7 @@ static void mdm_qmi_ready(MDM9x15State *s)
         if (g_queue_get_length(&s->rx[iface]) < 64) {
             g_queue_push_tail(&s->rx[iface],
                               g_bytes_new_static(sync, sizeof(sync)));
-            usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, iface + 1), 0);
+            mdm_wake(s, iface + 1);
             mdm_log(s, "qmi-ready", iface, 0x27, 0);
         }
     }
@@ -779,7 +789,7 @@ static bool mdm_qmi_output(MDM9x15State *s, unsigned iface, const uint8_t *p,
         return false;
     }
     g_queue_push_tail(&s->rx[iface], g_bytes_new(p, n));
-    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, iface + 1), 0);
+    mdm_wake(s, iface + 1);
     mdm_qmi_trace(iface, 1, p, n);
     return true;
 }
@@ -2824,7 +2834,7 @@ static void mdm_dload_reply(MDM9x15State *s, const uint8_t *p, size_t n)
     }
     g_autoptr(GByteArray) wire = mdm_hdlc_encode(p, n);
     g_queue_push_tail(&s->rx[0], g_bytes_new(wire->data, wire->len));
-    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, 1), 0);
+    mdm_wake(s, 1);
 }
 
 static void mdm_serial_receive_hdlc(MDM9x15State *s, const uint8_t *buf,
@@ -3190,7 +3200,7 @@ static void mdm_sahara_packet(MDM9x15State *s, const uint8_t *p, size_t n)
         return;
     }
     g_queue_push_tail(&s->rx[0], g_bytes_new(p, n));
-    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, 1), 0);
+    mdm_wake(s, 1);
 }
 
 static void mdm_sahara_begin(MDM9x15State *s)
@@ -3684,6 +3694,9 @@ static void mdm_data(USBDevice *dev, USBPacket *p)
 {
     MDM9x15State *s = MDM9X15(dev);
     unsigned ep = p->ep->nr;
+    if (p->pid == USB_TOKEN_IN) {
+        qemu_irq_lower(s->remote_wake);
+    }
     if (p->pid == USB_TOKEN_IN && mdm_is_notification(dev, ep)) {
         unsigned i = ep - 1;
         if (!g_queue_is_empty(&s->rx[i])) {
@@ -3767,6 +3780,7 @@ static void mdm_reset(USBDevice *dev)
         g_queue_clear_full(&s->rx[i], (GDestroyNotify)g_bytes_unref);
         g_byte_array_set_size(s->tx[i], 0);
     }
+    qemu_irq_lower(s->remote_wake);
 }
 /* HSIC readiness announces a powered peer; a USB connection additionally
  * needs the host's link handshake and PHY training. The 10ms virtual training
@@ -3941,6 +3955,7 @@ static void mdm_instance_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), mdm_host_ready_input, "host-ready", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->device_ready, "device-ready", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->reset_detect, "reset-detect", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->remote_wake, "remote-wake", 1);
 }
 static void mdm_realize(USBDevice *dev, Error **errp)
 {

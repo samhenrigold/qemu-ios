@@ -1386,6 +1386,40 @@ static void a6_powerdown_req(Notifier *notifier, void *opaque)
 
 static Notifier a6_powerdown_notifier = {.notify = a6_powerdown_req};
 
+/* N42 DT function-remote_wake: hsic-baseband GPIO 1.2, wlan GPIO 25.0,
+ * active high. AppleUSBHSICPort samples the line each time it suspends the
+ * port and resumes the port at once if it is high; the host never enables USB
+ * remote wakeup on either peer. The GPIO model's inputs idle high, so both
+ * links resumed ~15 ms after every suspend, 15 times a second with no
+ * traffic, and each cycle's power management woke both cores. The lines idle
+ * low and the peers raise them for data (-device usb-bcm-hsic exists only
+ * once the machine is built). */
+static void a6_wire_remote_wake(Notifier *notifier, void *opaque)
+{
+    S5L8950State *s = S5L8950_MACHINE(qdev_get_machine());
+    USBPort *port;
+
+    if (!s->hsic_bus) {
+        return;
+    }
+    s5l8930_gpio_set_rest_level(s->gpio, 10, false);
+    s5l8930_gpio_set_rest_level(s->gpio, 200, false);
+    if (s->baseband_usb) {
+        qdev_connect_gpio_out_named(s->baseband_usb, "remote-wake", 0,
+                                    qdev_get_gpio_in(s->gpio, 10));
+    }
+    QTAILQ_FOREACH(port, &s->hsic_bus->used, next)
+    {
+        if (!strcmp(port->path, "4") && port->dev &&
+            object_dynamic_cast(OBJECT(port->dev), "usb-bcm-hsic")) {
+            qdev_connect_gpio_out_named(DEVICE(port->dev), "remote-wake", 0,
+                                        qdev_get_gpio_in(s->gpio, 200));
+        }
+    }
+}
+
+static Notifier a6_remote_wake_notifier = {.notify = a6_wire_remote_wake};
+
 static uint32_t a6_uart_rx_avail(void *opaque, hwaddr addr, bool to_device)
 {
     uint32_t status =
@@ -1589,6 +1623,7 @@ static void a6_init(MachineState *machine)
         sysbus_mmio_map(SYS_BUS_DEVICE(host), 0, 0x36400000);
         sysbus_connect_irq(SYS_BUS_DEVICE(host), 0,
                            qemu_allocate_irq(a6_irq, s, 12));
+        qemu_add_machine_init_done_notifier(&a6_remote_wake_notifier);
         if (s->hsic_ready_probe) {
             s5l8930_gpio_set_rest_level(gpio, 211, false);
             s5l8930_gpio_set_rest_level(gpio, 57, false);

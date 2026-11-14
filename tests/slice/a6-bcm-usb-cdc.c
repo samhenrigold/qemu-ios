@@ -73,6 +73,7 @@ typedef struct {
     size_t bulk_rx_offset;
     BCMFullmacState fullmac;
     GQueue *control_rx, *data_rx;
+    int *remote_wake;
 } BCMHSICState;
 static BCMHSICState *transport;
 static void bcm_fullmac_output(void *, unsigned, const uint8_t *, uint32_t);
@@ -141,6 +142,12 @@ static void bcm_fullmac_event_data(BCMFullmacState *s, uint32_t e,
 static void bcm_fullmac_credit_map(BCMFullmacState *s)
 {
     assert(!s->fws_supported);
+}
+static void qemu_irq_raise(int *irq)
+{
+    if (irq) {
+        *irq = 1;
+    }
 }
 #include "slice.h"
 int main(void)
