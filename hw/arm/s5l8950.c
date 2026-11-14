@@ -2121,7 +2121,7 @@ static void a6_class_init(ObjectClass *klass, const void *data)
      * MTTCG reserves one translation context per advertised maximum CPU. */
     mc->default_cpus = 4;
     mc->max_cpus = 4;
-    mc->minimum_page_bits = 10;
+    mc->minimum_page_bits = 12;   /* the CPUs never map a page under 4K */
     mc->default_ram_size = A6_RAM_SIZE;
     object_class_property_add_str(klass, "kboot", a6_get_kboot, a6_set_kboot);
     object_class_property_add_str(klass, "nand", a6_get_nand, a6_set_nand);
