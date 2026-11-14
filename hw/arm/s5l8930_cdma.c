@@ -12,7 +12,8 @@
  * +0x08/+0x0C clear, +0x10/+0x14 the enabled channels (read). Channel n lives
  * at n << 12 (n = 1..0x25; channel 0's slot is the global block):
  *   +0x00 ctrl/status: write bit0 go, bit1 reset, bit2 abort, bit3 interrupt, bit5 hold;
- *                      bits 16-17 state (1 = running), 0x40000 error,
+ *                      bits 16-17 state (1 = running, 2 = stopped by an
+ *                      abort on the A6), 0x40000 error,
  *                      0x80000 done, 0x100000 descriptor flag, 0x200000
  *                      abort done; the 0x3C0000 bits are write-1-to-clear.
  *   +0x04 settings (bit1 = memory -> device, bits 2-3 width, 4-6 burst,
@@ -87,6 +88,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
 #define CTRL_AES_CTX(ctrl)  (((ctrl) >> 8) & 0xFF)
 #define ST_RUNNING          (1u << 16)
 #define ST_HELD             (1u << 17)      /* a running channel parked by CTRL_HOLD */
+#define ST_STOPPED          (2u << 16)      /* the A6's state after an abort (CDMAChannel.stopped) */
 #define ST_ERROR            (1u << 18)
 #define ST_DONE             (1u << 19)
 #define ST_FLAG             (1u << 20)
@@ -127,6 +129,8 @@ typedef struct CDMAChannel {
     /* stalled inside the segment at desc; addr/remain live (migrated through
      * S5L8930CDMAState.in_seg_mig: the IOP firmware's NAND chains stall any time) */
     bool in_seg;
+    /* The A6's: aborted since the last go, through the reset that follows (not migrated: the A6 blocks it) */
+    bool stopped;
 } CDMAChannel;
 
 typedef struct AESContext {
@@ -994,7 +998,7 @@ static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
         }
         switch (reg) {
         case CH_CTRL:
-            return c->ctrl;
+            return c->ctrl | (c->stopped ? ST_STOPPED : 0);
         case CH_SETTINGS: return c->settings;
         case CH_FIFO:     return c->fifo;
         case CH_REMAIN:   return c->remain;
@@ -1095,9 +1099,19 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
         if ((v & CTRL_ABORT) && !pause) {
             c->ctrl = (c->ctrl & ~ST_RUNNING) | ST_ABORTED;
             c->in_seg = false;
+            /*
+             * The channel reads state 2 until its next go, the reset and the |= 0x18 of the abort sequence
+             * included. 14G61's AppleCDMA interrupt action (0x80da1d30) runs on a work loop after its filter;
+             * finding the channel's clock off, as a stop that came between the two leaves it, it takes the
+             * interrupt as that stop's and panics ("CDMA %d should be stopped: %08x") unless the state is 2.
+             * The channel start accepts 2 as well (0x80da1eca). The position query's HOLD | ABORT (0x80da2282) on a
+             * channel that has finished leaves the state as it was.
+             */
+            c->stopped = s->a6 && !(v & CTRL_HOLD);
             cdma_paced_stop(s, ch);
         }
         if ((v & CTRL_GO) && !(v & CTRL_HOLD)) {
+            c->stopped = false;
             if (trace_event_get_state_backends(TRACE_S5L8930_CDMA_LOG)) {
                 TRACE_PRINTF(trace_s5l8930_cdma_log, "[CDMA] %.4f go ch 0x%x ctrl 0x%x set 0x%x fifo 0x%x "
                         "desc 0x%x\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,

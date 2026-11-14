@@ -540,6 +540,47 @@ int main(void) {
     assert(s7->ch[13].remain == UINT32_MAX - 8 && s7->ch[13].addr == DST + 9);
     assert(s7->ch[13].desc == DESC + 16 && s7->ch[13].in_seg);
     free(s7);
+    /* 14G61's AppleCDMA stopping the A6 speaker's channel (mca0 TX, 35) while the interrupt action for the
+     * chain that just finished waits for its work loop. Stop (0x80da20e4): abort (|= 4, poll 0x200000, the
+     * config | 2 reset, |= 0x18), then the clock off. The action (0x80da1d30) then turns the clock on, finds
+     * it was off, clears 0x180000 and panics ("CDMA 35 should be stopped: 00000018") unless the state field
+     * reads 2. The next start's check (0x80da1eca) takes state 2 too, and a finished chain reads state 0,
+     * which iBoot's handler (0xbff02ba6) takes as complete. */
+    S5L8930CDMAState *s8 = calloc(1, sizeof *s8);
+    s8->num_channels = 44; s8->a6 = true; s8->paced_base = 0x34190000; s8->paced_ports = 8;
+    for (int i = 0; i < CDMA_CHANNELS; i++) s8->irq[i] = i;
+#define CR8(a)   cdma_read(s8, (a), 4)
+#define CW8(a,v) cdma_write(s8, (a), (v), 4)
+    g_now = 200000000; fifo_sink_len = 0;
+    wr32(DESC + 0, DESC); wr32(DESC + 4, DESC_DATA | DESC_LAST); wr32(DESC + 8, SRC); wr32(DESC + 12, 2048);
+    CW8(0x04, 1u << 3);                                     /* channel 35's clock on */
+    setup_chan(s8, 35, SET_TO_DEVICE, 0x34196028, DESC);
+    CW8(CHREG(35, CH_CTRL), 0x18 | CTRL_GO);
+    g_now += 50000000;                                      /* 2048 bytes at 88,200 a second: 23 ms */
+    cdma_pace_tick(s8);
+    assert(irq_level[35] && (CR8(CHREG(35, CH_CTRL)) & 0x30000) == 0);
+    CW8(CHREG(35, CH_CTRL), CR8(CHREG(35, CH_CTRL)) | CTRL_ABORT);
+    assert((CR8(CHREG(35, CH_CTRL)) & ST_ABORTED) && !irq_level[35]);
+    CW8(CHREG(35, CH_CTRL), 0x18 | CTRL_RESET);
+    CW8(CHREG(35, CH_CTRL), CR8(CHREG(35, CH_CTRL)) | 0x18);
+    CW8(0x0c, 1u << 3);                                     /* clock off */
+    CW8(0x04, 1u << 3);                                     /* the action: clock on, it was off */
+    CW8(CHREG(35, CH_CTRL), CR8(CHREG(35, CH_CTRL)) | 0x180000);
+    uint32_t csr = CR8(CHREG(35, CH_CTRL));
+    if ((csr & 0x30000) != 0x20000) {
+        fprintf(stderr, "FAIL: CDMA 35 should be stopped: %08x\n", csr);
+        return 1;
+    }
+    setup_chan(s8, 35, SET_TO_DEVICE, 0x34196028, DESC);   /* the reset cleared them */
+    CW8(CHREG(35, CH_CTRL), 0x18 | CTRL_GO);
+    assert((CR8(CHREG(35, CH_CTRL)) & 0x30000) == ST_RUNNING);
+    g_now += 50000000; fifo_sink_len = 0;
+    cdma_pace_tick(s8);
+    assert((CR8(CHREG(35, CH_CTRL)) & 0x30000) == 0 && (CR8(CHREG(35, CH_CTRL)) & ST_DONE));
+    /* The position query's HOLD | ABORT (0x80da2282) on the finished channel isn't a stop. */
+    CW8(CHREG(35, CH_CTRL), (CR8(CHREG(35, CH_CTRL)) & ~0x180000u) | 0x24);
+    assert((CR8(CHREG(35, CH_CTRL)) & 0x30000) == 0);
+    free(s8);
     free(s); free(s2); free(s3); free(s4); free(s5); free(s6);
     /* A snapshot restore re-runs stalled channels from a bottom half on the A6 only; the other boards restore as
      * they were qualified, with nothing scheduled. */
@@ -552,5 +593,5 @@ int main(void) {
     free(restored);
     puts("PASS: CDMA inline-AES bypass symmetric both ways, enabled-channel status regs, FIFO-drained signal, "
          "memory-to-memory interrupt enable, reentrant FIFO room resumes partial DMA exactly once, "
-         "A6 channel 40 transfer/IRQ and legacy rejection; AES-256 file-layer read/write, descriptor IV and zero-room/partial CBC continuation");
+         "A6 channel 40 transfer/IRQ and legacy rejection, A6 state 2 after a stop until the next go; AES-256 file-layer read/write, descriptor IV and zero-room/partial CBC continuation");
 }
