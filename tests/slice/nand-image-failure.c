@@ -24,6 +24,7 @@ static int write_result, zero_result, flush_result;
 static int blk_pwrite(BlockBackend *b, int64_t o, int64_t n, const void *p, int f) { return write_result; }
 static int blk_pwrite_zeroes(BlockBackend *b, int64_t o, int64_t n, int f) { return zero_result; }
 static int blk_flush(BlockBackend *b) { return flush_result; }
+static void bdrv_drain_all(void) {}
 #include "slice.h"
 
 int main(void)

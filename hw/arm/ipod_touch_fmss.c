@@ -7,6 +7,8 @@
 #include "qapi/error.h"
 #include "system/runstate.h"
 #include "system/address-spaces.h"
+#include "qemu/coroutine.h"
+#include "qemu/aio-wait.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include "trace.h"
@@ -530,12 +532,19 @@ bool ipod_touch_fmss_io_failed(void)
     return qatomic_read(&fmss_io_failed);
 }
 
+/* A request, as a vCPU thread's vm_stop makes: the transfer that fails runs in a coroutine (fmss_transfer). */
+static void fmss_stop(void)
+{
+    qemu_system_vmstop_request_prepare();
+    qemu_system_vmstop_request(RUN_STATE_IO_ERROR);
+}
+
 /* Stop before acknowledging writes that did not reach the host filesystem. */
 static bool fmss_io_error(const char *path, int err)
 {
     qatomic_set(&fmss_io_failed, true);
     error_report("FMSS: cannot persist %s: %s; VM stopped", path, strerror(err));
-    vm_stop(RUN_STATE_IO_ERROR);
+    fmss_stop();
     return false;
 }
 
@@ -1416,7 +1425,7 @@ static void read_nand_pages(IPodTouchFMSSState *s)
 static void write_nand_pages(IPodTouchFMSSState *s)
 {
     if (ipod_touch_fmss_io_failed()) {
-        vm_stop(RUN_STATE_IO_ERROR);
+        fmss_stop();
         return;
     }
     s->read_clean = false;
@@ -1622,6 +1631,60 @@ static void fmss_complete(void *opaque)
     }
 }
 
+/* CSCTRL go: the program runs and completes, its status that of the transfer it follows. */
+static void fmss_go(IPodTouchFMSSState *s)
+{
+    s->reg_cs_status = s->read_clean ? FMSS_STATUS_CLEAN : FMSS_STATUS_DONE;
+    s->read_clean = false;
+    fmss_run_script(s);
+    timer_mod(s->completion_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+}
+
+/*
+ * A page transfer (csgenrc 0xa01 read, 0xa02 write) runs in a coroutine: the store's blk_* calls yield in it, so the
+ * host I/O waits off the BQL, and the program the CPU starts meanwhile (CSCTRL go) completes when the transfer has
+ * ended, as the sequencer's completion follows its last page. The driver starts the next transfer after the
+ * completion; one written before then runs after this one. None is in flight at a stop or a save
+ * (fmss_quiesce), so none is migrated.
+ */
+static void coroutine_fn fmss_transfer_co(void *opaque)
+{
+    IPodTouchFMSSState *s = opaque;
+
+    for (uint32_t op = s->transfer_op; op; op = s->transfer_op) {
+        if (op == 0xa01) {
+            read_nand_pages(s);
+        } else {
+            write_nand_pages(s);
+        }
+        s->transfer_op = s->transfer_next;
+        s->transfer_next = 0;
+    }
+    s->transferring = false;
+    if (s->go_pending) {
+        s->go_pending = false;
+        fmss_go(s);
+    }
+    aio_wait_kick();
+}
+
+static void fmss_transfer(IPodTouchFMSSState *s, uint32_t op)
+{
+    if (s->transferring) {
+        qemu_log_mask(LOG_GUEST_ERROR, "[fmss] transfer 0x%x while one runs: it follows\n", op);
+        s->transfer_next = op;
+        return;
+    }
+    s->transferring = true;
+    s->transfer_op = op;
+    qemu_coroutine_enter(qemu_coroutine_create(fmss_transfer_co, s));
+}
+
+static void fmss_quiesce(IPodTouchFMSSState *s)
+{
+    AIO_WAIT_WHILE(NULL, s->transferring);
+}
+
 static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     IPodTouchFMSSState *s = (IPodTouchFMSSState *)opaque;
@@ -1640,12 +1703,11 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
     switch(addr) {
         case 0xC00:
             s->reg_cs_ctrl = val;
+            s->go_pending = (val & 1) && s->transferring;
             if (val & 1) {
-                s->reg_cs_status = s->read_clean ? FMSS_STATUS_CLEAN : FMSS_STATUS_DONE;
-                s->read_clean = false;
-                fmss_run_script(s);
-                timer_mod(s->completion_timer,
-                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+                if (!s->go_pending) {
+                    fmss_go(s);
+                }
             } else {
                 timer_del(s->completion_timer);
             }
@@ -1712,9 +1774,9 @@ static void ipod_touch_fmss_write(void *opaque, hwaddr addr, uint64_t val, unsig
                        s->reg_csgenrc, s->reg_pages_in_addr,
                        s->reg_cs_buf_addr, s->reg_num_pages);
             }
-            if(s->reg_csgenrc == 0xa01) { read_nand_pages(s); }
-            else if(s->reg_csgenrc == 0xa02) { write_nand_pages(s); }
-            else {
+            if (s->reg_csgenrc == 0xa01 || s->reg_csgenrc == 0xa02) {
+                fmss_transfer(s, s->reg_csgenrc);
+            } else {
                 /* Erase and the other opcodes are not modeled. Confirmed by
                  * instrumentation that none of them fires during boot or an
                  * app install, so erase is not what blocks persistence. */
@@ -1805,6 +1867,9 @@ static void ipod_touch_fmss_reset(DeviceState *dev)
 {
     IPodTouchFMSSState *s = IPOD_TOUCH_FMSS(dev);
 
+    s->go_pending = false;
+    s->transfer_next = 0;
+    fmss_quiesce(s);
     if (!fmss_physical() && s->phys_pages) {
         g_tree_remove_all(s->phys_pages);
     }
@@ -1869,6 +1934,12 @@ static const VMStateDescription vmstate_fmss_marker = {
     }
 };
 
+static int fmss_pre_save(void *opaque)
+{
+    fmss_quiesce(opaque);       /* the stop drained it already: the state saved is the transfer's end */
+    return 0;
+}
+
 static int fmss_pre_load(void *opaque)
 {
     IPodTouchFMSSState *s = opaque;
@@ -1928,6 +1999,7 @@ static const VMStateDescription vmstate_ipod_touch_fmss = {
     .name = "ipod_touch_fmss",
     .version_id = 13,
     .minimum_version_id = 4,
+    .pre_save = fmss_pre_save,
     .pre_load = fmss_pre_load,
     .post_load = fmss_post_load,
     .fields = (const VMStateField[]) {

@@ -1,8 +1,13 @@
 /* Exercise actual FMSS register handlers with a deterministic virtual clock.
  *
+ * A page transfer (D38 with csgenrc 0xa01/0xa02) runs in a coroutine whose host I/O waits off the BQL; here its
+ * coroutine runs only when the test says the I/O has ended. A program started meanwhile (CSCTRL go) completes only
+ * after the transfer, with the transfer's status. With the change reverted the transfer runs inside the D38 write and
+ * the go arms its completion at once: the "transfer in flight" checks below fail.
+ *
  * SLICE include/hw/arm/ipod_touch_fmss.h define FMSS|NAND_PAGES_PER_BLOCK
  * SLICE hw/arm/ipod_touch_fmss.c define NAND_MAX_TOTAL_BLOCKS
- * SLICE hw/arm/ipod_touch_fmss.c fn ipod_touch_fmss_read fmss_update_irq fmss_complete ipod_touch_fmss_write fmss_pre_load fmss_invalid_page fmss_invalid_marker fmss_post_load ipod_touch_fmss_reset
+ * SLICE hw/arm/ipod_touch_fmss.c fn ipod_touch_fmss_read fmss_update_irq fmss_complete fmss_go fmss_transfer_co fmss_transfer fmss_quiesce ipod_touch_fmss_write fmss_pre_load fmss_invalid_page fmss_invalid_marker fmss_post_load ipod_touch_fmss_reset
  * PKG glib-2.0
  */
 #include <assert.h>
@@ -39,8 +44,21 @@ typedef struct {
     QEMUTimer *completion_timer;
     uint32_t reg_cs_status;
     bool read_clean;
+    bool transferring, go_pending;
+    uint32_t transfer_op, transfer_next;
     uint32_t total_blocks;
 } IPodTouchFMSSState;
+/* A coroutine runs when run_coroutine() says its I/O has ended. */
+#define coroutine_fn
+typedef struct { void (*fn)(void *); void *arg; } Coroutine;
+static Coroutine pending_co;
+static int pending_n;
+static Coroutine *qemu_coroutine_create(void (*fn)(void *), void *arg)
+{ pending_co = (Coroutine){ fn, arg }; return &pending_co; }
+static void qemu_coroutine_enter(Coroutine *co) { (void)co; pending_n++; }
+static void run_coroutine(void) { assert(pending_n == 1); pending_n = 0; pending_co.fn(pending_co.arg); }
+static void aio_wait_kick(void) {}
+#define AIO_WAIT_WHILE(ctx, cond) do { if (cond) { run_coroutine(); } assert(!(cond)); } while (0)
 static int level;
 static gint key_compare(gconstpointer a, gconstpointer b) {
     return ((uintptr_t)a > (uintptr_t)b) - ((uintptr_t)a < (uintptr_t)b);
@@ -56,8 +74,9 @@ static void timer_del(QEMUTimer *t) { t->pending=false; }
 static bool fmss_trace_on(void) { return false; }
 static int scripts_run;
 static void fmss_run_script(IPodTouchFMSSState *s) { scripts_run++; }
-static void read_nand_pages(IPodTouchFMSSState *s) {}
-static void write_nand_pages(IPodTouchFMSSState *s) {}
+static int reads, writes;
+static void read_nand_pages(IPodTouchFMSSState *s) { reads++; s->read_clean = true; }
+static void write_nand_pages(IPodTouchFMSSState *s) { writes++; s->read_clean = false; }
 static unsigned fmss_total_blocks(IPodTouchFMSSState *s) { return 2048; }
 #include "slice.h"
 static void write_reg(IPodTouchFMSSState *s, unsigned r, unsigned v) {
@@ -126,6 +145,28 @@ int main(void) {
     /* Only certified v4 states can load; no legacy default reconstruction. */
     timer.pending=true; fmss_post_load(&s,4);
     assert(!level && timer.pending && s.reg_cs_irq_mask==0);
+    /* A read transfer in flight: the go waits for it, then completes with its (clean) status. */
+    timer.pending=false; s.reg_cs_irq_mask=1; s.reg_cs_irq_bit=0; scripts_run=0;
+    write_reg(&s,FMSS_CSGENRC,0xa01); write_reg(&s,FMSS_SCRIPT_PARAM_D38,1);
+    assert(s.transferring && pending_n==1 && reads==0);
+    write_reg(&s,0xc00,0xffb5);
+    assert(s.go_pending && !timer.pending && !scripts_run);
+    run_coroutine();
+    assert(reads==1 && !s.transferring && !s.go_pending && scripts_run==1 && timer.pending);
+    assert(ipod_touch_fmss_read(&s,FMSS_CS_STATUS,4)==FMSS_STATUS_CLEAN);
+    advance(&s); assert(s.reg_cs_irq_bit==1);
+    write_reg(&s,0xc0c,1); write_reg(&s,0xc00,8);
+    /* A write written while it runs follows it; an aborted go stays aborted; a reset waits for the transfer. */
+    write_reg(&s,FMSS_CSGENRC,0xa01); write_reg(&s,FMSS_SCRIPT_PARAM_D38,1);
+    write_reg(&s,FMSS_CSGENRC,0xa02); write_reg(&s,FMSS_SCRIPT_PARAM_D38,1);
+    write_reg(&s,0xc00,0xffb5); write_reg(&s,0xc00,8);
+    assert(!s.go_pending && pending_n==1);
+    run_coroutine();
+    assert(reads==2 && writes==1 && !timer.pending && scripts_run==1);
+    write_reg(&s,FMSS_CSGENRC,0xa02); write_reg(&s,FMSS_SCRIPT_PARAM_D38,1);
+    ipod_touch_fmss_reset((DeviceState *)&s);
+    assert(writes==2 && !s.transferring && !pending_n);
     g_tree_destroy(s.phys_pages); g_tree_destroy(s.erased_blocks);
-    puts("PASS: FMSS D54/D28/D4C readback/reset/load, deferred completion, polling, W1C, masking, abort, failure and restore");
+    puts("PASS: FMSS D54/D28/D4C readback/reset/load, deferred completion, polling, W1C, masking, abort, failure and "
+         "restore; a go waits for the transfer in flight, a transfer written meanwhile follows, reset waits");
 }

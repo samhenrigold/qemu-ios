@@ -120,6 +120,22 @@ static void empty_snapshot(void)
     g_free(overlay);
 }
 
+/* The transfer runs while the program does, its host I/O off the BQL: start the program (CSCTRL go), wait for its
+ * completion (CSIRQ bit 0) as the drivers do, and acknowledge it. */
+static void complete_transfer(QTestState *qts)
+{
+    qtest_writel(qts, RAM + 0x4800, 0);             /* an empty program */
+    qtest_writel(qts, RAM + 0x4804, 0);
+    qtest_writel(qts, FMSS + 0xc04, RAM + 0x4800);
+    qtest_writel(qts, FMSS + 0xc00, 1);
+    for (unsigned i = 0; !(qtest_readl(qts, FMSS + 0xc0c) & 1); i++) {
+        g_assert_cmpuint(i, <, 100000);
+        qtest_clock_step(qts, 1000);
+    }
+    qtest_writel(qts, FMSS + 0xc0c, 1);
+    qtest_writel(qts, FMSS + 0xc00, 0);
+}
+
 static void program(QTestState *qts, unsigned cs, unsigned page,
                     const uint8_t *data, const uint8_t *spare)
 {
@@ -135,6 +151,7 @@ static void program(QTestState *qts, unsigned cs, unsigned page,
     qtest_writel(qts, FMSS + 0xd1c, RAM + 0x2000);
     qtest_writel(qts, FMSS + 0xd30, 0xa02);
     qtest_writel(qts, FMSS + 0xd38, 1);
+    complete_transfer(qts);
 }
 
 static void read_page(QTestState *qts, unsigned cs, unsigned page,
@@ -151,6 +168,7 @@ static void read_page(QTestState *qts, unsigned cs, unsigned page,
     qtest_writel(qts, FMSS + 0xd1c, RAM + 0x2800);
     qtest_writel(qts, FMSS + 0xd30, 0xa01);
     qtest_writel(qts, FMSS + 0xd38, 1);
+    complete_transfer(qts);
     qtest_memread(qts, RAM + 0x30000, data, 4096);
     qtest_memread(qts, RAM + 0x2800, spare, 12);
 }
@@ -1602,14 +1620,8 @@ static void descriptor_pointer_snapshot(void)
  * the clean status the driver takes for a blank page, on a physical image. */
 static uint32_t run_status(QTestState *qts)
 {
-    /* The driver reads CSSTATUS after the program it started: an empty one here. */
-    qtest_writel(qts, RAM + 0x4800, 0);
-    qtest_writel(qts, RAM + 0x4804, 0);
-    qtest_writel(qts, FMSS + 0xc04, RAM + 0x4800);
-    qtest_writel(qts, FMSS + 0xc00, 0xffb5);
-    uint32_t status = qtest_readl(qts, FMSS + 0xc30);
-    qtest_writel(qts, FMSS + 0xc00, 8);
-    return status;
+    /* The driver reads CSSTATUS after the program it started, the one the transfer completed with. */
+    return qtest_readl(qts, FMSS + 0xc30);
 }
 
 static void erase_block_and_clean_status(void)

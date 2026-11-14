@@ -1,7 +1,7 @@
 /* Compile the real FMSS write path with host-I/O fault injection; no guest needed.
  *
  * SLICE:limit hw/arm/ipod_touch_fmss.c define FMSS_MAX_WRITE_ENTRIES[[:space:]]
- * SLICE hw/arm/ipod_touch_fmss.c fn find_bit_index fmss_block_key fmss_key_compare fmss_remember_erased fmss_block_marker_path fmss_block_is_erased ipod_touch_fmss_io_failed fmss_io_error fmss_erase_block fmss_remember_physical fmss_store_page fmss_write_dma_read write_nand_pages ipod_touch_fmss_reset
+ * SLICE hw/arm/ipod_touch_fmss.c fn find_bit_index fmss_block_key fmss_key_compare fmss_remember_erased fmss_block_marker_path fmss_block_is_erased ipod_touch_fmss_io_failed fmss_stop fmss_io_error fmss_erase_block fmss_remember_physical fmss_store_page fmss_write_dma_read write_nand_pages fmss_quiesce ipod_touch_fmss_reset
  * PKG glib-2.0
  * CFLAGS -Wall -Werror -Wno-unused-function
  */
@@ -45,7 +45,10 @@ typedef struct {
     uint8_t page_buffer[4096], page_spare_buffer[64];
     uint32_t reg_cs_status;
     bool read_clean;
+    bool transferring, go_pending;
+    uint32_t transfer_op, transfer_next;
 } IPodTouchFMSSState;
+#define AIO_WAIT_WHILE(ctx, cond) assert(!(cond))
 /* The image store (nand-image.c) is not under test here: no state has one. */
 static int nand_image_write(void *n, unsigned chip, uint32_t page, const uint8_t *record) { return -EIO; }
 static int nand_image_erase(void *n, unsigned chip, uint32_t block) { return -EIO; }
@@ -82,7 +85,8 @@ static unsigned address_space_read(void *space, uint64_t addr, int attrs,
 }
 static uint32_t ldl_le_p(const void *p)
 { uint32_t n; memcpy(&n, p, 4); return GUINT32_FROM_LE(n); }
-static int vm_stop(int state) { assert(state == RUN_STATE_IO_ERROR); stops++; return 0; }
+static void qemu_system_vmstop_request_prepare(void) {}
+static void qemu_system_vmstop_request(int state) { assert(state == RUN_STATE_IO_ERROR); stops++; }
 static bool fmss_erase_on(void) { return erase_enabled; }
 static bool fmss_physical(void) { return physical_enabled; }
 static bool fmss_legacy_on(void) { return false; }

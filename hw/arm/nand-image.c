@@ -144,6 +144,8 @@ static void nand_image_vm_state(void *opaque, bool running, RunState state)
     if (running) {
         return;
     }
+    /* The vCPUs are paused: a transfer still running in its model's coroutine ends before the flush. */
+    bdrv_drain_all();
     for (unsigned i = 0; i < n->geo.chips; i++) {
         int result = blk_flush(n->chip[i]);
         if (result < 0) {
