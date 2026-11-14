@@ -429,6 +429,26 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     return tb->tc.ptr;
 }
 
+/*
+ * helper_lookup_tb_ptr's jump cache probe for a TB exit that knows the next
+ * TB's state but for @pc and @cs_base: @key is its flags and cflags, flags in
+ * the low half. A miss is the full lookup. tcg_lookup_tb_probe_stub is this
+ * in host code, where the backend has one (tcg_gen_lookup_and_goto_ptr_probe).
+ */
+const void *HELPER(lookup_tb_probe)(CPUArchState *env, uint64_t pc,
+                                    uint64_t cs_base, uint64_t key)
+{
+    CPUJumpCache *jc = env_cpu(env)->tb_jmp_cache;
+    uint32_t h = tb_jmp_cache_hash_func(pc, cs_base);
+    TranslationBlock *tb = qatomic_read(&jc->array[h].tb);
+
+    if (likely(tb && jc->array[h].pc == pc && tb->cs_base == cs_base &&
+               tb->flags == (uint32_t)key && tb_cflags(tb) == key >> 32)) {
+        return tb->tc.ptr;
+    }
+    return HELPER(lookup_tb_ptr)(env);
+}
+
 /* Return the current PC from CPU, which may be cached in TB. */
 static vaddr log_pc(CPUState *cpu, const TranslationBlock *tb)
 {

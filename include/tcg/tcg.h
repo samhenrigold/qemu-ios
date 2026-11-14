@@ -447,6 +447,7 @@ static inline bool temp_readonly(TCGTemp *ts)
 
 extern __thread TCGContext *tcg_ctx;
 extern const void *tcg_code_gen_epilogue;
+extern const void *tcg_lookup_tb_probe_stub;
 extern uintptr_t tcg_splitwx_diff;
 extern TCGv_env tcg_env;
 

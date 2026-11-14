@@ -2573,12 +2573,6 @@ void tcg_gen_goto_tb(unsigned idx)
     tcg_gen_op1i(INDEX_op_goto_tb, 0, idx);
 }
 
-void tcg_gen_goto_ptr(TCGv_ptr ptr)
-{
-    plugin_gen_disable_mem_helpers();
-    tcg_gen_op1i(INDEX_op_goto_ptr, TCG_TYPE_PTR, tcgv_ptr_arg(ptr));
-}
-
 void tcg_gen_lookup_and_goto_ptr(void)
 {
     TCGv_ptr ptr;
@@ -2591,6 +2585,30 @@ void tcg_gen_lookup_and_goto_ptr(void)
     plugin_gen_disable_mem_helpers();
     ptr = tcg_temp_ebb_new_ptr();
     gen_helper_lookup_tb_ptr(ptr, tcg_env);
+    tcg_gen_op1i(INDEX_op_goto_ptr, TCG_TYPE_PTR, tcgv_ptr_arg(ptr));
+    tcg_temp_free_ptr(ptr);
+}
+
+void tcg_gen_lookup_and_goto_ptr_probe(TCGv_i64 pc, TCGv_i64 cs_base,
+                                       uint32_t flags, uint32_t cflags)
+{
+    TCGv_ptr ptr;
+    TCGv_i64 key;
+
+    if (tcg_ctx->gen_tb->cflags & CF_NO_GOTO_PTR) {
+        tcg_gen_exit_tb(NULL, 0);
+        return;
+    }
+
+    plugin_gen_disable_mem_helpers();
+    ptr = tcg_temp_ebb_new_ptr();
+    key = tcg_constant_i64(flags | (uint64_t)cflags << 32);
+    /* The backend's stub, where it has one: the same probe, without a frame. */
+    tcg_gen_call4(tcg_lookup_tb_probe_stub ? (void *)tcg_lookup_tb_probe_stub
+                  : helper_info_lookup_tb_probe.func,
+                  &helper_info_lookup_tb_probe, tcgv_ptr_temp(ptr),
+                  tcgv_ptr_temp(tcg_env), tcgv_i64_temp(pc),
+                  tcgv_i64_temp(cs_base), tcgv_i64_temp(key));
     tcg_gen_op1i(INDEX_op_goto_ptr, TCG_TYPE_PTR, tcgv_ptr_arg(ptr));
     tcg_temp_free_ptr(ptr);
 }

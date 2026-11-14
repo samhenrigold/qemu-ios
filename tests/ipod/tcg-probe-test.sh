@@ -1,5 +1,5 @@
 #!/bin/bash
-# Branches that leave their TB through TCG's inline jump cache probe, on the iPad (Cortex-A8).
+# Branches that leave their TB through TCG's jump cache probe, on the iPad (Cortex-A8).
 #
 # A call, a return or an indirect branch finds its next TB in the jump cache from generated code, as
 # helper_lookup_tb_ptr would, trusting that nothing but the PC, the Thumb bit and the IT bits changed since the TB

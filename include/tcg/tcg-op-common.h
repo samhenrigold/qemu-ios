@@ -84,13 +84,20 @@ void tcg_gen_goto_tb(unsigned idx);
 void tcg_gen_lookup_and_goto_ptr(void);
 
 /**
- * tcg_gen_goto_ptr() - jump to the code of a TB found by the caller
- * @ptr: the TB's tc.ptr
+ * tcg_gen_lookup_and_goto_ptr_probe() - tcg_gen_lookup_and_goto_ptr for an
+ * exit that knows the next TB's state but for its PC and cs_base
+ * @pc: the next TB's PC
+ * @cs_base: its cs_base
+ * @flags: its flags
+ * @cflags: its cflags
  *
- * For a frontend that looks the next TB up itself (an inline jump cache
- * probe) and has checked everything helper_lookup_tb_ptr would.
+ * Probes the jump cache for that TB, which is all helper_lookup_tb_ptr does
+ * on a hit once it has the state, and calls that helper on a miss. The
+ * frontend has checked everything else the helper would (breakpoints,
+ * single-stepping, cflags it computes per lookup).
  */
-void tcg_gen_goto_ptr(TCGv_ptr ptr);
+void tcg_gen_lookup_and_goto_ptr_probe(TCGv_i64 pc, TCGv_i64 cs_base,
+                                       uint32_t flags, uint32_t cflags);
 
 void tcg_gen_plugin_cb(unsigned from);
 void tcg_gen_plugin_mem_cb(TCGv_i64 addr, unsigned meminfo);

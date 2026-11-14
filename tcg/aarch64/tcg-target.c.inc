@@ -11,6 +11,11 @@
  */
 
 #include "qemu/bitops.h"
+#ifdef CONFIG_SOFTMMU
+#include "hw/core/cpu.h"
+#include "accel/tcg/tb-hash.h"
+#include "exec/helper-gen-common.h"
+#endif
 
 /* Used for function call generation. */
 #define TCG_REG_CALL_STACK              TCG_REG_SP
@@ -3440,6 +3445,99 @@ QEMU_BUILD_BUG_ON(FRAME_SIZE >= (1 << 14));
 /* We're expecting to use a single ADDI insn.  */
 QEMU_BUILD_BUG_ON(FRAME_SIZE - PUSH_SIZE > 0xfff);
 
+#ifdef CONFIG_SOFTMMU
+/*
+ * helper_lookup_tb_probe (accel/tcg/cpu-exec.c) without a frame, shared by
+ * every TB exit that probes the jump cache: x0 env, x1 pc, x2 cs_base, x3
+ * flags | cflags << 32. Returns the TB's code in x0, or on a miss tail-calls
+ * helper_lookup_tb_ptr(env). Uses x4-x8 and TMP0 only; x30 is the return.
+ */
+static void tcg_out_lookup_tb_probe(TCGContext *s)
+{
+    unsigned sh = TARGET_PAGE_BITS - TB_JMP_PAGE_BITS;
+    const void *helper = helper_info_lookup_tb_ptr.func;
+    tcg_insn_unit *miss[4];
+    ptrdiff_t offset;
+
+    QEMU_BUILD_BUG_ON(sizeof(((CPUJumpCache *)0)->array[0]) != 16);
+    QEMU_BUILD_BUG_ON(offsetof(CPUJumpCache, array[0].pc) !=
+                      offsetof(CPUJumpCache, array[0].tb) + 8);
+    QEMU_BUILD_BUG_ON(offsetof(TranslationBlock, flags) !=
+                      offsetof(TranslationBlock, cs_base) + 8);
+    QEMU_BUILD_BUG_ON(offsetof(TranslationBlock, cflags) !=
+                      offsetof(TranslationBlock, flags) + 4);
+
+    tcg_lookup_tb_probe_stub = tcg_splitwx_to_rx(s->code_ptr);
+    tcg_out_bti(s, BTI_C);
+
+    /* x4 = tb_jmp_cache_hash_func(pc, cs_base) */
+    tcg_out_ubfm(s, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X1, sh, 63);
+    tcg_out_insn(s, 3510, EOR, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4, TCG_REG_X1);
+    tcg_out_insn(s, 3405, MOVZ, TCG_TYPE_I32, TCG_REG_X5, 0x79b1, 0);
+    tcg_out_insn(s, 3405, MOVK, TCG_TYPE_I32, TCG_REG_X5, 0x9e37, 16);
+    tcg_out_insn(s, 3509, MADD, TCG_TYPE_I32, TCG_REG_X5, TCG_REG_X2,
+                 TCG_REG_X5, TCG_REG_XZR);
+    tcg_out_ubfm(s, TCG_TYPE_I32, TCG_REG_X5, TCG_REG_X5,
+                 32 - TB_JMP_PAGE_BITS, 31);
+    tcg_out_insn(s, 3510, EOR, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4, TCG_REG_X5);
+    tcg_out_ubfm(s, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X4, sh, 63);
+    tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X5,
+                     TB_JMP_PAGE_MASK);
+    tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4,
+                     TB_JMP_ADDR_MASK);
+    tcg_out_insn(s, 3510, ORR, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4, TCG_REG_X5);
+
+    /* x6, x7 = the entry's tb and pc */
+    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X5, TCG_REG_X0,
+               offsetof(CPUState, tb_jmp_cache) - sizeof(CPUState));
+    tcg_out_insn(s, 3502S, ADD_LSL, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X5,
+                 TCG_REG_X4, 4);
+    tcg_out_insn(s, 3314, LDP, TCG_REG_X6, TCG_REG_X7, TCG_REG_X5,
+                 offsetof(CPUJumpCache, array[0].tb), 1, 0);
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X1, false);
+    miss[0] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+    miss[1] = s->code_ptr;
+    tcg_out_insn(s, 3201, CBZ, TCG_TYPE_I64, TCG_REG_X6, 0);
+
+    /* x7, x8 = its cs_base and flags | cflags << 32 */
+    tcg_out_insn(s, 3314, LDP, TCG_REG_X7, TCG_REG_X8, TCG_REG_X6,
+                 offsetof(TranslationBlock, cs_base), 1, 0);
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X2, false);
+    miss[2] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X8, TCG_REG_X3, false);
+    miss[3] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X0, TCG_REG_X6,
+               offsetof(TranslationBlock, tc.ptr));
+    tcg_out_insn(s, 3207, RET, TCG_REG_LR);
+
+    for (int i = 0; i < ARRAY_SIZE(miss); i++) {
+        bool ok = reloc_pc19(miss[i], tcg_splitwx_to_rx(s->code_ptr));
+        tcg_debug_assert(ok);
+    }
+    offset = tcg_pcrel_diff(s, helper) >> 2;
+    if (offset == sextract64(offset, 0, 26)) {
+        tcg_out_insn(s, 3206, B, offset);
+    } else {
+        /*
+         * MOVZ/MOVK, not tcg_out_movi: a constant pool entry here would be
+         * allocated from tcg_init_ctx's pool, which tcg_register_thread
+         * copies into every vCPU's context, and they would all translate
+         * into the same memory.
+         */
+        tcg_out_insn(s, 3405, MOVZ, TCG_TYPE_I64, TCG_REG_TMP0,
+                     (uintptr_t)helper, 0);
+        for (int i = 1; i < 4; i++) {
+            tcg_out_insn(s, 3405, MOVK, TCG_TYPE_I64, TCG_REG_TMP0,
+                         (uintptr_t)helper >> (16 * i), 16 * i);
+        }
+        tcg_out_insn(s, 3207, BR, TCG_REG_TMP0);
+    }
+}
+#endif
+
 static void tcg_target_qemu_prologue(TCGContext *s)
 {
     TCGReg r;
@@ -3507,6 +3605,10 @@ static void tcg_target_qemu_prologue(TCGContext *s)
     tcg_out_insn(s, 3314, LDP, TCG_REG_FP, TCG_REG_LR,
                  TCG_REG_SP, PUSH_SIZE, 0, 1);
     tcg_out_insn(s, 3207, RET, TCG_REG_LR);
+
+#ifdef CONFIG_SOFTMMU
+    tcg_out_lookup_tb_probe(s);
+#endif
 }
 
 static void tcg_out_tb_start(TCGContext *s)
