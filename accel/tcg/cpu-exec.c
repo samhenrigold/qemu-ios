@@ -237,21 +237,24 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
     /* we should never be trying to look up an INVALID tb */
     tcg_debug_assert(!(s.cflags & CF_INVALID));
 
-    hash = tb_jmp_cache_hash_func(s.pc, s.cs_base);
+    hash = tb_jmp_cache_hash_func(s.pc, s.cs_base) & ~1;
     jc = cpu->tb_jmp_cache;
 
     if (unlikely(it_acct_on)) {
         it_acct_lookups++;
     }
-    tb = qatomic_read(&jc->array[hash].tb);
-    if (likely(tb &&
-               jc->array[hash].pc == s.pc &&
-               tb->cs_base == s.cs_base &&
-               tb->flags == s.flags &&
-               tb_cflags(tb) == s.cflags)) {
-        goto hit;
+    for (int way = 0; way < 2; way++) {
+        tb = qatomic_read(&jc->array[hash + way].tb);
+        if (likely(tb &&
+                   jc->array[hash + way].pc == s.pc &&
+                   tb->cs_base == s.cs_base &&
+                   tb->flags == s.flags &&
+                   tb_cflags(tb) == s.cflags)) {
+            goto hit;
+        }
     }
     if (unlikely(it_acct_on)) {
+        tb = qatomic_read(&jc->array[hash].tb);
         it_acct_jc_misses++;
         if (!tb) {
             it_acct_jc_empty++;
@@ -275,8 +278,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
         return NULL;
     }
 
-    jc->array[hash].pc = s.pc;
-    qatomic_set(&jc->array[hash].tb, tb);
+    tb_jmp_cache_fill(jc, hash, s.pc, tb);
 
 hit:
     /*
@@ -439,12 +441,16 @@ const void *HELPER(lookup_tb_probe)(CPUArchState *env, uint64_t pc,
                                     uint64_t cs_base, uint64_t key)
 {
     CPUJumpCache *jc = env_cpu(env)->tb_jmp_cache;
-    uint32_t h = tb_jmp_cache_hash_func(pc, cs_base);
-    TranslationBlock *tb = qatomic_read(&jc->array[h].tb);
+    uint32_t h = tb_jmp_cache_hash_func(pc, cs_base) & ~1;
 
-    if (likely(tb && jc->array[h].pc == pc && tb->cs_base == cs_base &&
-               tb->flags == (uint32_t)key && tb_cflags(tb) == key >> 32)) {
-        return tb->tc.ptr;
+    for (int way = 0; way < 2; way++) {
+        TranslationBlock *tb = qatomic_read(&jc->array[h + way].tb);
+
+        if (likely(tb && jc->array[h + way].pc == pc &&
+                   tb->cs_base == cs_base && tb->flags == (uint32_t)key &&
+                   tb_cflags(tb) == key >> 32)) {
+            return tb->tc.ptr;
+        }
     }
     return HELPER(lookup_tb_ptr)(env);
 }
@@ -1183,8 +1189,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  */
                 h = tb_jmp_cache_hash_func(s.pc, s.cs_base);
                 jc = cpu->tb_jmp_cache;
-                jc->array[h].pc = s.pc;
-                qatomic_set(&jc->array[h].tb, tb);
+                tb_jmp_cache_fill(jc, h, s.pc, tb);
             }
 
 #ifndef CONFIG_USER_ONLY

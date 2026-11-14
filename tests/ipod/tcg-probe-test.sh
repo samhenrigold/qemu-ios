@@ -17,7 +17,8 @@ c a conditional return in an IT block
 d an indirect call into a page remapped after 100 calls
 e a return into a page remapped by the call it returns from
 f one address run as Thumb, then as ARM: the probe keys on the Thumb bit
-g one physical page at two virtual addresses: its code reads the PC it runs at"
+g one physical page at two virtual addresses: its code reads the PC it runs at
+h three return addresses in one jump cache set, in turn: each returns to its own code"
 
 SRC="$ROOT/tests/ipod/tcg-probe.S"
 . "$ROOT/tests/ipod/bare-rom.sh"

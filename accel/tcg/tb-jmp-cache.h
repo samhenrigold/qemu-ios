@@ -82,4 +82,23 @@ static inline void tb_jmp_cache_empty(CPUJumpCache *jc)
     }
 }
 
+/*
+ * The cache is two-way: a hash's set is its pair of slots, @h & ~1 and
+ * @h | 1, and a lookup checks both. Code that returns to a page holds a TB
+ * per call site in it, and a page group has only 128 slots, so a direct-mapped
+ * cache lost about as many lookups to two of them sharing a slot as to empty
+ * slots. A fill takes the first slot and moves what it held to the second.
+ * Only the owning vCPU fills (other threads only clear @tb), so the move's
+ * window, the second slot's new pc with its old tb, is never looked up.
+ */
+static inline void tb_jmp_cache_fill(CPUJumpCache *jc, uint32_t h, vaddr pc,
+                                     TranslationBlock *tb)
+{
+    h &= ~1;
+    jc->array[h + 1].pc = jc->array[h].pc;
+    qatomic_set(&jc->array[h + 1].tb, qatomic_read(&jc->array[h].tb));
+    jc->array[h].pc = pc;
+    qatomic_set(&jc->array[h].tb, tb);
+}
+
 #endif /* ACCEL_TCG_TB_JMP_CACHE_H */

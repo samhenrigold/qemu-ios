@@ -1,7 +1,8 @@
 @ Checks for tests/ipod/tcg-probe-test.sh: a bare-metal Cortex-A8 program run as the bootrom (at 0, SVC mode, MMU off;
-@ RAM at RAM, -DRAM=) whose branches leave their TB through TCG's inline jump cache probe: calls to other pages,
-@ returns, interworking both ways, a conditional return in an IT block, and an indirect call and a return into a
-@ page remapped since the probe last found it. One character per check on the semihosting console: its letter in
+@ RAM at RAM, -DRAM=) whose branches leave their TB through TCG's jump cache probe: calls to other pages,
+@ returns, interworking both ways, a conditional return in an IT block, an indirect call and a return into a
+@ page remapped since the probe last found it, code at two virtual addresses that reads the PC, and three returns
+@ that share one jump cache set. One character per check on the semihosting console: its letter in
 @ lowercase if it passed, uppercase if not; then 'E', and it exits.
         .syntax unified
         .arch armv7-a
@@ -281,7 +282,36 @@ thumb_main:
         movs    r1, #0
         movs    r2, #'g'
         blx     .Lcheck
+        @ h: three return addresses in one jump cache set (page offsets 0x4, 0x80, 0x10c), from calls to another page,
+        @ in turn 100 times: each must come back to its own code
+        movs    r6, #0
+        movs    r5, #100
+        ldr     r4, =nothing
+        bl      set3
+        mov     r0, r6
+        ldr     r1, =700
+        movs    r2, #'h'
+        blx     .Lcheck
         pop     {r4-r8, pc}
+        .ltorg
+
+@ blx r4 at page offsets 0x2, 0x7e and 0x10a: returns to 0x4, 0x80 and 0x10c, one set of a two-way jump cache
+        .balign 4096
+        .thumb_func
+set3:   push    {lr}
+1:      blx     r4
+        adds    r6, #1
+        b       2f
+        .org    set3 + 0x7e
+2:      blx     r4
+        adds    r6, #2
+        b       3f
+        .org    set3 + 0x10a
+3:      blx     r4
+        adds    r6, #4
+        subs    r5, #1
+        bne     1b
+        pop     {pc}
         .ltorg
 
 @ As Thumb: movs r0, #2; bx lr. As ARM: the same word is strbmi (skipped with N clear), then mov r0, #3; bx lr.

@@ -913,7 +913,7 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
             tcg_flush_jmp_cache(cpu);
         }
     } else {
-        uint32_t h = tb_jmp_cache_hash_func(tb->pc, tb->cs_base);
+        uint32_t h = tb_jmp_cache_hash_func(tb->pc, tb->cs_base) & ~1;
 
         CPU_FOREACH(cpu) {
             CPUJumpCache *jc = cpu->tb_jmp_cache;
@@ -921,8 +921,10 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
             for (int c = 0; c < TB_JMP_CACHE_CONTEXTS; c++) {
                 CPUJumpCache *each = &jc->bank->cache[c];
 
-                if (qatomic_read(&each->array[h].tb) == tb) {
-                    qatomic_set(&each->array[h].tb, NULL);
+                for (int way = 0; way < 2; way++) {
+                    if (qatomic_read(&each->array[h + way].tb) == tb) {
+                        qatomic_set(&each->array[h + way].tb, NULL);
+                    }
                 }
             }
         }

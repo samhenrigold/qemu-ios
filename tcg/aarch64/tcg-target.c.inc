@@ -3484,38 +3484,43 @@ static void tcg_out_lookup_tb_probe(TCGContext *s)
     tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X5,
                      TB_JMP_PAGE_MASK);
     tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4,
-                     TB_JMP_ADDR_MASK);
+                     TB_JMP_ADDR_MASK & ~1);
     tcg_out_insn(s, 3510, ORR, TCG_TYPE_I64, TCG_REG_X4, TCG_REG_X4, TCG_REG_X5);
 
-    /* x6, x7 = the entry's tb and pc */
+    /* x5 = &cpu->tb_jmp_cache->array[h & ~1], the set's first way */
     tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X5, TCG_REG_X0,
                offsetof(CPUState, tb_jmp_cache) - sizeof(CPUState));
     tcg_out_insn(s, 3502S, ADD_LSL, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X5,
                  TCG_REG_X4, 4);
-    tcg_out_insn(s, 3314, LDP, TCG_REG_X6, TCG_REG_X7, TCG_REG_X5,
-                 offsetof(CPUJumpCache, array[0].tb), 1, 0);
-    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X1, false);
-    miss[0] = s->code_ptr;
-    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
-    miss[1] = s->code_ptr;
-    tcg_out_insn(s, 3201, CBZ, TCG_TYPE_I64, TCG_REG_X6, 0);
 
-    /* x7, x8 = its cs_base and flags | cflags << 32 */
-    tcg_out_insn(s, 3314, LDP, TCG_REG_X7, TCG_REG_X8, TCG_REG_X6,
-                 offsetof(TranslationBlock, cs_base), 1, 0);
-    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X2, false);
-    miss[2] = s->code_ptr;
-    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
-    tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X8, TCG_REG_X3, false);
-    miss[3] = s->code_ptr;
-    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
-    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X0, TCG_REG_X6,
-               offsetof(TranslationBlock, tc.ptr));
-    tcg_out_insn(s, 3207, RET, TCG_REG_LR);
+    for (int way = 0; way < 2; way++) {
+        /* x6, x7 = the way's tb and pc */
+        tcg_out_insn(s, 3314, LDP, TCG_REG_X6, TCG_REG_X7, TCG_REG_X5,
+                     offsetof(CPUJumpCache, array[way].tb), 1, 0);
+        tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X1, false);
+        miss[0] = s->code_ptr;
+        tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+        miss[1] = s->code_ptr;
+        tcg_out_insn(s, 3201, CBZ, TCG_TYPE_I64, TCG_REG_X6, 0);
 
-    for (int i = 0; i < ARRAY_SIZE(miss); i++) {
-        bool ok = reloc_pc19(miss[i], tcg_splitwx_to_rx(s->code_ptr));
-        tcg_debug_assert(ok);
+        /* x7, x8 = its cs_base and flags | cflags << 32 */
+        tcg_out_insn(s, 3314, LDP, TCG_REG_X7, TCG_REG_X8, TCG_REG_X6,
+                     offsetof(TranslationBlock, cs_base), 1, 0);
+        tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X7, TCG_REG_X2, false);
+        miss[2] = s->code_ptr;
+        tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+        tcg_out_cmp(s, TCG_TYPE_I64, TCG_COND_NE, TCG_REG_X8, TCG_REG_X3, false);
+        miss[3] = s->code_ptr;
+        tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+        tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X0, TCG_REG_X6,
+                   offsetof(TranslationBlock, tc.ptr));
+        tcg_out_insn(s, 3207, RET, TCG_REG_LR);
+
+        /* the next way, then the helper */
+        for (int i = 0; i < ARRAY_SIZE(miss); i++) {
+            bool ok = reloc_pc19(miss[i], tcg_splitwx_to_rx(s->code_ptr));
+            tcg_debug_assert(ok);
+        }
     }
     offset = tcg_pcrel_diff(s, helper) >> 2;
     if (offset == sextract64(offset, 0, 26)) {
