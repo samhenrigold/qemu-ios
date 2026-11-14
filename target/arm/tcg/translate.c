@@ -5178,6 +5178,33 @@ static void op_addr_block_post(DisasContext *s, arg_ldst_block *a,
     }
 }
 
+/*
+ * How many of the n - j words left of an LDM or STM to move in one access:
+ * four as one 128-bit access, two as one 64-bit, so the fast path checks
+ * the TLB once for them. MO_SPLIT_UL has the slow path move them as words,
+ * as one access each would; that is the whole of the architected behavior
+ * but for an LDM that faults part way leaving more of its registers as
+ * they were, which the architecture leaves UNKNOWN (the base register and
+ * the PC are written after every load, as before). Each word stays
+ * single-copy atomic: the halves of an access are, and on a host with
+ * FEAT_LSE2 (TCG's aarch64 backend) an access at a 4-aligned address is
+ * atomic or splits at a 16-byte boundary. Little-endian data only, so that
+ * the word at the lower address is the low half.
+ */
+static int ldst_block_words(DisasContext *s, int n, int j)
+{
+    if (s->be_data != MO_LE || s->sctlr_b || arm_dc_feature(s, ARM_FEATURE_M)) {
+        return 1;
+    }
+    return n - j >= 4 ? 4 : n - j >= 2 ? 2 : 1;
+}
+
+static MemOp ldst_block_memop(int words)
+{
+    return (words == 4 ? MO_128 : MO_64) | MO_ALIGN_4 | MO_ATOM_IFALIGN_PAIR |
+           MO_SPLIT_UL | MO_LE;
+}
+
 static bool op_stm(DisasContext *s, arg_ldst_block *a)
 {
     int i, j, n, list, mem_idx;
@@ -5213,22 +5240,51 @@ static bool op_stm(DisasContext *s, arg_ldst_block *a)
     mem_idx = get_mem_index(s);
 
     for (i = j = 0; i < 16; i++) {
+        TCGv_i32 w[4];
+        int k, words;
+
         if (!(list & (1 << i))) {
             continue;
         }
 
-        if (user && i != 15) {
-            tmp = tcg_temp_new_i32();
-            gen_helper_get_user_reg(tmp, tcg_env, tcg_constant_i32(i));
-        } else {
-            tmp = load_reg(s, i);
+        words = user ? 1 : ldst_block_words(s, n, j);
+        for (k = 0; k < words; i++) {
+            if (!(list & (1 << i))) {
+                continue;
+            }
+            if (user && i != 15) {
+                tmp = tcg_temp_new_i32();
+                gen_helper_get_user_reg(tmp, tcg_env, tcg_constant_i32(i));
+            } else {
+                tmp = load_reg(s, i);
+            }
+            w[k++] = tmp;
         }
-        gen_aa32_st_i32(s, tmp, addr, mem_idx, MO_UL | MO_ALIGN);
+        i--;
 
-        /* No need to add after the last transfer.  */
-        if (++j != n) {
-            tcg_gen_addi_i32(addr, addr, 4);
+        if (words == 1) {
+            gen_aa32_st_i32(s, w[0], addr, mem_idx, MO_UL | MO_ALIGN);
+        } else {
+            MemOp opc = ldst_block_memop(words);
+            TCGv taddr = gen_aa32_addr(s, addr, opc);
+            TCGv_i64 lo = tcg_temp_new_i64();
+
+            tcg_gen_concat_i32_i64(lo, w[0], w[1]);
+            if (words == 2) {
+                tcg_gen_qemu_st_i64(lo, taddr, mem_idx, opc);
+            } else {
+                TCGv_i64 hi = tcg_temp_new_i64();
+                TCGv_i128 t128 = tcg_temp_new_i128();
+
+                tcg_gen_concat_i32_i64(hi, w[2], w[3]);
+                tcg_gen_concat_i64_i128(t128, lo, hi);
+                tcg_gen_qemu_st_i128(t128, taddr, mem_idx, opc);
+            }
         }
+
+        /* Leave addr at the last word, as op_addr_block_post expects.  */
+        j += words;
+        tcg_gen_addi_i32(addr, addr, j != n ? 4 * words : 4 * (words - 1));
     }
 
     op_addr_block_post(s, a, addr, n);
@@ -5300,27 +5356,58 @@ static bool do_ldm(DisasContext *s, arg_ldst_block *a)
     loaded_var = NULL;
 
     for (i = j = 0; i < 16; i++) {
+        TCGv_i32 w[4];
+        int k, words;
+
         if (!(list & (1 << i))) {
             continue;
         }
 
-        tmp = tcg_temp_new_i32();
-        gen_aa32_ld_i32(s, tmp, addr, mem_idx, MO_UL | MO_ALIGN);
-        if (user) {
-            gen_helper_set_user_reg(tcg_env, tcg_constant_i32(i), tmp);
-        } else if (i == a->rn) {
-            loaded_var = tmp;
-            loaded_base = true;
-        } else if (i == 15 && exc_return) {
-            store_pc_exc_ret(s, tmp);
+        words = user || exc_return ? 1 : ldst_block_words(s, n, j);
+        for (k = 0; k < words; k++) {
+            w[k] = tcg_temp_new_i32();
+        }
+        if (words == 1) {
+            gen_aa32_ld_i32(s, w[0], addr, mem_idx, MO_UL | MO_ALIGN);
         } else {
-            store_reg_from_load(s, i, tmp);
+            MemOp opc = ldst_block_memop(words);
+            TCGv taddr = gen_aa32_addr(s, addr, opc);
+            TCGv_i64 lo = tcg_temp_new_i64();
+
+            if (words == 2) {
+                tcg_gen_qemu_ld_i64(lo, taddr, mem_idx, opc);
+            } else {
+                TCGv_i64 hi = tcg_temp_new_i64();
+                TCGv_i128 t128 = tcg_temp_new_i128();
+
+                tcg_gen_qemu_ld_i128(t128, taddr, mem_idx, opc);
+                tcg_gen_extr_i128_i64(lo, hi, t128);
+                tcg_gen_extr_i64_i32(w[2], w[3], hi);
+            }
+            tcg_gen_extr_i64_i32(w[0], w[1], lo);
         }
 
-        /* No need to add after the last transfer.  */
-        if (++j != n) {
-            tcg_gen_addi_i32(addr, addr, 4);
+        for (k = 0; k < words; i++) {
+            if (!(list & (1 << i))) {
+                continue;
+            }
+            tmp = w[k++];
+            if (user) {
+                gen_helper_set_user_reg(tcg_env, tcg_constant_i32(i), tmp);
+            } else if (i == a->rn) {
+                loaded_var = tmp;
+                loaded_base = true;
+            } else if (i == 15 && exc_return) {
+                store_pc_exc_ret(s, tmp);
+            } else {
+                store_reg_from_load(s, i, tmp);
+            }
         }
+        i--;
+
+        /* Leave addr at the last word, as op_addr_block_post expects.  */
+        j += words;
+        tcg_gen_addi_i32(addr, addr, j != n ? 4 * words : 4 * (words - 1));
     }
 
     op_addr_block_post(s, a, addr, n);

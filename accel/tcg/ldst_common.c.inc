@@ -12,6 +12,32 @@
  * Load helpers for tcg-ldst.h
  */
 
+/* The MemOpIdx of each word of an MO_SPLIT_UL access. */
+static MemOpIdx split_ul_oi(MemOpIdx oi)
+{
+    MemOp mop = get_memop(oi);
+    MemOp atom = mop & MO_ATOM_MASK;
+
+    mop &= ~(MO_SIZE | MO_SPLIT_UL | MO_ATOM_MASK);
+    mop |= MO_32 | (atom == MO_ATOM_NONE ? MO_ATOM_NONE : MO_ATOM_IFALIGN);
+    return make_memop_idx(mop, get_mmuidx(oi));
+}
+
+/* Word I of an MO_SPLIT_UL access. */
+static uint64_t split_ul_ld(CPUArchState *env, uint64_t addr, int i,
+                            MemOpIdx oi, uintptr_t retaddr)
+{
+    return do_ld4_mmu(env_cpu(env), (uint32_t)(addr + 4 * i),
+                      split_ul_oi(oi), retaddr, MMU_DATA_LOAD);
+}
+
+static void split_ul_st(CPUArchState *env, uint64_t addr, int i,
+                        uint32_t val, MemOpIdx oi, uintptr_t retaddr)
+{
+    do_st4_mmu(env_cpu(env), (uint32_t)(addr + 4 * i), val,
+               split_ul_oi(oi), retaddr);
+}
+
 tcg_target_ulong helper_ldub_mmu(CPUArchState *env, uint64_t addr,
                                  MemOpIdx oi, uintptr_t retaddr)
 {
@@ -37,6 +63,11 @@ uint64_t helper_ldq_mmu(CPUArchState *env, uint64_t addr,
                         MemOpIdx oi, uintptr_t retaddr)
 {
     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_64);
+    if (unlikely(get_memop(oi) & MO_SPLIT_UL)) {
+        uint64_t lo = split_ul_ld(env, addr, 0, oi, retaddr);
+
+        return lo | split_ul_ld(env, addr, 1, oi, retaddr) << 32;
+    }
     return do_ld8_mmu(env_cpu(env), addr, oi, retaddr, MMU_DATA_LOAD);
 }
 
@@ -67,6 +98,14 @@ Int128 helper_ld16_mmu(CPUArchState *env, uint64_t addr,
                        MemOpIdx oi, uintptr_t retaddr)
 {
     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_128);
+    if (unlikely(get_memop(oi) & MO_SPLIT_UL)) {
+        uint64_t w[4];
+
+        for (int i = 0; i < 4; i++) {
+            w[i] = split_ul_ld(env, addr, i, oi, retaddr);
+        }
+        return int128_make128(w[0] | w[1] << 32, w[2] | w[3] << 32);
+    }
     return do_ld16_mmu(env_cpu(env), addr, oi, retaddr);
 }
 
@@ -104,6 +143,11 @@ void helper_stq_mmu(CPUArchState *env, uint64_t addr, uint64_t val,
                     MemOpIdx oi, uintptr_t retaddr)
 {
     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_64);
+    if (unlikely(get_memop(oi) & MO_SPLIT_UL)) {
+        split_ul_st(env, addr, 0, val, oi, retaddr);
+        split_ul_st(env, addr, 1, val >> 32, oi, retaddr);
+        return;
+    }
     do_st8_mmu(env_cpu(env), addr, val, oi, retaddr);
 }
 
@@ -111,6 +155,15 @@ void helper_st16_mmu(CPUArchState *env, uint64_t addr, Int128 val,
                      MemOpIdx oi, uintptr_t retaddr)
 {
     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_128);
+    if (unlikely(get_memop(oi) & MO_SPLIT_UL)) {
+        uint64_t lo = int128_getlo(val), hi = int128_gethi(val);
+
+        split_ul_st(env, addr, 0, lo, oi, retaddr);
+        split_ul_st(env, addr, 1, lo >> 32, oi, retaddr);
+        split_ul_st(env, addr, 2, hi, oi, retaddr);
+        split_ul_st(env, addr, 3, hi >> 32, oi, retaddr);
+        return;
+    }
     do_st16_mmu(env_cpu(env), addr, val, oi, retaddr);
 }
 

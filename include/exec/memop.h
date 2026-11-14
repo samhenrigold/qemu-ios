@@ -125,6 +125,18 @@ typedef enum MemOp {
     MO_ATOM_NONE          = 5 << MO_ATOM_SHIFT,
     MO_ATOM_MASK          = 7 << MO_ATOM_SHIFT,
 
+    /*
+     * MO_SPLIT_UL: a 64- or 128-bit access that stands for consecutive
+     * 32-bit words a 32-bit guest accesses one at a time (Arm LDM/STM),
+     * packed so that the fast path checks the TLB once. The slow path
+     * (a TLB miss, MMIO, a watchpoint, a page crossing, a misaligned
+     * address) accesses the words one by one in increasing address order,
+     * word i at addr + 4 * i (wrapping at 4 GiB) in bits [32 * i, 32 * i + 32)
+     * of the value, each with this operation's endianness and alignment,
+     * so its faults and device accesses are those of the separate accesses.
+     */
+    MO_SPLIT_UL = 1 << 12,
+
     /* Combinations of the above, for ease of use.  */
     MO_UB    = MO_8,
     MO_UW    = MO_16,
