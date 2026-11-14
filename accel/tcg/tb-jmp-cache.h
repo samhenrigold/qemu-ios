@@ -59,8 +59,12 @@ typedef struct CPUJumpCache {
  * vCPU switches; other threads use the pointer only to reach the bank, and
  * a stale entry they miss is harmless: an invalidated TB has CF_INVALID in
  * its cflags, so tb_lookup never matches it.
+ *
+ * 64 of them (16 MB of caches per vCPU, each touched only once used): iOS
+ * runs a hundred and more processes, and a boot switches among more than 16
+ * often enough that each switch back to an evicted one emptied it.
  */
-#define TB_JMP_CACHE_CONTEXTS 16
+#define TB_JMP_CACHE_CONTEXTS 64
 
 struct CPUJumpCacheBank {
     struct rcu_head rcu;

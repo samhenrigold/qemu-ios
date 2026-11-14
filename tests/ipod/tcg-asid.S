@@ -276,9 +276,9 @@ _start:
         mov     r1, #1
         mov     r2, #'l'
         bl      .Lcheck
-        @ m: more address spaces than jump caches (17 for 16), twice round: odd ASIDs return 1, even 2
+        @ m: more address spaces than jump caches (65 for 64), twice round: odd ASIDs return 1, even 2
         mov     r9, #0                      @ mismatches
-        mov     r8, #34
+        mov     r8, #130
         mov     r7, #1                      @ ASID
 5:      mov     r0, r7
         bl      .Lswitch
@@ -288,7 +288,7 @@ _start:
         cmp     r0, r1
         addne   r9, r9, #1
         add     r7, r7, #1
-        cmp     r7, #18
+        cmp     r7, #66
         moveq   r7, #1
         subs    r8, r8, #1
         bne     5b
