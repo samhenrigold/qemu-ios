@@ -1640,8 +1640,17 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
     Error *local_err = NULL;
 
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
-    /* Use pc-relative instructions in system-mode */
-    tcg_cflags_set(cs, CF_PCREL);
+    /*
+     * Use pc-relative instructions in system-mode, for AArch64. An AArch32
+     * CPU's TBs keep their PC as constants: every 32-bit board maps its code
+     * at one virtual address per physical page (the kernel's and the dyld
+     * shared cache's are the same in every process), so sharing a TB between
+     * virtual addresses saves nothing, and an invalidated CF_PCREL TB empties
+     * every jump cache of every CPU, where one without it clears its own slot.
+     */
+    if (arm_feature(env, ARM_FEATURE_AARCH64)) {
+        tcg_cflags_set(cs, CF_PCREL);
+    }
 #endif
 
     /* If we needed to query the host kernel for the CPU features

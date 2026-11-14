@@ -13,8 +13,11 @@
         .equ PA_F2, RAM + 0x31000       @ then: return 2
         .equ PA_R1, RAM + 0x32000       @ VA_R's code at first: call r4, then return 1
         .equ PA_R2, RAM + 0x33000       @ then: the same call, then return 2
+        .equ PA_P, RAM + 0x34000        @ code that reads the PC, at VA_P1 and VA_P2
         .equ VA_F, 0x70001000
         .equ VA_R, 0x70002000
+        .equ VA_P1, 0x70003000
+        .equ VA_P2, 0x70004000
         .equ PG, 0x072                  @ small page: AP=11, TEX=001, global
         .equ SECT, 0x1c02               @ section: AP=11, TEX=001, domain 0, global
 
@@ -51,6 +54,9 @@ _start:
         str     r1, [r0, #4]
         ldr     r1, =PA_R1 | PG
         str     r1, [r0, #8]
+        ldr     r1, =PA_P | PG
+        str     r1, [r0, #12]
+        str     r1, [r0, #16]
         @ the pages' code, from the templates below
         ldr     r0, =f1_code
         ldr     r1, =PA_F1
@@ -63,6 +69,9 @@ _start:
         bl      .Lcopy
         ldr     r0, =r2_code
         ldr     r1, =PA_R2
+        bl      .Lcopy
+        ldr     r0, =p_code
+        ldr     r1, =PA_P
         bl      .Lcopy
         ldr     r0, =T
         mcr     p15, 0, r0, c2, c0, 0       @ TTBR0
@@ -251,6 +260,27 @@ thumb_main:
         movs    r1, #203
         movs    r2, #'f'
         blx     .Lcheck
+        @ g: one physical page at two VAs, called through each 100 times: its mov r0, pc reads the VA it runs at
+        movs    r6, #0
+        movs    r5, #100
+8:      ldr     r3, =VA_P1 + 1
+        blx     r3
+        ldr     r1, =VA_P1 + 4
+        cmp     r0, r1
+        it      ne
+        addne   r6, #1
+        ldr     r3, =VA_P2 + 1
+        blx     r3
+        ldr     r1, =VA_P2 + 4
+        cmp     r0, r1
+        it      ne
+        addne   r6, #1
+        subs    r5, #1
+        bne     8b
+        mov     r0, r6
+        movs    r1, #0
+        movs    r2, #'g'
+        blx     .Lcheck
         pop     {r4-r8, pc}
         .ltorg
 
@@ -276,6 +306,10 @@ r1_code:
         blx     r4
         movs    r0, #1
         pop     {r4, pc}
+        .balign 4
+p_code:
+        mov     r0, pc
+        bx      lr
         .balign 4
 r2_code:
         push    {r4, lr}
