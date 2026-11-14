@@ -853,14 +853,27 @@ size_t qemu_get_host_physmem(void);
  * call by toggling the APRR registers directly (their tcg-apple-jit.h).
  */
 #if defined(__APPLE__) && TARGET_OS_OSX
+/*
+ * The thread's MAP_JIT state as last set here: 0 unknown, 1 executable,
+ * 2 writable. Every TB entry asks for executable, and the call writes a
+ * system register even when nothing changes.
+ */
+extern __thread int qemu_jit_state;
+
 static inline void qemu_thread_jit_execute(void)
 {
-    pthread_jit_write_protect_np(true);
+    if (qemu_jit_state != 1) {
+        pthread_jit_write_protect_np(true);
+        qemu_jit_state = 1;
+    }
 }
 
 static inline void qemu_thread_jit_write(void)
 {
-    pthread_jit_write_protect_np(false);
+    if (qemu_jit_state != 2) {
+        pthread_jit_write_protect_np(false);
+        qemu_jit_state = 2;
+    }
 }
 #else
 static inline void qemu_thread_jit_write(void) {}
