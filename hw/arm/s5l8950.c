@@ -253,6 +253,8 @@ struct S5L8950State {
     uint32_t level[6], software[6], mask[6], destination[A6_IRQS];
     uint32_t global_config, ipi[2], ipi_mask[2];
     uint32_t pmgr[0x7000 / 4];
+    uint64_t pmgr_transition_done;
+    bool pmgr_transition_pending;
     A6I2C *i2c[3];
     unsigned unimplemented, unimplemented_iop;
     QemuConsole *console;
@@ -683,6 +685,42 @@ static const MemoryRegionOps a6_aic_ops = {
     .valid = {.min_access_size = 4, .max_access_size = 4},
 };
 
+/* PMGR+0x1700 requests performance-state transitions, which the model completes at once (bit 31, busy, never
+ * reads set). 0x1704-0x1728 hold when the last one finished, in the AP timebase: four 64-bit times, high word
+ * first, at 0x1704, 0x170c, 0x171c and 0x1724 (14G61's AppleS5L8950XPerformanceController reads them high, low,
+ * high). The driver takes mach_absolute_time just after a request and counts the transition done only once a
+ * finish time is at or after it, polling until then; a time taken when the next read finds a request outstanding
+ * is one the hardware would have finished by. */
+static uint32_t a6_pmgr_read(S5L8950State *s, uint32_t reg)
+{
+    unsigned word = (reg - 0x1704) / 4;
+    if (reg >= 0x1704 && reg < 0x172c && word != 4 && word != 5) {
+        if (s->pmgr_transition_pending) {
+            s->pmgr_transition_done =
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / a6_counter_period_ns(s);
+            s->pmgr_transition_pending = false;
+        }
+        return word % 2 ? (uint32_t)s->pmgr_transition_done : s->pmgr_transition_done >> 32;
+    }
+    return s->pmgr[reg / 4];
+}
+
+static void a6_pmgr_write(S5L8950State *s, uint32_t reg, uint32_t value)
+{
+    if (reg >= 0x1000 && reg < 0x1200) {
+        value = (value & ~0xf0u) | ((value & 0xf) << 4);
+    }
+    /* Original IOP b618/b644 writes bit 6 here then waits for it to
+     * clear. It is a completed clock transition command, not a latch. */
+    if (reg == 0x1204 && (value & 0x40)) {
+        value &= ~0x40u;
+    }
+    if (reg == 0x1700) {
+        s->pmgr_transition_pending = true;
+    }
+    s->pmgr[reg / 4] = value;
+}
+
 static uint64_t a6_unimplemented_read(void *opaque, hwaddr offset,
                                       unsigned size)
 {
@@ -720,7 +758,7 @@ static uint64_t a6_unimplemented_read(void *opaque, hwaddr offset,
         return s->nand_dll_control ? 16u << 7 : 0;
     }
     if (offset >= 0xf100000 && offset < 0xf107000 && size == 4) {
-        return s->pmgr[(offset - 0xf100000) / 4];
+        return a6_pmgr_read(s, offset - 0xf100000);
     }
     if (current_cpu == CPU(s->iop_cpu) && s->unimplemented_iop++ < 2048)
         qemu_log_mask(LOG_UNIMP,
@@ -770,16 +808,7 @@ static void a6_unimplemented_write(void *opaque, hwaddr offset, uint64_t value,
         arm_set_cpu_on(1, A6_RAM_BASE, 0, 1, false);
     }
     if (offset >= 0xf100000 && offset < 0xf107000 && size == 4) {
-        uint32_t reg = offset - 0xf100000;
-        if (reg >= 0x1000 && reg < 0x1200) {
-            value = (value & ~0xf0u) | ((value & 0xf) << 4);
-        }
-        /* Original IOP b618/b644 writes bit 6 here then waits for it to
-         * clear. It is a completed clock transition command, not a latch. */
-        if (reg == 0x1204 && (value & 0x40)) {
-            value &= ~0x40u;
-        }
-        s->pmgr[reg / 4] = value;
+        a6_pmgr_write(s, offset - 0xf100000, value);
         return;
     }
     if (current_cpu == CPU(s->iop_cpu) && s->unimplemented_iop++ < 2048)
@@ -1130,6 +1159,8 @@ static void a6_reset_soc(S5L8950State *s)
     memset(s->ipi, 0, sizeof(s->ipi));
     memset(s->ipi_mask, 0, sizeof(s->ipi_mask));
     memset(s->pmgr, 0, sizeof(s->pmgr));
+    s->pmgr_transition_done = 0;
+    s->pmgr_transition_pending = false;
     s->audio_accesses = 0;
     memset(s->iop_regs, 0, sizeof(s->iop_regs));
     if (s->iop_timer)
