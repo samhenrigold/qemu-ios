@@ -144,13 +144,31 @@ void s5l8930_gpio_set_rest_level(DeviceState *dev, unsigned pin, bool level);
  * message rings in guest DRAM through address_space_memory.
  */
 #define TYPE_S5L8930_IOP "s5l8930.iop"
-/* Raw access to the IOP's NAND page store for the H2FMI model: one page
- * (data then spare, *stride bytes) into buf; false = blank or no store. */
-bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
-                           uint32_t page, uint8_t *buf, uint32_t *stride);
-uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32_t page,
-                                  const uint8_t *data, uint32_t len, const uint8_t *meta);
-uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page);
+/*
+ * One operation on the IOP's NAND page store for the H2FMI model, a chip's array read, program or erase. It runs in
+ * a coroutine, so its host I/O waits off the BQL; done runs when it ends, in the main loop, or inside
+ * s5l8930_iop_nand_async when it never had to wait (no store, a bad address). A read puts the page (data then spare,
+ * *stride bytes) in buf and sets result true, or false for blank or no store; a program writes len bytes of data and
+ * meta, if given, ahead of the spare; an erase clears the block holding page. Their result is an FMI status, 1 = OK.
+ */
+typedef enum { S5L8930_NAND_READ, S5L8930_NAND_PROGRAM, S5L8930_NAND_ERASE } S5L8930NANDOp;
+
+typedef struct S5L8930NANDRequest {
+    S5L8930NANDOp op;
+    int bus;
+    uint32_t ce, page;
+    uint8_t *buf;
+    uint32_t *stride;
+    uint32_t len;
+    const uint8_t *meta;
+    uint32_t result;
+    void (*done)(struct S5L8930NANDRequest *req);
+    DeviceState *iop;
+} S5L8930NANDRequest;
+
+void s5l8930_iop_nand_async(DeviceState *dev, S5L8930NANDRequest *req);
+/* Waits, in the main loop, until every request has ended: its done may start another, which this waits for too. */
+void s5l8930_iop_nand_quiesce(DeviceState *dev);
 bool s5l8930_iop_io_failed(void);
 void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
                            uint32_t *page_bytes);

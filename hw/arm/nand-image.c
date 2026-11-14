@@ -85,6 +85,9 @@ BlockBackend *nand_image_open_file(DeviceState *owner, const char *path,
         return NULL;
     }
     bdrv_unref(bs);
+    /* A model's request may follow another from its completion (a program's read, then its write): a drain waits
+     * for both rather than queueing the second until the drain ends. */
+    blk_set_disable_request_queuing(blk, true);
     return blk;
 }
 

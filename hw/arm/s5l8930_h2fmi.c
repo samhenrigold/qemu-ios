@@ -96,6 +96,28 @@ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930H2FMIState, S5L8930_H2FMI)
 
 typedef enum { MODE_NONE, MODE_ID, MODE_PAGE, MODE_PPN_FEATURE_WRITE, MODE_PPN_AUX_READ } H2FMIMode;
 
+#define PPN_READY       0x40            /* PPN status: the chip is ready */
+#define NAND_BUSY       0x80            /* raw NAND status while the array works: not write-protected, not ready */
+
+/*
+ * One array operation of a chip, a read into its page register, a program or an erase. The store runs it off the BQL
+ * (s5l8930_iop_nand_async): the chip is busy from the command until it ends, as a chip is for tR, tPROG or tBERS,
+ * so a status poll, the sequencer's status wait, and a transfer out of the page register wait for it, and the
+ * controller raises what they wait for when it ends. A chip runs its operations in the order commanded. None is in
+ * flight at a stop or a save (s5l8930_iop_nand_quiesce), so none is migrated.
+ */
+typedef struct H2FMIOp {
+    S5L8930NANDRequest req;
+    struct H2FMIBus *b;
+    struct H2FMIOp *next;               /* the chip's next operation */
+    uint8_t ce;                         /* the bus's chip enable */
+    uint8_t cmd;                        /* what started it: 0x30/0x37 read, 0x7a DATA_OUT's re-read, program, erase */
+    uint32_t seq;                       /* the bus's command count when commanded */
+    uint32_t tag;                       /* PPN: the read queue slot its status fills (0: none) */
+    uint8_t meta[META_BYTES];
+    uint8_t data[];                     /* a program's page, taken from the chip's page register */
+} H2FMIOp;
+
 typedef struct H2FMIBus {
     struct S5L8930H2FMIState *s;
     int n;
@@ -157,6 +179,17 @@ typedef struct H2FMIBus {
      * DONE follows the transfer, so the firmware's wait is faithful). */
     int8_t pending_ce[256];
     uint32_t pending_n;
+    /* Each chip's operations, the first in flight (H2FMIOp; transient, never migrated). */
+    H2FMIOp *op_head[8], *op_tail[8];
+    uint32_t cmd_seq;                   /* array commands and status reads, in order */
+    /* The last status read: the chip it read, the PPN command (0 for an FMC poll), and when; an operation that ends
+     * after it shows its end there. */
+    int status_ce;
+    uint8_t status_cmd;
+    uint32_t status_seq;
+    uint32_t poll_go;                   /* an FMC status poll waiting for a busy chip (its go), on poll_ce */
+    int poll_ce;
+    uint32_t ppn_read_tag[8 * 128], ppn_tags;   /* which operation fills each read queue slot's status */
 } H2FMIBus;
 
 struct S5L8930H2FMIState {
@@ -237,6 +270,136 @@ static void h2fmi_fmc_events(H2FMIBus *b, uint32_t ev)
     h2fmi_update_irq(b);
 }
 
+static bool h2fmi_busy(H2FMIBus *b, int ce)
+{
+    return ce >= 0 && b->op_head[ce & 7];
+}
+
+/* What a PPN status command reads: 0x7d the oldest queued read's, the others the chip's. */
+static void h2fmi_ppn_status(H2FMIBus *b, uint8_t cmd)
+{
+    int ce = h2fmi_ce(b);
+
+    if (cmd == 0x7d && ce >= 0 && b->ppn_read_count[ce & 7]) {
+        b->ppn_status = b->ppn_read_status[(ce & 7) * 128];
+    }
+    b->fmc[FMC_NAND_STATUS / 4] = b->ppn_status;
+}
+
+/*
+ * iBoot numbers chip selects round-robin across the buses (h2fmiInitVirtToPhysMap, 0x5ff026f8: CS 0 = FMI0 CE0, CS 1 =
+ * FMI1 CE8, CS 2 = FMI0 CE1, ...); the page store is laid out bus-major, CS n at bus<n / ce_per_bus>-ce<n %
+ * ce_per_bus>, as the IOP model serves it to the kernel. Map through the CS so both see the same flash.
+ */
+static H2FMIOp *h2fmi_op_new(H2FMIBus *b, int ce, uint8_t cmd, S5L8930NANDOp kind, uint32_t row, uint32_t len,
+                             bool identity)
+{
+    H2FMIOp *op = g_malloc0(sizeof(*op) + len);
+    uint32_t id, pb;
+    uint8_t mask;
+    int per_bus, cs = (ce & 7) * H2FMI_BUSES + b->n;
+
+    s5l8930_iop_nand_info(b->s->iop, &id, &mask, &pb);
+    per_bus = MAX(ctpop8(mask), 1);
+    op->b = b;
+    op->ce = ce & 7;
+    op->cmd = cmd;
+    op->seq = ++b->cmd_seq;
+    op->req.op = kind;
+    op->req.bus = identity ? b->n : cs / per_bus;
+    op->req.ce = identity ? (uint32_t)(ce & 7) : (uint32_t)(cs % per_bus);
+    op->req.page = row;
+    op->req.len = len;
+    op->req.buf = kind == S5L8930_NAND_READ ? b->page[ce & 7] : op->data;
+    op->req.stride = &b->stride;
+    return op;
+}
+
+static void h2fmi_op_done(S5L8930NANDRequest *req);
+
+/* Last in a command's handling: it may end at once (no store), and its end then does what it would have later. */
+static void h2fmi_op_queue(H2FMIBus *b, H2FMIOp *op)
+{
+    unsigned c = op->ce;
+
+    op->req.done = h2fmi_op_done;
+    if (b->op_tail[c]) {
+        b->op_tail[c]->next = op;
+        b->op_tail[c] = op;
+        return;
+    }
+    b->op_head[c] = b->op_tail[c] = op;
+    s5l8930_iop_nand_async(b->s->iop, &op->req);
+}
+
+static void h2fmi_drain(H2FMIBus *b);
+static void h2fmi_seq_run(H2FMIBus *b);
+
+/*
+ * An operation's end: the page register and the status it leaves, as they would read had it ended at its command,
+ * unless a later status read of another chip holds the status register. A chip with more to do stays busy; an idle
+ * one completes the FMC poll waiting on it, the transfers out of it, and the sequencer.
+ */
+static void h2fmi_op_done(S5L8930NANDRequest *req)
+{
+    H2FMIOp *op = container_of(req, H2FMIOp, req);
+    H2FMIBus *b = op->b;
+    bool ppn = b->s->ppn, idle = !op->next;
+    unsigned c = op->ce;
+    uint32_t status;
+
+    b->op_head[c] = op->next;
+    if (idle) {
+        b->op_tail[c] = NULL;
+    }
+    if (req->op == S5L8930_NAND_READ) {
+        b->page_ok[c] = req->result;
+        status = ppn ? (req->result ? PPN_READY : 0x49) : b->fmc[FMC_NAND_STATUS / 4] | 0x60;
+        for (unsigned i = 0; op->tag && i < b->ppn_read_count[c]; i++) {
+            if (b->ppn_read_tag[c * 128 + i] == op->tag) {
+                b->ppn_read_status[c * 128 + i] = status;
+            }
+        }
+    } else {
+        status = (ppn ? PPN_READY : NAND_READY) | (req->result == 1 ? 0 : NAND_FAIL);
+    }
+    if (op->cmd != 0x7a) {                  /* DATA_OUT's re-read is no array operation of the chip's */
+        if (!idle) {
+            status = ppn ? 0 : NAND_BUSY;
+        }
+        if (ppn) {
+            b->ppn_status = status;
+        }
+        if ((int32_t)(b->status_seq - op->seq) < 0) {
+            b->fmc[FMC_NAND_STATUS / 4] = status;
+        } else if (b->status_ce == c) {
+            if (b->status_cmd) {
+                h2fmi_ppn_status(b, b->status_cmd);
+            } else {
+                b->fmc[FMC_NAND_STATUS / 4] = status;
+            }
+        }
+    }
+    g_free(op);
+    if (!idle) {
+        s5l8930_iop_nand_async(b->s->iop, &b->op_head[c]->req);
+        return;
+    }
+    if (b->poll_go && b->poll_ce == (int)c) {
+        uint32_t go = b->poll_go;
+
+        b->poll_go = 0;
+        b->fmc[FMC_NAND_STATUS / 4] |= ppn ? PPN_READY : NAND_READY;
+        h2fmi_fmc_events(b, (go & 0xb) | FMC_EV_STATUS);
+    }
+    if (b->pending_n) {
+        h2fmi_drain(b);
+    }
+    if (b->seq_code_n) {
+        h2fmi_seq_run(b);
+    }
+}
+
 static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
 {
     S5L8930H2FMIState *s = b->s;
@@ -273,23 +436,26 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     case 0x7a:
         if (s->ppn) {
             int ce = h2fmi_ce(b);
+            H2FMIOp *op = NULL;
             if (s->iop && ce >= 0 && b->ppn_read_count[ce & 7]) {
                 unsigned slot = (ce & 7) * 128;
-                uint32_t id, pb; uint8_t mask;
-                s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-                int per_bus = MAX(ctpop8(mask), 1);
-                int cs = (ce & 7) * H2FMI_BUSES + b->n;
-                b->page_row[ce & 7] = b->ppn_read_row[slot];
+                uint32_t row = b->ppn_read_row[slot];
                 b->ppn_column = b->ppn_read_column[slot];
-                b->page_ok[ce & 7] = s5l8930_iop_nand_read(s->iop,
-                    cs / per_bus, cs % per_bus, b->page_row[ce & 7],
-                    b->page[ce & 7], &b->stride);
+                /* The page register holds the oldest queued read's page unless a later read replaced it. */
+                if (h2fmi_busy(b, ce) || b->page_row[ce & 7] != row) {
+                    b->page_row[ce & 7] = row;
+                    op = h2fmi_op_new(b, ce, cmd, S5L8930_NAND_READ, row, 0, false);
+                }
                 unsigned n = --b->ppn_read_count[ce & 7];
                 memmove(b->ppn_read_row + slot, b->ppn_read_row + slot + 1, n * 4);
                 memmove(b->ppn_read_column + slot, b->ppn_read_column + slot + 1, n * 4);
                 memmove(b->ppn_read_status + slot, b->ppn_read_status + slot + 1, n * 4);
+                memmove(b->ppn_read_tag + slot, b->ppn_read_tag + slot + 1, n * 4);
             }
             b->read_pending = true;
+            if (op) {
+                h2fmi_op_queue(b, op);
+            }
             break;
         }
         qemu_log_mask(LOG_UNIMP, "h2fmi: PPN DATA_OUT on non-PPN part\n");
@@ -301,10 +467,10 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     case 0x7d:
     case 0xe7:
         if (s->ppn) {
-            int ce = h2fmi_ce(b);
-            if (cmd == 0x7d && ce >= 0 && b->ppn_read_count[ce & 7])
-                b->ppn_status = b->ppn_read_status[(ce & 7) * 128];
-            b->fmc[FMC_NAND_STATUS / 4] = b->ppn_status;
+            h2fmi_ppn_status(b, cmd);
+            b->status_ce = h2fmi_ce(b);
+            b->status_cmd = cmd;
+            b->status_seq = ++b->cmd_seq;
             break;
         }
         qemu_log_mask(LOG_UNIMP, "h2fmi: PPN operation on non-PPN part\n");
@@ -363,25 +529,25 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
     case 0x10:              /* program: the chip's page register goes to the flash */
     case 0x11: {            /* cache program: the same, the next page follows */
         int ce = h2fmi_ce(b);
-        uint32_t id, pb;
-        uint8_t mask;
-        uint32_t result = 1;
+        H2FMIOp *op = NULL;
 
         HT("h%d program ce %d row 0x%x len %u lpn 0x%x data %08x\n", b->n, ce, b->row,
            ce >= 0 ? b->wpage_len[ce & 7] : 0, ce >= 0 ? ldl_le_p(b->wpmeta[ce & 7]) : 0,
            ce >= 0 ? ldl_le_p(b->wpage[ce & 7]) : 0);
         if (ce >= 0 && s->iop && b->wpage_len[ce & 7]) {
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            result = s5l8930_iop_nand_program(s->iop, cs / per_bus, cs % per_bus, b->row,
-                                     b->wpage[ce & 7], b->wpage_len[ce & 7],
-                                     s->ppn ? NULL : b->wpmeta[ce & 7]);
+            /* The page register is free again at once (a cache program's next page fills it meanwhile). */
+            op = h2fmi_op_new(b, ce, cmd, S5L8930_NAND_PROGRAM, b->row, b->wpage_len[ce & 7], false);
+            memcpy(op->data, b->wpage[ce & 7], b->wpage_len[ce & 7]);
+            memcpy(op->meta, b->wpmeta[ce & 7], META_BYTES);
+            op->req.meta = s->ppn ? NULL : op->meta;
             b->wpage_len[ce & 7] = 0;
         }
         b->writing = false;
-        b->fmc[FMC_NAND_STATUS / 4] = (s->ppn ? 0x40 : NAND_READY) | (result == 1 ? 0 : NAND_FAIL);
+        b->fmc[FMC_NAND_STATUS / 4] = op ? (s->ppn ? 0 : NAND_BUSY) : s->ppn ? PPN_READY : NAND_READY;
         if (s->ppn) b->ppn_status = b->fmc[FMC_NAND_STATUS / 4];
+        if (op) {
+            h2fmi_op_queue(b, op);
+        }
         break;
     }
     case 0x67:              /* PPN normal erase, address completes it. */
@@ -396,18 +562,13 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         /* fall through */
     case 0xd0: {
         int ce = h2fmi_ce(b);
-        uint32_t id, pb;
-        uint8_t mask;
-        uint32_t result = 1;
+        H2FMIOp *op = ce >= 0 && s->iop ? h2fmi_op_new(b, ce, cmd, S5L8930_NAND_ERASE, b->row, 0, false) : NULL;
 
-        if (ce >= 0 && s->iop) {
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = (ce & 7) * H2FMI_BUSES + b->n;
-            result = s5l8930_iop_nand_erase(s->iop, cs / per_bus, cs % per_bus, b->row);
-        }
-        b->fmc[FMC_NAND_STATUS / 4] = (s->ppn ? 0x40 : NAND_READY) | (result == 1 ? 0 : NAND_FAIL);
+        b->fmc[FMC_NAND_STATUS / 4] = op ? (s->ppn ? 0 : NAND_BUSY) : s->ppn ? PPN_READY : NAND_READY;
         if (s->ppn) b->ppn_status = b->fmc[FMC_NAND_STATUS / 4];
+        if (op) {
+            h2fmi_op_queue(b, op);
+        }
         break;
     }
     case 0x37:
@@ -425,6 +586,7 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
          * while the CDMA still drains this one, so the FIFOs keep what a
          * transfer put there; only reset (0xff) or a transfer with an idle
          * pipeline starts them afresh. */
+        H2FMIOp *op = NULL;
         b->mode = MODE_PAGE;
         b->read_pending = true;
         if (ce >= 0) {
@@ -433,26 +595,10 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
         if (ce >= 0 && s->iop) {
             b->page_ok[ce & 7] = false;
             b->page_row[ce & 7] = b->row;
-            /*
-             * iBoot numbers chip selects round-robin across the buses
-             * (h2fmiInitVirtToPhysMap, 0x5ff026f8: CS 0 = FMI0 CE0, CS 1 =
-             * FMI1 CE8, CS 2 = FMI0 CE1, ...); the page store is laid out
-             * bus-major, CS n at bus<n / ce_per_bus>-ce<n % ce_per_bus>, as
-             * the IOP model serves it to the kernel. Map through the CS so
-             * both see the same flash.
-             */
-            uint32_t id, pb;
-            uint8_t mask;
-            s5l8930_iop_nand_info(s->iop, &id, &mask, &pb);
-            int per_bus = MAX(ctpop8(mask), 1);
-            int cs = getenv("H2FMI_IDENTITY") ? -1 : (ce & 7) * H2FMI_BUSES + b->n;
-            b->page_ok[ce & 7] = cs < 0 ? s5l8930_iop_nand_read(s->iop, b->n, ce & 7, b->row, b->page[ce & 7], &b->stride)
-                                : s5l8930_iop_nand_read(s->iop, cs / per_bus,
-                                               cs % per_bus, b->row, b->page[ce & 7],
-                                               &b->stride);
+            op = h2fmi_op_new(b, ce, cmd, S5L8930_NAND_READ, b->row, 0, getenv("H2FMI_IDENTITY"));
         }
         if (s->ppn) {
-            b->ppn_status = ce >= 0 && b->page_ok[ce & 7] ? 0x40 : 0x49;
+            b->ppn_status = op ? 0 : 0x49;
             b->fmc[FMC_NAND_STATUS / 4] = b->ppn_status;
             if (b->seq_running && ce >= 0) {
                 unsigned c = ce & 7, n = b->ppn_read_count[c];
@@ -461,9 +607,18 @@ static void h2fmi_command(H2FMIBus *b, uint8_t cmd)
                     b->ppn_read_row[slot] = b->row;
                     b->ppn_read_column[slot] = b->ppn_column;
                     b->ppn_read_status[slot] = b->ppn_status;
+                    if (op) {
+                        op->tag = ++b->ppn_tags ? b->ppn_tags : ++b->ppn_tags;   /* never 0 */
+                    }
+                    b->ppn_read_tag[slot] = op ? op->tag : 0;
                     b->ppn_read_count[c]++;
                 } else qemu_log_mask(LOG_GUEST_ERROR, "PPN read queue overflow\n");
             }
+        } else if (op) {
+            b->fmc[FMC_NAND_STATUS / 4] &= ~0x60u;   /* busy until the page is in the register */
+        }
+        if (op) {
+            h2fmi_op_queue(b, op);
         }
         break;
     }
@@ -535,8 +690,19 @@ static void h2fmi_go(H2FMIBus *b, uint32_t go)
         return;
     }
     if (go & 0x40) {
-        /* Ready is immediate, but polling must preserve the last failure. */
-        b->fmc[FMC_NAND_STATUS / 4] |= b->s->ppn ? 0x40 : NAND_READY;
+        int ce = h2fmi_ce(b);
+
+        b->status_ce = ce;
+        b->status_cmd = 0;
+        b->status_seq = ++b->cmd_seq;
+        if (h2fmi_busy(b, ce)) {
+            /* The FMC polls until the chip is ready: h2fmi_op_done matches it then. */
+            b->poll_go = go;
+            b->poll_ce = ce;
+            return;
+        }
+        /* Ready, but polling must preserve the last failure. */
+        b->fmc[FMC_NAND_STATUS / 4] |= b->s->ppn ? PPN_READY : NAND_READY;
         h2fmi_fmc_events(b, (go & 0xb) | FMC_EV_STATUS);
         return;
     }
@@ -647,10 +813,10 @@ static void h2fmi_transfer(H2FMIBus *b, int ce, bool queued)
         b->data_len = sizeof(idb);
         b->data_off = 0;
     } else if (b->mode == MODE_PAGE && page_bytes && !queued &&
-               (b->pending_n || !h2fmi_room(b, transfer_bytes))) {
-        /* No room, or older transfers still waiting: this one queues behind them
+               (b->pending_n || h2fmi_busy(b, ce) || !h2fmi_room(b, transfer_bytes))) {
+        /* No room, older transfers still waiting, or the chip still reading: this one queues behind them
          * (the FIFO's order is the firmware's transfer order) and goes when the
-         * CDMA drains (h2fmi_drain). */
+         * CDMA drains or the chip is ready (h2fmi_drain). */
         if (b->pending_n < ARRAY_SIZE(b->pending_ce)) {
             b->pending_ce[b->pending_n++] = ce;
         } else {
@@ -794,7 +960,7 @@ static void h2fmi_drain(H2FMIBus *b)
         return;
     }
     s5l8930_iop_nand_info(b->s->iop, &id, &mask, &page_bytes);
-    while (b->pending_n && h2fmi_room(b, h2fmi_read_bytes(b, page_bytes))) {
+    while (b->pending_n && !h2fmi_busy(b, b->pending_ce[0]) && h2fmi_room(b, h2fmi_read_bytes(b, page_bytes))) {
         int ce = b->pending_ce[0];
 
         memmove(b->pending_ce, b->pending_ce + 1, --b->pending_n);
@@ -890,6 +1056,9 @@ static bool h2fmi_seq_task(H2FMIBus *b)
             s5l8930_cdma_kick(b->s->cdma);
         }
         return true;
+    }
+    if (h2fmi_busy(b, ce)) {
+        return false;                       /* the page is not in the register yet */
     }
     fifo_compact(b->data, &b->data_off, b->data_len, sizeof(b->data), bytes);
     fifo_compact(b->meta, &b->meta_off, b->meta_len, sizeof(b->meta), meta);
@@ -1234,10 +1403,32 @@ static uint32_t h2fmi_fifo_avail(void *opaque, hwaddr addr, bool to_device)
     return reg == FMI_DATA ? b->data_len : reg == FMI_META ? b->meta_len : ~0u;
 }
 
+/* What the chips were commanded to do ends, before a reset or a save: nothing waits on it any more. */
+static void h2fmi_quiesce(S5L8930H2FMIState *s, bool cancel)
+{
+    for (int i = 0; cancel && i < H2FMI_BUSES; i++) {
+        H2FMIBus *b = &s->bus[i];
+
+        b->seq_code_n = b->pending_n = b->poll_go = 0;
+        for (unsigned c = 0; c < ARRAY_SIZE(b->op_head); c++) {
+            while (b->op_head[c] && b->op_head[c]->next) {  /* not started: dropped, as a reset aborts them */
+                H2FMIOp *op = b->op_head[c]->next;
+                b->op_head[c]->next = op->next;
+                g_free(op);
+            }
+            b->op_tail[c] = b->op_head[c];
+        }
+    }
+    if (s->iop) {
+        s5l8930_iop_nand_quiesce(s->iop);
+    }
+}
+
 static void s5l8930_h2fmi_reset(DeviceState *dev)
 {
     S5L8930H2FMIState *s = S5L8930_H2FMI(dev);
 
+    h2fmi_quiesce(s, true);
     for (int i = 0; i < H2FMI_BUSES; i++) {
         H2FMIBus *b = &s->bus[i];
         memset(b->fmi, 0, sizeof(b->fmi));
@@ -1366,6 +1557,7 @@ static int h2fmi_pre_save(void *opaque)
 {
     S5L8930H2FMIState *s = opaque;
 
+    h2fmi_quiesce(s, false);        /* the stop drained them already; the state saved is the chips' at rest */
     for (int i = 0; i < H2FMI_BUSES; i++) {     /* the stream carries the FIFOs from offset 0 */
         H2FMIBus *b = &s->bus[i];
         fifo_compact(b->data, &b->data_off, b->data_len, 0, 0);

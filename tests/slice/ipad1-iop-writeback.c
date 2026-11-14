@@ -24,6 +24,9 @@ typedef int SysBusDevice, MemoryRegion, DeviceState, QEMUTimer, RunState, BlockB
 #define qatomic_read(p) (*(p))
 #define qatomic_set(p,v) (*(p)=(v))
 static bool iop_storage_failed;
+static unsigned quiesces;
+#define DEVICE(s) ((DeviceState *)(s))
+static void s5l8930_iop_nand_quiesce(DeviceState *dev) { (void)dev; quiesces++; }   /* no H2FMI request here */
 static unsigned calls, fail_at, errors, successes;
 static BlockBackend *page_backend, *bitmap_backend;
 static unsigned page_flushes, bitmap_writes;

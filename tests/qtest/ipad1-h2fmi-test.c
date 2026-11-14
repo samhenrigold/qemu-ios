@@ -11,6 +11,18 @@
 #define SPARE_BYTES 128
 static char *rom_path, *nand_path;
 
+/* The chip is busy while the store does the I/O, as for tR, tPROG and tBERS: wait with an FMC status poll
+ * (go 0x40) for its event (bit 5), as the firmware does. */
+static void wait_ready(QTestState *qts)
+{
+    qtest_writel(qts, FMC + 0x44, 0x20);
+    qtest_writel(qts, FMC + 0x10, 0x40);
+    for (unsigned i = 0; !(qtest_readl(qts, FMC + 0x44) & 0x20); i++) {
+        g_assert_cmpuint(i, <, 100000);
+        g_usleep(10);
+    }
+}
+
 static void page_command(QTestState *qts, unsigned page)
 {
     qtest_writel(qts, FMC + 0x0c, 1);
@@ -18,6 +30,7 @@ static void page_command(QTestState *qts, unsigned page)
     qtest_writel(qts, FMC + 0x18, page << 16);
     qtest_writel(qts, FMC + 0x1c, 0);
     qtest_writel(qts, FMC + 0x10, 0xb);
+    wait_ready(qts);
 }
 
 static void read_raw_after_normal(void)
@@ -84,6 +97,7 @@ static void program_with_ce(QTestState *qts, unsigned page, uint32_t value, uint
     g_assert_cmphex(qtest_readl(qts, FMI + 0x0c) & 2, ==, 2);
     qtest_writel(qts, FMC + 0x14, 0x10);
     qtest_writel(qts, FMC + 0x10, 1);
+    wait_ready(qts);
 }
 
 static void program(QTestState *qts, unsigned page, uint32_t value)
@@ -125,6 +139,7 @@ static void physical_program_erase(void)
     qtest_writel(qts, FMC + 0x20, 2);
     qtest_writel(qts, FMC + 0x14, 0xd060);
     qtest_writel(qts, FMC + 0x10, 0xb);
+    wait_ready(qts);
     g_assert_cmphex(qtest_readl(qts, FMC + 0x48), ==, 0xe0);
     /* Reset drains the spare phase left from the earlier raw read. */
     qtest_writel(qts, FMC + 0x14, 0xff);
@@ -209,6 +224,7 @@ static void overlay_cold_reopen(void)
     qtest_writel(qts, FMC + 0x18, 5);
     qtest_writel(qts, FMC + 0x14, 0xd060);
     qtest_writel(qts, FMC + 0x10, 0xb);
+    wait_ready(qts);
     assert_page(qts, 5, 0xffffffff);
     qtest_quit(qts);
     fd = open(base, O_RDWR);

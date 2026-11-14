@@ -23,8 +23,9 @@
  *     if ((v & 3) == 3) {
  * so every write of 3 re-transfers the page (the phantom transfer).
  *
+ * SLICE include/hw/arm/s5l8930.h range typedef enum { S5L8930_NAND_READ | void s5l8930_iop_nand_async(
  * SLICE hw/arm/s5l8930_h2fmi.c range #define H2FMI_BUSES | #define HT(
- * SLICE hw/arm/s5l8930_h2fmi.c fn h2fmi_format h2fmi_status h2fmi_update_irq h2fmi_ce h2fmi_fmc_events h2fmi_command h2fmi_go fifo_compact h2fmi_raw_read h2fmi_read_bytes h2fmi_room h2fmi_transfer h2fmi_meta_per_page h2fmi_seq_task h2fmi_seq_run h2fmi_write_check h2fmi_drain fifo_pop h2fmi_ecc_sector h2fmi_read h2fmi_write
+ * SLICE hw/arm/s5l8930_h2fmi.c fn h2fmi_format h2fmi_status h2fmi_update_irq h2fmi_ce h2fmi_fmc_events h2fmi_busy h2fmi_ppn_status h2fmi_op_new h2fmi_op_queue h2fmi_op_done h2fmi_command h2fmi_go fifo_compact h2fmi_raw_read h2fmi_read_bytes h2fmi_room h2fmi_transfer h2fmi_meta_per_page h2fmi_seq_task h2fmi_seq_run h2fmi_write_check h2fmi_drain fifo_pop h2fmi_ecc_sector h2fmi_read h2fmi_write
  */
 #include <assert.h>
 #define trace_event_get_state_backends(id) 0
@@ -90,15 +91,39 @@ uint32_t s5l8930_iop_nand_program(DeviceState *d, int bus, uint32_t ce, uint32_t
 uint32_t s5l8930_iop_nand_erase(DeviceState *d, int bus, uint32_t ce, uint32_t page) {
     (void)d; (void)bus; (void)ce; (void)page; return 1;
 }
+/* The store's requests end at once here, as with no store behind them: the synchronous behavior this test pins. */
+#define g_malloc0(n) calloc(1, (n))
+#define g_free free
+#define container_of(p, type, member) ((type *)((char *)(p) - offsetof(type, member)))
+#include <stddef.h>
+typedef struct S5L8930NANDRequest S5L8930NANDRequest;
+void s5l8930_iop_nand_async(DeviceState *d, S5L8930NANDRequest *req);
 void s5l8930_cdma_kick(DeviceState *d) { (void)d; }
 void s5l8930_cdma_sink_done(DeviceState *d, uint32_t base, uint32_t size) { (void)d; (void)base; (void)size; }
 typedef struct H2FMIBus H2FMIBus;
 static void h2fmi_seq_run(H2FMIBus *b);
+static void h2fmi_drain(H2FMIBus *b);
+static void h2fmi_op_done(S5L8930NANDRequest *req);
 static uint64_t h2fmi_read(void *opaque, hwaddr off, unsigned size);
 static void h2fmi_write(void *opaque, hwaddr off, uint64_t val, unsigned size);
 #include "slice.h"
 
 struct DeviceState { int unused; };
+void s5l8930_iop_nand_async(DeviceState *d, S5L8930NANDRequest *req)
+{
+    switch (req->op) {
+    case S5L8930_NAND_READ:
+        req->result = s5l8930_iop_nand_read(d, req->bus, req->ce, req->page, req->buf, req->stride);
+        break;
+    case S5L8930_NAND_PROGRAM:
+        req->result = s5l8930_iop_nand_program(d, req->bus, req->ce, req->page, req->buf, req->len, req->meta);
+        break;
+    case S5L8930_NAND_ERASE:
+        req->result = s5l8930_iop_nand_erase(d, req->bus, req->ce, req->page);
+        break;
+    }
+    req->done(req);
+}
 #define RD(a)   h2fmi_read(bp, (a), 4)
 #define WR(a,v) h2fmi_write(bp, (a), (v), 4)
 static void load_page(H2FMIBus *b, uint32_t row) {

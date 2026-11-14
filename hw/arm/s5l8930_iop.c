@@ -42,6 +42,8 @@
 #include "system/runstate.h"
 #include "system/block-backend.h"
 #include "block/block.h"
+#include "qemu/coroutine.h"
+#include "qemu/aio-wait.h"
 #include "hw/arm/nand-image.h"
 #include "qemu/error-report.h"
 #include "trace.h"
@@ -216,6 +218,7 @@ struct S5L8930IOPState {
     uint32_t pages_per_ce;
     bool nand_xor_ff;       /* explicit v2: sparse zero encodes erased FF */
     uint32_t snapshot_format; /* migration certificate; not storage state */
+    unsigned nand_inflight;     /* H2FMI requests not yet ended (under the BQL; none at a stop or a save) */
 
     QEMUTimer *irq_timer;
     bool running;
@@ -383,34 +386,53 @@ static uint32_t nand_read_page(S5L8930IOPState *s, int bus, uint32_t ce,
     return FMI_STATUS_BLANK;
 }
 
-/* The store as raw flash, for the H2FMI model (iBoot's direct NAND path). */
-bool s5l8930_iop_nand_read(DeviceState *dev, int bus, uint32_t ce,
-                           uint32_t page, uint8_t *buf, uint32_t *stride)
-{
-    S5L8930IOPState *s = S5L8930_IOP(dev);
-    uint8_t meta[FMI_META_BYTES];
-
-    *stride = s->nand_dir ? s->page_stride : 0;
-    return bus >= 0 && bus < NAND_BUSES &&
-           nand_read_page(s, bus, ce, page, buf, meta) == FMI_STATUS_OK;
-}
-
 static uint32_t nand_program_page(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t page,
                                   const uint8_t *data, uint32_t len, const uint8_t *meta);
 static uint32_t nand_erase_block(S5L8930IOPState *s, int bus, uint32_t ce, uint32_t block);
 
-uint32_t s5l8930_iop_nand_program(DeviceState *dev, int bus, uint32_t ce, uint32_t page,
-                                  const uint8_t *data, uint32_t len, const uint8_t *meta)
+/*
+ * The store as raw flash, for the H2FMI model (iBoot's and the IOP firmware's direct NAND path). The page functions'
+ * blk_* calls yield inside this coroutine, so the I/O runs on the block layer's threads while the caller (an MMIO
+ * handler on the IOP's or the AP's vCPU) returns and lets go of the BQL; done runs when the coroutine is resumed.
+ */
+static void coroutine_fn nand_request_co(void *opaque)
 {
-    return nand_program_page(S5L8930_IOP(dev), bus, ce, page, data, len, meta);
+    S5L8930NANDRequest *req = opaque;
+    S5L8930IOPState *s = S5L8930_IOP(req->iop);
+    uint8_t meta[FMI_META_BYTES];
+
+    switch (req->op) {
+    case S5L8930_NAND_READ:
+        *req->stride = s->nand_dir ? s->page_stride : 0;
+        req->result = req->bus >= 0 && req->bus < NAND_BUSES &&
+                      nand_read_page(s, req->bus, req->ce, req->page, req->buf, meta) == FMI_STATUS_OK;
+        break;
+    case S5L8930_NAND_PROGRAM:
+        req->result = nand_program_page(s, req->bus, req->ce, req->page, req->buf, req->len, req->meta);
+        break;
+    case S5L8930_NAND_ERASE:   /* the block holding the row the chip was given */
+        req->result = nand_erase_block(s, req->bus, req->ce, s->store_ppb ? req->page / s->store_ppb : 0);
+        break;
+    }
+    req->done(req);         /* may free req, and may start the next request: counted before this one ends */
+    s->nand_inflight--;
+    aio_wait_kick();
 }
 
-/* Erase the block holding page `page` (the row the chip was given). */
-uint32_t s5l8930_iop_nand_erase(DeviceState *dev, int bus, uint32_t ce, uint32_t page)
+void s5l8930_iop_nand_async(DeviceState *dev, S5L8930NANDRequest *req)
 {
     S5L8930IOPState *s = S5L8930_IOP(dev);
 
-    return nand_erase_block(s, bus, ce, s->store_ppb ? page / s->store_ppb : 0);
+    req->iop = dev;
+    s->nand_inflight++;
+    qemu_coroutine_enter(qemu_coroutine_create(nand_request_co, req));
+}
+
+void s5l8930_iop_nand_quiesce(DeviceState *dev)
+{
+    S5L8930IOPState *s = S5L8930_IOP(dev);
+
+    AIO_WAIT_WHILE(NULL, s->nand_inflight);
 }
 
 void s5l8930_iop_nand_info(DeviceState *dev, uint32_t *id, uint8_t *ce_mask,
@@ -1462,6 +1484,8 @@ static void iop_vm_state(void *opaque, bool running, RunState state)
     if (running) {
         return;
     }
+    /* The vCPUs are paused: what the chips were doing ends before the pages are flushed and the owners published. */
+    s5l8930_iop_nand_quiesce(DEVICE(s));
     for (int bus = 0; bus < NAND_BUSES; bus++) {
         for (int ce = 0; ce < NAND_CES; ce++) {
             BlockBackend *pages = s->overlay_dir ? s->ovl[bus][ce] : s->chip[bus][ce];
