@@ -83,6 +83,15 @@ void tcg_gen_goto_tb(unsigned idx);
  */
 void tcg_gen_lookup_and_goto_ptr(void);
 
+/**
+ * tcg_gen_goto_ptr() - jump to the code of a TB found by the caller
+ * @ptr: the TB's tc.ptr
+ *
+ * For a frontend that looks the next TB up itself (an inline jump cache
+ * probe) and has checked everything helper_lookup_tb_ptr would.
+ */
+void tcg_gen_goto_ptr(TCGv_ptr ptr);
+
 void tcg_gen_plugin_cb(unsigned from);
 void tcg_gen_plugin_mem_cb(TCGv_i64 addr, unsigned meminfo);
 

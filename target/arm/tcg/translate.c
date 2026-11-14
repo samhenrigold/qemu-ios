@@ -30,6 +30,8 @@
 #include "exec/target_page.h"
 #include "helper.h"
 #include "helper-mve.h"
+#include "exec/translation-block.h"
+#include "accel/tcg/tb-hash.h"
 
 #define ENABLE_ARCH_4T    arm_dc_feature(s, ARM_FEATURE_V4T)
 #define ENABLE_ARCH_5     arm_dc_feature(s, ARM_FEATURE_V5)
@@ -1324,6 +1326,87 @@ static void gen_goto_ptr(void)
     tcg_gen_lookup_and_goto_ptr();
 }
 
+/*
+ * helper_lookup_tb_ptr's jump cache probe, inline, for an exit that leaves
+ * the CPU state as this TB found it but for the PC, the Thumb bit and the IT
+ * bits: a branch, a call or a return. Anything that changes the rest of the
+ * state ends its TB otherwise (DISAS_UPDATE_*, DISAS_EXIT), so the next TB
+ * has this TB's flags and cflags, and its cs_base is this TB's with THUMB and
+ * CONDEXEC read back from env, as arm_get_tb_cpu_state reads them. Like a
+ * goto_tb chain, the probe trusts that cflags did not change under the TB.
+ * A miss calls the helper, as before.
+ */
+static void gen_goto_ptr_probe(DisasContext *s)
+{
+    TranslationBlock *tb = s->base.tb;
+    uint32_t cf = tb_cflags(tb);
+    unsigned sh = TARGET_PAGE_BITS - TB_JMP_PAGE_BITS;
+    uint32_t keep = ~(R_TBFLAG_AM32_THUMB_MASK | R_TBFLAG_AM32_CONDEXEC_MASK);
+    TCGLabel *miss;
+    TCGv_i32 cs, t, h;
+    TCGv_ptr e, p;
+    TCGv_i64 a, b;
+
+    QEMU_BUILD_BUG_ON(sizeof(((CPUJumpCache *)0)->array[0]) != 16);
+    if ((cf & (CF_COUNT_MASK | CF_NO_GOTO_TB | CF_NO_GOTO_PTR |
+               CF_SINGLE_STEP | CF_NOIRQ | CF_BP_PAGE | CF_STEP_ATOMIC |
+               CF_USE_ICOUNT | CF_MEMI_ONLY)) ||
+        s->ss_active || (tb->cs_base >> 32) ||
+        arm_dc_feature(s, ARM_FEATURE_M) ||
+        !QTAILQ_EMPTY(&current_cpu->breakpoints)) {
+        gen_goto_ptr();
+        return;
+    }
+    miss = gen_new_label();
+    cs = tcg_temp_new_i32();
+    t = tcg_temp_new_i32();
+    h = tcg_temp_new_i32();
+    e = tcg_temp_new_ptr();
+    p = tcg_temp_new_ptr();
+    a = tcg_temp_new_i64();
+    b = tcg_temp_new_i64();
+
+    tcg_gen_ld8u_i32(t, tcg_env, offsetof(CPUARMState, thumb));
+    tcg_gen_shli_i32(t, t, R_TBFLAG_AM32_THUMB_SHIFT);
+    tcg_gen_ld_i32(cs, tcg_env, offsetof(CPUARMState, condexec_bits));
+    tcg_gen_shli_i32(cs, cs, R_TBFLAG_AM32_CONDEXEC_SHIFT);
+    tcg_gen_or_i32(cs, cs, t);
+    tcg_gen_ori_i32(cs, cs, (uint32_t)tb->cs_base & keep);
+
+    /* tb_jmp_cache_hash_func(pc, cs) */
+    tcg_gen_muli_i32(h, cs, 0x9e3779b1u);
+    tcg_gen_shri_i32(h, h, 32 - TB_JMP_PAGE_BITS);
+    tcg_gen_shri_i32(t, cpu_R[15], sh);
+    tcg_gen_xor_i32(t, t, cpu_R[15]);
+    tcg_gen_xor_i32(t, t, h);
+    tcg_gen_shri_i32(h, t, sh);
+    tcg_gen_andi_i32(h, h, TB_JMP_PAGE_MASK);
+    tcg_gen_andi_i32(t, t, TB_JMP_ADDR_MASK);
+    tcg_gen_or_i32(h, h, t);
+    tcg_gen_shli_i32(h, h, 4);
+
+    tcg_gen_ld_ptr(e, tcg_env,
+                   offsetof(CPUState, tb_jmp_cache) - sizeof(CPUState));
+    tcg_gen_ext_i32_ptr(p, h);
+    tcg_gen_add_ptr(e, e, p);
+    tcg_gen_ld_i64(a, e, offsetof(CPUJumpCache, array[0].pc));
+    tcg_gen_extu_i32_i64(b, cpu_R[15]);
+    tcg_gen_brcond_i64(TCG_COND_NE, a, b, miss);
+    tcg_gen_ld_ptr(p, e, offsetof(CPUJumpCache, array[0].tb));
+    tcg_gen_brcondi_ptr(TCG_COND_EQ, p, 0, miss);
+    tcg_gen_ld_i32(t, p, offsetof(TranslationBlock, flags));
+    tcg_gen_brcondi_i32(TCG_COND_NE, t, tb->flags, miss);
+    tcg_gen_ld_i32(t, p, offsetof(TranslationBlock, cflags));
+    tcg_gen_brcondi_i32(TCG_COND_NE, t, cf, miss);
+    tcg_gen_ld_i64(a, p, offsetof(TranslationBlock, cs_base));
+    tcg_gen_extu_i32_i64(b, cs);
+    tcg_gen_brcond_i64(TCG_COND_NE, a, b, miss);
+    tcg_gen_ld_ptr(p, p, offsetof(TranslationBlock, tc.ptr));
+    tcg_gen_goto_ptr(p);
+    gen_set_label(miss);
+    gen_goto_ptr();
+}
+
 /* This will end the TB but doesn't guarantee we'll return to
  * cpu_loop_exec. Any live exit_requests will be processed as we
  * enter the next TB.
@@ -1349,7 +1432,7 @@ static void gen_goto_tb(DisasContext *s, unsigned tb_slot_idx, int64_t diff)
         tcg_gen_exit_tb(s->base.tb, tb_slot_idx);
     } else {
         gen_update_pc(s, diff);
-        gen_goto_ptr();
+        gen_goto_ptr_probe(s);
     }
     s->base.is_jmp = DISAS_NORETURN;
 }
@@ -6862,9 +6945,10 @@ static void arm_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
             break;
         case DISAS_UPDATE_NOCHAIN:
             gen_update_pc(dc, curr_insn_len(dc));
-            /* fall through */
-        case DISAS_JUMP:
             gen_goto_ptr();
+            break;
+        case DISAS_JUMP:
+            gen_goto_ptr_probe(dc);
             break;
         case DISAS_UPDATE_EXIT:
             gen_update_pc(dc, curr_insn_len(dc));

@@ -29,10 +29,27 @@ for s in secs:
         for k in range(s[5] // 8):
             off, info = struct.unpack_from('<II', d, s[4] + k * 8)
             _, value, _, _, _, shndx = struct.unpack_from('<IIIBBH', d, symtab[4] + (info >> 8) * 16)
-            assert info & 0xff in (0x1c, 0x1d) and shndx == ti, 'unexpected relocation'
+            kind = info & 0xff
+            assert kind in (0x02, 0x0a, 0x1c, 0x1d) and shndx == ti, 'unexpected relocation'
             insn, = struct.unpack_from('<I', text, off)
-            addend = ((insn & 0xffffff) ^ 0x800000) - 0x800000
-            struct.pack_into('<I', text, off, (insn & 0xff000000) | (((value - off >> 2) + addend) & 0xffffff))
+            if kind == 0x02:  # R_ARM_ABS32: .text is at 0
+                struct.pack_into('<I', text, off, (insn + value) & 0xffffffff)
+            elif kind == 0x0a:  # R_ARM_THM_CALL: bl to Thumb, blx to ARM
+                hi, lo = insn & 0xffff, insn >> 16
+                sg, j1, j2 = hi >> 10 & 1, lo >> 13 & 1, lo >> 11 & 1
+                imm = sg << 24 | (1 - (j1 ^ sg)) << 23 | (1 - (j2 ^ sg)) << 22 | (hi & 0x3ff) << 12 | (lo & 0x7ff) << 1
+                addend = (imm ^ 1 << 24) - (1 << 24)
+                if value & 1:
+                    disp, lo = (value & ~1) + addend - off, lo | 0x1000
+                else:
+                    disp, lo = value + addend - (off & ~3), lo & ~0x1000
+                sg, i1, i2 = disp >> 24 & 1, disp >> 23 & 1, disp >> 22 & 1
+                hi = 0xf000 | sg << 10 | (disp >> 12 & 0x3ff)
+                lo = (lo & 0xd000) | (1 - (i1 ^ sg)) << 13 | (1 - (i2 ^ sg)) << 11 | (disp >> 1 & 0x7ff)
+                struct.pack_into('<HH', text, off, hi, lo)
+            else:
+                addend = ((insn & 0xffffff) ^ 0x800000) - 0x800000
+                struct.pack_into('<I', text, off, (insn & 0xff000000) | (((value - off >> 2) + addend) & 0xffffff))
 open(sys.argv[2], 'wb').write(text)
 PY
     truncate -s "$2" "$3"

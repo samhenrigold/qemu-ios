@@ -2573,6 +2573,12 @@ void tcg_gen_goto_tb(unsigned idx)
     tcg_gen_op1i(INDEX_op_goto_tb, 0, idx);
 }
 
+void tcg_gen_goto_ptr(TCGv_ptr ptr)
+{
+    plugin_gen_disable_mem_helpers();
+    tcg_gen_op1i(INDEX_op_goto_ptr, TCG_TYPE_PTR, tcgv_ptr_arg(ptr));
+}
+
 void tcg_gen_lookup_and_goto_ptr(void)
 {
     TCGv_ptr ptr;
