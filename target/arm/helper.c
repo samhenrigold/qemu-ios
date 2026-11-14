@@ -405,9 +405,19 @@ static void contextidr_write(CPUARMState *env, const ARMCPRegInfo *ri,
          * drop only the non-global pages that index picked up.
          */
         bool keep = cpu->ng_el1_count <= ARRAY_SIZE(cpu->ng_el1_pages);
+        /*
+         * iOS 10 enters its kernel in ASID 0 for every syscall and IRQ and
+         * returns to the same ASID about 94% of the time, ~10,000 times a
+         * second per core, and each return found the user index empty. Keep
+         * the user (PL0) entries of the ASID left, as the tagged TLB does,
+         * and bring them back if it is the next one switched to. The PL0
+         * regime is the Non-secure one, whose ASID is this register's.
+         */
+        int park = ri->secure & ARM_CP_SECSTATE_NS ? arm_to_core_mmu_idx(ARMMMUIdx_E10_0) : -1;
 
-        tlb_flush_switch_context_keep(CPU(cpu), extract64(value, 0, 8),
-                                      keep ? arm_to_core_mmu_idx(ARMMMUIdx_E10_1) : -1,
+        tlb_flush_switch_context_keep(CPU(cpu), extract64(raw_read(env, ri), 0, 8),
+                                      extract64(value, 0, 8),
+                                      keep ? arm_to_core_mmu_idx(ARMMMUIdx_E10_1) : -1, park,
                                       cpu->ng_el1_pages, keep ? cpu->ng_el1_count : 0);
         cpu->ng_el1_count = 0;
     }

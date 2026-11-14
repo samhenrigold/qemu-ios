@@ -293,6 +293,7 @@ static void tlb_mmu_flush_locked(CPUTLBDesc *desc, CPUTLBDescFast *fast)
     desc->n_used_entries = 0;
     desc->large_page_addr = -1;
     desc->large_page_mask = -1;
+    desc->large_page_bits = 0;
     desc->vindex = 0;
     memset(fast->table, -1, sizeof_tlb(fast));
     memset(desc->vtable, -1, sizeof(desc->vtable));
@@ -330,10 +331,35 @@ static inline void tlb_n_used_entries_dec(CPUState *cpu, uintptr_t mmu_idx)
     cpu->neg.tlb.d[mmu_idx].n_used_entries--;
 }
 
+/*
+ * The entries of one TLB index for the address space last switched away from
+ * (tlb_flush_switch_context_keep). Protected by tlb_c.lock, as the index is:
+ * every flush of mmu_idx reaches it, and tlb_reset_dirty marks it as well.
+ */
+typedef struct CPUTLBParked {
+    int mmu_idx;            /* -1 until the first switch that parks */
+    bool valid;             /* d and f hold key's entries */
+    uint64_t key;
+    CPUTLBDesc d;
+    CPUTLBDescFast f;
+} CPUTLBParked;
+
+/* The kept entries of @mmu_idx, if there are any. Called with tlb_c.lock held. */
+static CPUTLBParked *tlb_parked(CPUState *cpu, int mmu_idx)
+{
+    CPUTLBParked *p = cpu->tlb_parked;
+
+    return p->valid && p->mmu_idx == mmu_idx ? p : NULL;
+}
+
 void tlb_init(CPUState *cpu)
 {
     int64_t now = get_clock_realtime();
     int i;
+
+    cpu->tlb_parked = g_new0(CPUTLBParked, 1);
+    cpu->tlb_parked->mmu_idx = -1;
+    tlb_mmu_init(&cpu->tlb_parked->d, &cpu->tlb_parked->f, now);
 
     qemu_spin_init(&cpu->neg.tlb.c.lock);
 
@@ -357,6 +383,9 @@ void tlb_destroy(CPUState *cpu)
         g_free(fast->table);
         g_free(desc->fulltlb);
     }
+    g_free(cpu->tlb_parked->f.table);
+    g_free(cpu->tlb_parked->d.fulltlb);
+    g_clear_pointer(&cpu->tlb_parked, g_free);
 }
 
 /* flush_all_helper: run fn across all cpus
@@ -403,6 +432,9 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
     for (work = to_clean; work != 0; work &= work - 1) {
         int mmu_idx = ctz32(work);
         tlb_flush_one_mmuidx_locked(cpu, mmu_idx, now);
+    }
+    if (cpu->tlb_parked->mmu_idx >= 0 && (asked >> cpu->tlb_parked->mmu_idx) & 1) {
+        cpu->tlb_parked->valid = false;
     }
 
     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
@@ -456,7 +488,13 @@ void tlb_flush_context(CPUState *cpu, uint64_t key)
                                                             TLB_FLUSH_KEEP_JMP_CACHE));
         break;
     case 0:
-        break;  /* another address space: nothing of it is in the TLB */
+        /* another address space: only the kept index can hold any of it */
+        qemu_spin_lock(&cpu->neg.tlb.c.lock);
+        if (cpu->tlb_parked->key == key) {
+            cpu->tlb_parked->valid = false;
+        }
+        qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+        break;
     default:
         tlb_flush(cpu);
         break;
@@ -542,22 +580,73 @@ static inline void tlb_flush_vtlb_page_locked(CPUState *cpu, int mmu_idx,
     tlb_flush_vtlb_page_mask_locked(cpu, mmu_idx, page, -1);
 }
 
+/* Above this many entries to check, a TLB index with large pages around a flushed page is flushed whole. */
+#define TLB_LARGE_PAGE_SCAN_MAX 4096
+
+/* Flush @e if it is a piece of a large page that contains @page. */
+static void tlb_flush_large_entry_locked(CPUTLBDesc *d, CPUTLBEntry *e,
+                                         const CPUTLBEntryFull *full, vaddr page)
+{
+    if (full->lg_page_size > TARGET_PAGE_BITS &&
+        tlb_flush_entry_mask_locked(e, page, (vaddr)-1 << full->lg_page_size)) {
+        d->n_used_entries--;
+    }
+}
+
+/*
+ * Flush @page from the TLB index @d and @f. A large page is entered as one
+ * entry per target page touched, so in the index's large-page region the
+ * entries that can hold a piece of a large page containing @page (those of
+ * the pages of the largest such block around it) are checked, and all of that
+ * page goes, as it would from a TLB holding it as one entry. Too many to check
+ * returns false: the index must be flushed whole.
+ */
+static bool tlb_flush_page_desc_locked(CPUTLBDesc *d, CPUTLBDescFast *f, vaddr page)
+{
+    size_t n = tlb_n_entries(f);
+    CPUTLBEntry *e = &f->table[(page >> TARGET_PAGE_BITS) & (n - 1)];
+
+    if ((page & d->large_page_mask) == d->large_page_addr) {
+        unsigned bits = d->large_page_bits - TARGET_PAGE_BITS;
+        size_t m = bits < 63 ? MIN((size_t)1 << bits, n) : n;
+        size_t first = (page >> d->large_page_bits << bits) & (n - 1);
+
+        if (m > TLB_LARGE_PAGE_SCAN_MAX) {
+            return false;
+        }
+        for (size_t i = 0; i < m; i++) {
+            size_t k = (first + i) & (n - 1);
+
+            tlb_flush_large_entry_locked(d, &f->table[k], &d->fulltlb[k], page);
+        }
+        for (int k = 0; k < CPU_VTLB_SIZE; k++) {
+            tlb_flush_large_entry_locked(d, &d->vtable[k], &d->vfulltlb[k], page);
+        }
+    }
+    if (tlb_flush_entry_locked(e, page)) {
+        d->n_used_entries--;
+    }
+    for (int k = 0; k < CPU_VTLB_SIZE; k++) {
+        if (tlb_flush_entry_locked(&d->vtable[k], page)) {
+            d->n_used_entries--;
+        }
+    }
+    return true;
+}
+
 static void tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
 {
-    vaddr lp_addr = cpu->neg.tlb.d[midx].large_page_addr;
-    vaddr lp_mask = cpu->neg.tlb.d[midx].large_page_mask;
+    CPUTLBParked *p = tlb_parked(cpu, midx);
 
-    /* Check if we need to flush due to large pages.  */
-    if ((page & lp_mask) == lp_addr) {
+    if (p && !tlb_flush_page_desc_locked(&p->d, &p->f, page)) {
+        p->valid = false;
+    }
+    if (!tlb_flush_page_desc_locked(&cpu->neg.tlb.d[midx], cpu_tlb_fast(cpu, midx), page)) {
         tlb_debug("forcing full flush midx %d (%016"
                   VADDR_PRIx "/%016" VADDR_PRIx ")\n",
-                  midx, lp_addr, lp_mask);
+                  midx, cpu->neg.tlb.d[midx].large_page_addr,
+                  cpu->neg.tlb.d[midx].large_page_mask);
         tlb_flush_one_mmuidx_locked(cpu, midx, get_clock_realtime());
-    } else {
-        if (tlb_flush_entry_locked(tlb_entry(cpu, midx, page), page)) {
-            tlb_n_used_entries_dec(cpu, midx);
-        }
-        tlb_flush_vtlb_page_locked(cpu, midx, page);
     }
 }
 
@@ -596,17 +685,54 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
     tb_jmp_cache_clear_page(cpu, addr);
 }
 
-void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t key, int keep_idx,
+/*
+ * Leaving address space @from for @key: @idx's entries are kept for @from, and
+ * the ones kept before become current if they are @key's, else are flushed.
+ * Called with tlb_c.lock held.
+ */
+static void tlb_park_locked(CPUState *cpu, int idx, uint64_t from, uint64_t key)
+{
+    CPUTLBParked *p = cpu->tlb_parked;
+    CPUTLBDesc d = cpu->neg.tlb.d[idx];
+    CPUTLBDescFast f = *cpu_tlb_fast(cpu, idx);
+    bool hit = p->valid && p->mmu_idx == idx && p->key == key;
+
+    cpu->neg.tlb.d[idx] = p->d;
+    *cpu_tlb_fast(cpu, idx) = p->f;
+    p->d = d;
+    p->f = f;
+    p->mmu_idx = idx;
+    p->key = from;
+    p->valid = true;
+    if (hit) {
+        cpu->neg.tlb.c.dirty |= 1 << idx;
+    } else {
+        tlb_flush_one_mmuidx_locked(cpu, idx, get_clock_realtime());
+        cpu->neg.tlb.c.dirty &= ~(1 << idx);
+    }
+}
+
+void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t from, uint64_t key,
+                                   int keep_idx, int park_idx,
                                    const vaddr *pages, unsigned n)
 {
-    if (keep_idx < 0) {
-        tlb_flush_switch_context(cpu, key);
-        return;
-    }
+    MMUIdxMap flush = ALL_MMUIDX_BITS;
+
     assert_cpu_is_self(cpu);
     tcg_switch_jmp_cache(cpu, key);
-    tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT((ALL_MMUIDX_BITS & ~(1 << keep_idx)) |
-                                                        TLB_FLUSH_KEEP_JMP_CACHE));
+    if (park_idx >= 0 && from != key) {
+        qemu_spin_lock(&cpu->neg.tlb.c.lock);
+        tlb_park_locked(cpu, park_idx, from, key);
+        qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+        flush &= ~(1 << park_idx);
+    }
+    if (keep_idx >= 0) {
+        flush &= ~(1 << keep_idx);
+    }
+    tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT(flush | TLB_FLUSH_KEEP_JMP_CACHE));
+    if (keep_idx < 0) {
+        return;
+    }
     /* TLB entries only: the jump cache is already the new context's. */
     qemu_spin_lock(&cpu->neg.tlb.c.lock);
     for (unsigned i = 0; i < n; i++) {
@@ -792,6 +918,11 @@ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
     qemu_spin_lock(&cpu->neg.tlb.c.lock);
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         if ((d.idxmap >> mmu_idx) & 1) {
+            CPUTLBParked *p = tlb_parked(cpu, mmu_idx);
+
+            if (p) {
+                p->valid = false;
+            }
             tlb_flush_range_locked(cpu, mmu_idx, d.addr, d.len, d.bits);
         }
     }
@@ -998,6 +1129,17 @@ void tlb_reset_dirty(CPUState *cpu, uintptr_t start, uintptr_t length)
                                          start, length);
         }
     }
+    if (cpu->tlb_parked->valid) {
+        CPUTLBParked *p = cpu->tlb_parked;
+        unsigned int n = tlb_n_entries(&p->f);
+
+        for (unsigned int i = 0; i < n; i++) {
+            tlb_reset_dirty_range_locked(&p->d.fulltlb[i], &p->f.table[i], start, length);
+        }
+        for (unsigned int i = 0; i < CPU_VTLB_SIZE; i++) {
+            tlb_reset_dirty_range_locked(&p->d.vfulltlb[i], &p->d.vtable[i], start, length);
+        }
+    }
     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
 }
 
@@ -1055,6 +1197,8 @@ static void tlb_add_large_page(CPUState *cpu, int mmu_idx,
     }
     cpu->neg.tlb.d[mmu_idx].large_page_addr = lp_addr & lp_mask;
     cpu->neg.tlb.d[mmu_idx].large_page_mask = lp_mask;
+    cpu->neg.tlb.d[mmu_idx].large_page_bits = MAX(cpu->neg.tlb.d[mmu_idx].large_page_bits,
+                                                  ctz64(size));
 }
 
 static inline void tlb_set_compare(CPUTLBEntryFull *full, CPUTLBEntry *ent,

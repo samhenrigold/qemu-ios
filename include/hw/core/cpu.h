@@ -289,6 +289,8 @@ typedef struct CPUTLBDesc {
      */
     vaddr large_page_addr;
     vaddr large_page_mask;
+    /* log2 of the largest of those pages */
+    unsigned large_page_bits;
     /* host time (in ns) at the beginning of the time window */
     int64_t window_begin_ns;
     /* maximum number of entries observed in the window */
@@ -525,6 +527,8 @@ struct CPUState {
     MemoryRegion *memory;
 
     struct CPUJumpCache *tb_jmp_cache;
+    /* One TLB index kept for the previous address space (cputlb.c). */
+    struct CPUTLBParked *tlb_parked;
 
     GArray *gdb_regs;
     int gdb_num_regs;

@@ -370,10 +370,16 @@ bool arm_cpu_tlb_fill_align(CPUState *cs, CPUTLBEntryFull *out, vaddr address,
         *out = res.f;
         if (mmu_idx == arm_to_core_mmu_idx(ARMMMUIdx_E10_1) && !res.global &&
             cpu->ng_el1_count <= ARRAY_SIZE(cpu->ng_el1_pages)) {
-            if (res.f.lg_page_size == TARGET_PAGE_BITS &&
-                cpu->ng_el1_count < ARRAY_SIZE(cpu->ng_el1_pages)) {
-                cpu->ng_el1_pages[cpu->ng_el1_count++] = address & TARGET_PAGE_MASK;
-            } else {
+            /* A large page is recorded once, by its first page: flushing that takes all of it. */
+            vaddr page = address & -((vaddr)1 << MAX(res.f.lg_page_size, TARGET_PAGE_BITS));
+            bool seen = false;
+
+            for (unsigned i = 0; res.f.lg_page_size > TARGET_PAGE_BITS && i < cpu->ng_el1_count; i++) {
+                seen |= cpu->ng_el1_pages[i] == page;
+            }
+            if (!seen && cpu->ng_el1_count < ARRAY_SIZE(cpu->ng_el1_pages)) {
+                cpu->ng_el1_pages[cpu->ng_el1_count++] = page;
+            } else if (!seen) {
                 cpu->ng_el1_count = ARRAY_SIZE(cpu->ng_el1_pages) + 1;
             }
         }

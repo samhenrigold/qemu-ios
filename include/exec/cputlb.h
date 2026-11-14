@@ -148,8 +148,17 @@ void tlb_flush_switch_context(CPUState *cpu, uint64_t key);
  * Like tlb_flush_switch_context(), but the TLB index @keep_idx keeps its
  * entries except the @n pages listed: for a guest whose global mappings
  * outlive the switch. A negative @keep_idx flushes everything.
+ *
+ * A non-negative @park_idx also keeps that index's entries, for the address
+ * space @from being left, and makes current the entries it kept for @key if
+ * @key was the last one left (else an empty index): a guest that leaves an
+ * address space and comes straight back finds its entries still there, as in
+ * a TLB tagged by @key. Every flush of @park_idx reaches the kept entries too,
+ * so the guest must invalidate @key's entries before reusing @key, as for
+ * tlb_flush_switch_context().
  */
-void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t key, int keep_idx,
+void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t from, uint64_t key,
+                                   int keep_idx, int park_idx,
                                    const vaddr *pages, unsigned n);
 
 /**
@@ -158,9 +167,11 @@ void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t key, int keep_idx,
  * @key: the address space to invalidate, as given to tlb_flush_switch_context
  *
  * Invalidate one address space's non-global translations (e.g. TLBIASID).
- * The softmmu TLB only ever holds the current address space, so it is
- * flushed only when @key is current; of the TB jump caches, only @key's is
- * emptied, keeping the other address spaces' and the global (kernel) entries.
+ * The softmmu TLB holds the current address space and at most one index kept
+ * for the last one (tlb_flush_switch_context_keep), so it is flushed when @key
+ * is current, and the kept index dropped when it is @key's; of the TB jump
+ * caches, only @key's is emptied, keeping the other address spaces' and the
+ * global (kernel) entries.
  */
 void tlb_flush_context(CPUState *cpu, uint64_t key);
 
@@ -277,7 +288,8 @@ static inline void tlb_flush(CPUState *cpu)
 static inline void tlb_flush_switch_context(CPUState *cpu, uint64_t key)
 {
 }
-static inline void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t key, int keep_idx,
+static inline void tlb_flush_switch_context_keep(CPUState *cpu, uint64_t from, uint64_t key,
+                                                 int keep_idx, int park_idx,
                                                  const vaddr *pages, unsigned n)
 {
 }

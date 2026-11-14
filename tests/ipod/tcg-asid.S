@@ -17,9 +17,21 @@
         .equ PA_C3, RAM + 0x34000       @ code: return 3
         .equ PA_G1, RAM + 0x35000       @ data 0xc3, VA_G in both (global)
         .equ PA_G2, RAM + 0x36000       @ data 0xd4
+        .equ PA_U1, RAM + 0x37000       @ data 0xe5, VA_U in T1 (nG, read unprivileged)
+        .equ PA_U2, RAM + 0x38000       @ data 0xf6, VA_U in T2 (nG)
+        .equ PA_U3, RAM + 0x39000       @ data 0x17
+        .equ PA_X, RAM + 0x3a000        @ code written through VA_X in T1 (nG), run through the identity map
+        .equ PA_S1, RAM + 0x400000      @ 1M sections: data 0x31 at +0 and +0x5000
+        .equ PA_S2, RAM + 0x500000      @ 0x42
+        .equ PA_S3, RAM + 0x600000      @ 0x53
         .equ VA_D, 0x70000000
         .equ VA_C, 0x70001000
         .equ VA_G, 0x70002000
+        .equ VA_U, 0x70003000
+        .equ VA_X, 0x70004000
+        .equ VA_S1, 0x71000000    @ global section in both tables
+        .equ VA_S2, 0x71100000    @ the same
+        .equ VA_NS, 0x72000000    @ non-global section: PA_S1 in T1, PA_S2 in T2
         .equ VA_N, 0x70010000     @ 40 nG pages: word i in T1, 0x100 + i in T2
         .equ NPAGES, 40
         .equ PA_N1, RAM + 0x100000      @ the 40 pages in T1
@@ -27,6 +39,7 @@
         .equ PG_NG, 0x872         @ small page: nG, AP=11, TEX=001 (normal), type 2
         .equ PG_G, 0x072          @ the same, global
         .equ SECT, 0x1c02         @ section: AP=11, TEX=001, domain 0, global
+        .equ SECT_NG, 0x21c02     @ the same, nG
 
 _start:
         cpsid   aif
@@ -63,6 +76,10 @@ _start:
         str     r1, [r0, #4]
         ldr     r1, =PA_G1 | PG_G
         str     r1, [r0, #8]
+        ldr     r1, =PA_U1 | PG_NG
+        str     r1, [r0, #12]
+        ldr     r1, =PA_X | PG_NG
+        str     r1, [r0, #16]
         ldr     r0, =L2B
         ldr     r1, =PA_B | PG_NG
         str     r1, [r0, #0]
@@ -70,6 +87,8 @@ _start:
         str     r1, [r0, #4]
         ldr     r1, =PA_G1 | PG_G
         str     r1, [r0, #8]
+        ldr     r1, =PA_U2 | PG_NG
+        str     r1, [r0, #12]
         mov     r3, #0
 4:      ldr     r0, =L2A + 0x10 * 4
         ldr     r1, =PA_N1 | PG_NG
@@ -99,6 +118,40 @@ _start:
         str     r1, [r0]
         ldr     r0, =PA_G2
         mov     r1, #0xd4
+        str     r1, [r0]
+        ldr     r0, =PA_U1
+        mov     r1, #0xe5
+        str     r1, [r0]
+        ldr     r0, =PA_U2
+        mov     r1, #0xf6
+        str     r1, [r0]
+        ldr     r0, =PA_U3
+        mov     r1, #0x17
+        str     r1, [r0]
+        mov     r12, #0x5000                @ the second page read in each section
+        ldr     r0, =PA_S1
+        mov     r1, #0x31
+        str     r1, [r0]
+        str     r1, [r0, r12]
+        ldr     r0, =PA_S2
+        mov     r1, #0x42
+        str     r1, [r0]
+        str     r1, [r0, r12]
+        ldr     r0, =PA_S3
+        mov     r1, #0x53
+        str     r1, [r0]
+        str     r1, [r0, r12]
+        ldr     r1, =PA_S1 | SECT
+        ldr     r2, =VA_S1
+        bl      .Lsect2
+        ldr     r1, =PA_S2 | SECT
+        ldr     r2, =VA_S2
+        bl      .Lsect2
+        ldr     r0, =T1 + (VA_NS >> 20) * 4
+        ldr     r1, =PA_S1 | SECT_NG
+        str     r1, [r0]
+        ldr     r0, =T2 + (VA_NS >> 20) * 4
+        ldr     r1, =PA_S2 | SECT_NG
         str     r1, [r0]
         ldr     r0, =PA_C1
         mov     r1, #1
@@ -329,6 +382,147 @@ _start:
         mov     r2, #'u'
         bl      .Lcheck
 
+        @ v-z, 1: user (PL0) entries, read and written unprivileged (LDRT/STRT): TCG keeps the ASID left's and brings
+        @ them back when it is switched straight back to, as a tagged TLB keeps them
+        @ v: each ASID reads its own page
+        mov     r0, #1
+        bl      .Lswitch
+        ldr     r4, =VA_U
+        ldrt    r0, [r4]
+        mov     r0, #2
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        mov     r1, #0xf6
+        mov     r2, #'v'
+        bl      .Lcheck
+        @ w: ASID 1's page remapped with no TLBI while ASID 2 runs: back in ASID 1 its entry still reads the old page
+        ldr     r0, =L2A
+        ldr     r1, =PA_U3 | PG_NG
+        str     r1, [r0, #12]
+        mov     r0, #1
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        mov     r1, #0xe5
+        mov     r2, #'w'
+        bl      .Lcheck
+        @ x: the kept entry goes with a TLBIMVA made while ASID 2 runs
+        mov     r0, #2
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        ldr     r0, =VA_U | 1
+        mcr     p15, 0, r0, c8, c7, 1       @ TLBIMVA
+        mov     r0, #1
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        mov     r1, #0x17
+        mov     r2, #'x'
+        bl      .Lcheck
+        @ y: and with a TLBIASID of ASID 1
+        mov     r0, #2
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        ldr     r0, =L2A
+        ldr     r1, =PA_U1 | PG_NG
+        str     r1, [r0, #12]
+        mov     r0, #1
+        mcr     p15, 0, r0, c8, c7, 2       @ TLBIASID 1
+        mov     r0, #1
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        mov     r1, #0xe5
+        mov     r2, #'y'
+        bl      .Lcheck
+        @ z: and with a TLBIALL
+        mov     r0, #2
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        ldr     r0, =L2A
+        ldr     r1, =PA_U3 | PG_NG
+        str     r1, [r0, #12]
+        mcr     p15, 0, r0, c8, c7, 0       @ TLBIALL
+        mov     r0, #1
+        bl      .Lswitch
+        ldrt    r0, [r4]
+        mov     r1, #0x17
+        mov     r2, #'z'
+        bl      .Lcheck
+        @ 1: a kept writable entry still catches code written through it: ASID 1 writes PA_X's code through VA_X, ASID 2
+        @ runs it (so its TB is there), ASID 1 rewrites it through the kept entry, and the code run is the new one
+        ldr     r0, =VA_X
+        mov     r1, #7
+        bl      .Lputcode_t
+        mov     r0, #2
+        bl      .Lswitch
+        ldr     r4, =PA_X
+        blx     r4
+        mov     r0, #1
+        bl      .Lswitch
+        ldr     r0, =VA_X
+        mov     r1, #8
+        bl      .Lputcode_t
+        ldr     r4, =PA_X
+        blx     r4
+        mov     r1, #8
+        mov     r2, #'1'
+        bl      .Lcheck
+        @ 2-5: 1M sections, which the TLB holds as one entry per 4K page touched
+        mov     r12, #0x5000
+        @ 2: a TLBIMVA anywhere in a section takes every page of it
+        ldr     r4, =VA_S1
+        ldr     r0, [r4]
+        ldr     r0, [r4, r12]
+        ldr     r1, =PA_S3 | SECT
+        ldr     r2, =VA_S1
+        bl      .Lsect2
+        ldr     r0, =(VA_S1 + 0x9000) | 1
+        mcr     p15, 0, r0, c8, c7, 1       @ TLBIMVA
+        ldr     r5, [r4]
+        ldr     r6, [r4, r12]
+        add     r0, r5, r6
+        mov     r1, #0xa6
+        mov     r2, #'2'
+        bl      .Lcheck
+        @ 3: a TLBIMVA in one section leaves another's entries (remapped without TLBI: still the old page)
+        ldr     r4, =VA_S2
+        ldr     r0, [r4]
+        ldr     r1, =PA_S3 | SECT
+        ldr     r2, =VA_S2
+        bl      .Lsect2
+        ldr     r0, =VA_S1 | 1
+        mcr     p15, 0, r0, c8, c7, 1       @ TLBIMVA
+        ldr     r0, [r4]
+        mov     r1, #0x42
+        mov     r2, #'3'
+        bl      .Lcheck
+        mcr     p15, 0, r0, c8, c7, 0       @ TLBIALL
+        @ 4: a non-global section the kernel read goes at an ASID switch, every page of it
+        mov     r0, #1
+        bl      .Lswitch
+        ldr     r4, =VA_NS
+        ldr     r0, [r4]
+        ldr     r0, [r4, r12]
+        mov     r0, #2
+        bl      .Lswitch
+        ldr     r5, [r4]
+        ldr     r6, [r4, r12]
+        add     r0, r5, r6
+        mov     r1, #0x84
+        mov     r2, #'4'
+        bl      .Lcheck
+        @ 5: and only it: a global section's entry stays (remapped without TLBI: still the old page)
+        ldr     r7, =VA_S2
+        ldr     r0, [r7]
+        ldr     r0, [r4]
+        ldr     r1, =PA_S1 | SECT
+        ldr     r2, =VA_S2
+        bl      .Lsect2
+        mov     r0, #1
+        bl      .Lswitch
+        ldr     r0, [r7]
+        mov     r1, #0x53
+        mov     r2, #'5'
+        bl      .Lcheck
+
         mov     r0, #'E'
         bl      .Lputc
         mov     r0, #'\n'
@@ -349,6 +543,14 @@ _start:
         add     r1, r1, #0x100000
         subs    r2, r2, #1
         bne     1b
+        bx      lr
+
+@ r1 = section descriptor for VA r2 in both tables (no TLBI)
+.Lsect2:
+        ldr     r0, =T1
+        str     r1, [r0, r2, lsr #18]
+        ldr     r0, =T2
+        str     r1, [r0, r2, lsr #18]
         bx      lr
 
 @ r0 = ASID: TTBR0 = T1 (odd) or T2 (even), then CONTEXTIDR
@@ -378,6 +580,20 @@ _start:
         str     r1, [r0]
         ldr     r1, =0xe12fff1e
         str     r1, [r0, #4]
+        mov     r1, #0
+        mcr     p15, 0, r1, c7, c10, 4      @ DSB
+        mcr     p15, 0, r1, c7, c5, 0       @ ICIALLU
+        mcr     p15, 0, r1, c7, c5, 6       @ BPIALL
+        mcr     p15, 0, r1, c7, c5, 4       @ ISB
+        bx      lr
+
+@ .Lputcode, written unprivileged (STRT)
+.Lputcode_t:
+        orr     r1, r1, #0xe3000000
+        orr     r1, r1, #0x00a00000
+        strt    r1, [r0], #4
+        ldr     r1, =0xe12fff1e
+        strt    r1, [r0]
         mov     r1, #0
         mcr     p15, 0, r1, c7, c10, 4      @ DSB
         mcr     p15, 0, r1, c7, c5, 0       @ ICIALLU
