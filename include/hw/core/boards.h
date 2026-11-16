@@ -216,6 +216,10 @@ typedef struct {
  *    size than the target architecture's minimum. (Attempting to create
  *    such a CPU will fail.) Note that changing this is a migration
  *    compatibility break for the machine.
+ * @clock_waits_for_vcpus:
+ *    If true, under MTTCG the VM clock slows to 1/16 while a vCPU that isn't idle
+ *    reaches no TB boundary, as a board's cores never stop while its clock runs
+ *    (tcg-accel-ops-mttcg.c).
  * @ignore_memory_transaction_failures:
  *    If this is flag is true then the CPU will ignore memory transaction
  *    failures which should cause the CPU to take an exception due to an
@@ -299,6 +303,7 @@ struct MachineClass {
     bool rom_file_has_mr;
     int minimum_page_bits;
     bool has_hotpluggable_cpus;
+    bool clock_waits_for_vcpus;
     bool ignore_memory_transaction_failures;
     int numa_mem_align_shift;
     const char * const *valid_cpu_types;

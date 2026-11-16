@@ -37,6 +37,7 @@
 #include "tcg/startup.h"
 #include "tcg-accel-ops.h"
 #include "tcg-accel-ops-mttcg.h"
+#include "system/cpu-timers.h"
 
 #ifdef CONFIG_DARWIN
 #include <pthread/qos.h>
@@ -197,6 +198,87 @@ static void mttcg_acct_dump(int64_t now)
     }
 }
 
+/*
+ * The guest's clock waits for a vCPU the host isn't running (MachineClass clock_waits_for_vcpus).
+ *
+ * A board's cores never stop while its timebase runs. A vCPU thread stops whenever the host deschedules it or it
+ * waits for the BQL or for the other vCPUs (a broadcast TLB flush is exclusive work), and the VM clock, which is host
+ * time, runs on. A core spinning on a lock against the timebase then counts the holder's stall as time: iOS 10's
+ * hw_lock_bit (14G61, 800da1ee) panics "hw_lock_bit(): timed out" after 0xc00000 ticks, 0.52 s at 24 MHz.
+ *
+ * Every STALL_TICK_US this thread looks for a vCPU that is neither asleep idle nor has reached a TB boundary since the
+ * last look, and kicks each awake one, so that one the host runs reaches a TB boundary within a TB; while there is a
+ * stalled one, the VM clock runs at 1/16 (cpu_clock_set_slow), and afterwards at 1.25 times host time until it has
+ * caught up, so the guest's date doesn't fall behind the host's; a holder that runs is nowhere near a lock timeout,
+ * and a stall during the catch-up slows the clock again. It looks every STALL_IDLE_TICK_US while every vCPU is idle
+ * and the clock is at host rate, as none can stall then (one that wakes counts as seen).
+ */
+#define STALL_TICK_US 2000
+#define STALL_IDLE_TICK_US 20000
+
+/* One look at the vCPUs: whether one stalled since the last; *awake, whether one is awake now. */
+static bool mttcg_stall_check(bool *awake)
+{
+    CPUState *cpu;
+    bool stalled = false;
+
+    *awake = false;
+    CPU_FOREACH(cpu) {
+        bool seen = qatomic_xchg(&cpu->exec_seen, false);
+
+        if (!qatomic_read(&cpu->created) || qatomic_read(&cpu->idle)) {
+            continue;
+        }
+        *awake = true;
+        stalled |= !seen;
+        /* cpu_exit without its exit_request: out of the TB chain into cpu_handle_interrupt, not out of cpu_exec */
+        qatomic_set(&cpu->neg.icount_decr.u16.high, -1);
+    }
+    return stalled;
+}
+
+/*
+ * A look, and the VM clock's rate after it; *awake as mttcg_stall_check's. Returns whether the clock is off host rate.
+ * While it catches up, the main loop's timer deadlines, which assume host rate, come due early: each look wakes it.
+ */
+static bool mttcg_stall_look(bool *awake)
+{
+    bool stalled, off_rate;
+
+    WITH_RCU_READ_LOCK_GUARD() {
+        stalled = mttcg_stall_check(awake);
+    }
+    off_rate = cpu_clock_set_slow(stalled);
+    if (off_rate && !stalled) {
+        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
+    }
+    return off_rate;
+}
+
+static void *mttcg_stall_thread(void *arg)
+{
+    bool awake = true, off_rate = false;
+
+    rcu_register_thread();
+    mttcg_request_performance_core();   /* the vCPUs' QoS: a look the host delays is time the guest sees */
+    for (;;) {
+        g_usleep(awake || off_rate ? STALL_TICK_US : STALL_IDLE_TICK_US);
+        off_rate = mttcg_stall_look(&awake);
+    }
+    return NULL;
+}
+
+static void mttcg_stall_start(void)
+{
+    static QemuThread thread;
+    static bool started;
+
+    if (!started && MACHINE_GET_CLASS(current_machine)->clock_waits_for_vcpus) {
+        started = true;
+        qemu_thread_create(&thread, "vCPU stall check", mttcg_stall_thread, NULL, QEMU_THREAD_DETACHED);
+    }
+}
+
 static void *mttcg_cpu_thread_fn(void *arg)
 {
     MttcgForceRcuNotifier force_rcu;
@@ -223,7 +305,16 @@ static void *mttcg_cpu_thread_fn(void *arg)
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
     do {
+        bool idle = cpu_thread_is_idle(cpu);
+
+        if (idle) {
+            qatomic_set(&cpu->idle, true);
+        }
         qemu_process_cpu_events(cpu);
+        if (idle) {
+            qatomic_set(&cpu->exec_seen, true);
+            qatomic_set(&cpu->idle, false);
+        }
 
         if (it_acct_on) {
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -321,6 +412,7 @@ void mttcg_start_vcpu_thread(CPUState *cpu)
     char thread_name[VCPU_THREAD_NAME_SIZE];
 
     g_assert(tcg_enabled());
+    mttcg_stall_start();
     tcg_cpu_init_cflags(cpu, current_machine->smp.max_cpus > 1);
 
     /* create a thread per vCPU with TCG (MTTCG) */

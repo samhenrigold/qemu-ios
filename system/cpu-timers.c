@@ -71,16 +71,48 @@ int64_t cpu_get_ticks(void)
     return ticks;
 }
 
+/* The VM clock at host time @now, ticks enabled: slowed, catching up, or at host rate */
+static int64_t cpu_clock_at(int64_t now)
+{
+    TimersState *s = &timers_state;
+
+    if (s->cpu_clock_slow_since) {
+        return s->cpu_clock_offset + s->cpu_clock_slow_since +
+               ((now - s->cpu_clock_slow_since) >> CPU_CLOCK_SLOW_SHIFT);
+    }
+    if (s->cpu_clock_catch_since) {
+        return s->cpu_clock_offset + now +
+               MIN((now - s->cpu_clock_catch_since) >> CPU_CLOCK_CATCH_SHIFT, s->cpu_clock_owed);
+    }
+    return s->cpu_clock_offset + now;
+}
+
+/*
+ * Fold what slowing and catching up have done by @now into the offset and cpu_clock_owed, leaving the clock at host
+ * rate from the same reading. vm_clock_lock and the seqlock held, ticks enabled.
+ */
+static void cpu_clock_settle(int64_t now)
+{
+    TimersState *s = &timers_state;
+    int64_t time = cpu_clock_at(now);
+
+    if (s->cpu_clock_slow_since) {
+        int64_t slowed = now - s->cpu_clock_slow_since;
+
+        s->cpu_clock_owed += slowed - (slowed >> CPU_CLOCK_SLOW_SHIFT);
+    } else if (s->cpu_clock_catch_since) {
+        s->cpu_clock_owed -= MIN((now - s->cpu_clock_catch_since) >> CPU_CLOCK_CATCH_SHIFT, s->cpu_clock_owed);
+    }
+    s->cpu_clock_offset = time - now;
+    s->cpu_clock_slow_since = s->cpu_clock_catch_since = 0;
+}
+
 int64_t cpu_get_clock_locked(void)
 {
-    int64_t time;
-
-    time = timers_state.cpu_clock_offset;
     if (timers_state.cpu_ticks_enabled) {
-        time += get_clock();
+        return cpu_clock_at(get_clock());
     }
-
-    return time;
+    return timers_state.cpu_clock_offset;
 }
 
 /*
@@ -109,8 +141,12 @@ void cpu_enable_ticks(void)
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (!timers_state.cpu_ticks_enabled) {
+        int64_t now = get_clock();
+
         timers_state.cpu_ticks_offset -= cpu_get_host_ticks();
-        timers_state.cpu_clock_offset -= get_clock();
+        timers_state.cpu_clock_offset -= now;
+        /* what was still owed at the stop is repaid from here */
+        timers_state.cpu_clock_catch_since = timers_state.cpu_clock_owed ? now : 0;
         timers_state.cpu_ticks_enabled = 1;
     }
     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
@@ -127,12 +163,43 @@ void cpu_disable_ticks(void)
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (timers_state.cpu_ticks_enabled) {
+        int64_t now = get_clock();
+
         timers_state.cpu_ticks_offset += cpu_get_host_ticks();
-        timers_state.cpu_clock_offset = cpu_get_clock_locked();
+        cpu_clock_settle(now);
+        timers_state.cpu_clock_offset += now;
         timers_state.cpu_ticks_enabled = 0;
     }
     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                          &timers_state.vm_clock_lock);
+}
+
+bool cpu_clock_set_slow(bool slow)
+{
+    TimersState *s = &timers_state;
+    bool off_rate;
+
+    /* the stall thread calls this every look: readers retry only on a change */
+    qemu_spin_lock(&s->vm_clock_lock);
+    if (s->cpu_ticks_enabled) {
+        int64_t now = get_clock();
+        bool repaid = s->cpu_clock_catch_since &&
+                      (now - s->cpu_clock_catch_since) >> CPU_CLOCK_CATCH_SHIFT >= s->cpu_clock_owed;
+
+        if (slow != (s->cpu_clock_slow_since != 0) || repaid) {
+            seqlock_write_begin(&s->vm_clock_seqlock);
+            cpu_clock_settle(now);
+            if (slow) {
+                s->cpu_clock_slow_since = now;
+            } else if (s->cpu_clock_owed) {
+                s->cpu_clock_catch_since = now;
+            }
+            seqlock_write_end(&s->vm_clock_seqlock);
+        }
+    }
+    off_rate = s->cpu_clock_slow_since || s->cpu_clock_catch_since;
+    qemu_spin_unlock(&s->vm_clock_lock);
+    return off_rate;
 }
 
 static bool icount_state_needed(void *opaque)

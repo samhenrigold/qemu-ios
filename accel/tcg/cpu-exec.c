@@ -990,6 +990,9 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
      * tcg_kick_vcpu_thread())
      */
     qatomic_set_mb(&cpu->neg.icount_decr.u16.high, 0);
+    if (!qatomic_read(&cpu->exec_seen)) {
+        qatomic_set(&cpu->exec_seen, true);
+    }
 
 #ifdef CONFIG_USER_ONLY
     assert(!cpu_test_interrupt(cpu, ~0));

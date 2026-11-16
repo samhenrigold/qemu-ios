@@ -51,6 +51,13 @@ typedef struct TimersState {
 
     int64_t vm_clock_warp_start;
     int64_t cpu_clock_offset;
+    /*
+     * The host time the VM clock slowed at (cpu_clock_set_slow), or began catching up at, 0 if not; and the time it
+     * still owes host time for slowing, as of the last change
+     */
+    int64_t cpu_clock_slow_since;
+    int64_t cpu_clock_catch_since;
+    int64_t cpu_clock_owed;
 
     /* Only written by TCG thread */
     int64_t qemu_icount;
@@ -67,5 +74,12 @@ extern TimersState timers_state;
  * icount needs this internal from cpu-timers when adjusting the icount shift.
  */
 int64_t cpu_get_clock_locked(void);
+
+/*
+ * The VM clock's rate while slowed (cpu_clock_set_slow), as a right shift of host time: 1/16; and how much faster than
+ * host time it runs while it catches up: 1/4, so 1.25 times
+ */
+#define CPU_CLOCK_SLOW_SHIFT 4
+#define CPU_CLOCK_CATCH_SHIFT 2
 
 #endif /* TIMERS_STATE_H */

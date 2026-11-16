@@ -427,6 +427,8 @@ struct qemu_work_item;
  * @sem: WIN32 only semaphore used only for qtest
  * @thread_id: native thread id of vCPU, only live once @created is #true
  * @running: #true if CPU is currently running (lockless).
+ * @exec_seen: set by cpu_exec at a TB boundary, cleared by MTTCG's guest clock check (lockless).
+ * @idle: #true while the MTTCG vCPU thread sleeps in qemu_process_cpu_events; @idles counts its wakes (lockless).
  * @has_waiter: #true if a CPU is currently waiting for the cpu_exec_end;
  * valid under cpu_list_lock.
  * @created: Indicates whether the CPU thread has been successfully created.
@@ -498,6 +500,8 @@ struct CPUState {
 #endif
     int thread_id;
     bool running, has_waiter;
+    bool exec_seen, idle;
+    unsigned idles;
     struct QemuCond *halt_cond;
     bool thread_kicked;
     bool created;
