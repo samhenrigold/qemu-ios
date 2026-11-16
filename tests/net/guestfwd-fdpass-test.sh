@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The user netdev's guestfwd fdpass:FD as the command line takes it: QEMU starts with FD a Unix stream socket it
 # inherited (and holds it open), and refuses a descriptor that is a pipe, a datagram socket or not open, naming the
 # rule. Each connection's handoff is tests/slice/net-slirp-fdpass.c. QEMU= selects the binary (default

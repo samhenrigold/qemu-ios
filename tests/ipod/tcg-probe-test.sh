@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # Branches that leave their TB through TCG's jump cache probe, on the iPad (Cortex-A8).
 #
 # A call, a return or an indirect branch finds its next TB in the jump cache from generated code, as

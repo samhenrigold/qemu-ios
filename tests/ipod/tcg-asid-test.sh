@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # ASID switches, TLB maintenance and rewritten code on the ARM1176 and Cortex-A8 boards.
 #
 # TCG keeps a TB jump cache per ASID, the kernel's global TLB entries across an ASID switch, and the user (PL0)

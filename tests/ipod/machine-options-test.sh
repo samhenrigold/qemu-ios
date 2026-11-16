@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # Every machine starts with the -machine options LightTouchMac passes it, and stops at -S.
 #
 # LightTouchMac builds each board's -machine string (HostRuntime BootRecipe and PreparedDeviceBoot) from its prepared

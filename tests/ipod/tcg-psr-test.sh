@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # CPSR writes on the ARM1176 and Cortex-A8 boards: interrupt unmasking, masking inside a block, flag writes, modes.
 #
 # A write that only changes the flags or the A/I/F masks rebuilds no translation flags, and a cpsid keeps its block

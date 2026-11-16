@@ -76,8 +76,7 @@ flat set `firmwarekit` reads: helpers, AppSync, the two GL engines with `gles-na
 at `contrib/guest-package/VERSION`'s serial), `macos-app/entitlements.plist`, `include/`, and with a build
 directory `dylib/libqemu-arm.dylib` — with `manifest.json` (source commit, branch, dirty flag, sha256 of
 every input and every staged file). LightTouchMac pins this repository by commit in
-`build-support/sources.json`; its `scripts/build-guest-tools.sh` is a thin caller of the export, and its
-release build validates the staged tree against the manifest. Bump the pin when the guest tools, the
+`build-support/sources.json`; its `scripts/vendor` calls the export and validates the staged tree against the manifest. Bump the pin when the guest tools, the
 helper ABI or the entitlements change.
 
 ## Gates
@@ -85,26 +84,42 @@ helper ABI or the entitlements change.
 One command, three tiers:
 
 ```sh
-tests/gate.sh --quick    # host only: every tests/slice/*.c, tests/*/*-test.sh and the GL name table check, in parallel
-tests/gate.sh --models   # the device qtests and test-ios-baseband from the build next to QEMU
+tests/gate.sh --quick    # host slices, host shell checks and the GL name table check, in parallel
+tests/gate.sh --models   # incrementally build QEMU and all model checks, then qtests and emulator shell checks
 tests/gate.sh --all      # both
 ```
 
 One line per check (PASS or FAIL with seconds); non-zero exit on any FAIL; every log under the printed
-directory. `QEMU=` overrides the emulator (default `build/qemu-system-arm`).
+directory. `QEMU=` overrides the emulator (default `build/qemu-system-arm`); `--models` configures nothing and
+requires a build configured from this checkout beside it (another checkout is refused before any build). Model test targets are discovered from source, so an unbuilt new test cannot
+silently disappear from the gate. Shell tests that start the emulator carry `# GATE: models`; `--all` runs each
+shell test once. `JOBS` must be a positive integer. `OUT` defaults to `qemu-gate.*` under `LTM_SCRATCH_ROOT` or
+`~/Developer/ltm-scratch.noindex`, so Light Touch's `scripts/clean --quick` can retire old logs.
 
 | Gate | What it covers | Inputs |
 |---|---|---|
 | `tests/slice/run.sh tests/slice/<board>-<name>.c` | Host-only unit checks, one file each: the `SLICE` lines at the top name the code under test, compiled under ASan/UBSan | No emulator |
-| `tests/*/*-test.sh` | Guest-package, toolchain and loader checks; the guest-values lint ("Guest values" below) | No emulator |
+| `tests/*/*-test.sh` | Guest-package, toolchain and loader checks; guest-values lint; marked emulator regressions in `--models` | Marked tests need QEMU |
 
 Boots of prepared devices are LightTouchMac's: `swift run --package-path tests/sessions sessions single <BASE>`
 (also `phone`, `local-network`, `proxy-trust`, `helper`), and its Release plan's prepare matrix (`firmwarekit
 create` on each route, then a boot). Every headless boot passes `-audio driver=none`.
 
 The export for the app (`contrib/export-guest-artifacts.sh`, "Build" above) is gated on the LightTouchMac side:
-its `scripts/build-guest-tools.sh` runs the export from the commit pinned in `build-support/sources.json`
-and `scripts/vendor` checks the staged tree against `manifest.json`; a pin bump is a LightTouchMac commit.
+its `scripts/vendor` runs the export from the commit pinned in `build-support/sources.json`
+and checks the staged tree against `manifest.json`; a pin bump is a LightTouchMac commit.
+
+## Development cleanup
+
+This repository's Codex and Claude Code `Stop`/`SessionEnd` hooks call Light Touch's `scripts/agent-cleanup` through
+`LTM_APP_REPO` (default `~/Developer/LightTouchMac`). Land that script before enabling the hooks. It dispatches one
+background quick scratch sweep per ten minutes, and safely retires managed worktrees at terminal session end.
+It skips builds, disk sizing and vendor pruning; open, dirty, locked and unpushed worktrees stay. Codex requires
+reviewing and trusting new hook definitions in `/hooks`; see [the hook contract](https://learn.chatgpt.com/docs/hooks).
+Light Touch's CONTRIBUTING.md documents the shared cleanup commands, retention and agent lifecycle.
+
+The path-filtered `Gate runner contract` GitHub Actions job runs the runner's fake-build regression on a hosted Mac.
+It needs no emulator, private firmware or SDK; it doesn't replace `tests/gate.sh --all` or the app's boot gates.
 
 ## Guest values
 

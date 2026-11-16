@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The iPod's translations: 4K pages, and a polled device read that ends its block instead of rewinding it.
 #
 # The ARM1176 can't map a page under 4K (VMSAv6 has no tiny pages), so the iPod machine runs on 4K target pages: a

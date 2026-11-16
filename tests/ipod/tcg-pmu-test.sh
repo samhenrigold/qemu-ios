@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The Cortex-A8's PMU with its EL-change hooks run without the BQL.
 #
 # The hooks bring the counters up to date at every exception entry and return; they now run on the vCPU without the

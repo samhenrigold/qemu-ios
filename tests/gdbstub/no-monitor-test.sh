@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The gdbstub carries no monitor (gdbstub/system.c): a debugger on the stub gets the guest, and a `monitor` packet
 # (qRcmd) gets the empty reply of an unsupported packet instead of this process's HMP monitor. Runs the iPad's
 # machine paused (-S) on a blank bootrom with the stub on a Unix socket, as LightTouchMac starts it, and checks that

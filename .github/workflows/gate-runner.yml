@@ -1,0 +1,34 @@
+name: Gate runner contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gate-runner.yml'
+      - 'tests/gate.sh'
+      - 'tests/*/*-test.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gate-runner.yml'
+      - 'tests/gate.sh'
+      - 'tests/*/*-test.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check gate dispatch, build freshness and tier selection
+        env:
+          LTM_SCRATCH_ROOT: ${{ runner.temp }}/qemu-gate-contract
+        run: bash tests/slice/gate-test.sh

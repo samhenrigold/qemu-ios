@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # What an exception, a rewound device access and a TLB miss see of the guest's registers on the iPad (Cortex-A8).
 #
 # TCG keeps the guest registers and flags in host registers across a memory access and stores them only on the

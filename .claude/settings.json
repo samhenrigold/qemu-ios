@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${LTM_APP_REPO:-$HOME/Developer/LightTouchMac}/scripts/agent-cleanup\" stop",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${LTM_APP_REPO:-$HOME/Developer/LightTouchMac}/scripts/agent-cleanup\" end",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

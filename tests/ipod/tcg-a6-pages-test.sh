@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The iPhone 5's translations run on 4K target pages.
 #
 # Every CPU the A6 machine makes (the application cores, the IOP and the AE2) is a v7 VMSA core, which can't map a

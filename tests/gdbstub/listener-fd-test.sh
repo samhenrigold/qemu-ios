@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # The gdbstub on a listening socket the caller made and passed (-chardev socket,fd=N,server=on -gdb chardev:ID), as
 # LightTouchMac starts a sandboxed helper's: the caller binds the path somewhere the helper can't reach and QEMU
 # only accepts on the descriptor. Runs the iPad's machine paused (-S) on a blank bootrom and checks that a debugger

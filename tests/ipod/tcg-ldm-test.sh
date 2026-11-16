@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # LDM, STM, PUSH and POP moved two or four words per access on the iPad (Cortex-A8).
 #
 # TCG moves the words of a block transfer as one 64- or 128-bit access (MO_SPLIT_UL), so its fast path checks the

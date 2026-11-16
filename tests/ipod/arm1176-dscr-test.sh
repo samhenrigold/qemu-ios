@@ -1,4 +1,5 @@
 #!/bin/bash
+# GATE: models
 # ARM1176 DSCR: a user-mode BKPT's prefetch abort can read why it happened.
 #
 # iPhone OS 2.x's prefetch-abort handler reads the v6 DSCR (MRC p14, 0, Rt, c0, c1, 0) to tell a BKPT (SIGTRAP for
