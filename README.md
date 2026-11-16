@@ -61,11 +61,20 @@ mkdir build && cd build
 ../scripts/ccninja qemu-system-arm           # ninja through ccache, one cache for every worktree
 ```
 
-`scripts/ccninja` puts Homebrew's ccache masquerade directory on `PATH` (the configured compiler is bare
-`cc`) and sets `CCACHE_BASEDIR=~/Developer`, so a fresh worktree builds in seconds at a warm cache.
+Install the compiler cache through Homebrew: `brew install ccache`. `scripts/configure-patched-ffmpeg` records
+explicit ccache launchers, including when Meson resolves a compiler to an absolute path; rerun configure once for an
+older build tree. `scripts/ccninja` also exposes Homebrew's masquerade directory for trees configured with bare `cc`.
+All worktrees share the user's ccache storage. The helpers no longer force source-path rewriting, which can
+change `__FILE__` and defeat macro prefix maps; a development build's explicit `CCACHE_BASEDIR` is preserved.
+Keep disk use bounded with `ccache --max-size=2G`. `LTM_CCACHE=0` opts out at configuration,
+while `CCACHE_DISABLE=1` bypasses the cache in an existing build.
 
 The app's library is a relink of the same objects: `contrib/macos-app/make-dylib-macos.sh BUILD_DIR`
-writes `BUILD_DIR/libqemu-arm.dylib`, exporting only the `qemu_ios_*` ABI. LightTouchMac's
+writes `BUILD_DIR/libqemu-arm.dylib`, exporting only the `qemu_ios_*` ABI. It generates a small Ninja graph for the
+three app-facing objects and signed dylib, tracking headers, compiler arguments and compiler environment. Unchanged
+reruns compile, link and sign nothing. Main emulator object changes relink the dylib; an app-facing header change
+rebuilds only its dependents. Clang environment overrides get distinct ccache namespaces to avoid stale objects.
+LightTouchMac's
 `Configuration/Shared.xcconfig` points `QEMU_IOS_DIR`/`QEMU_BUILD_DIR` at a checkout and such a build
 directory.
 
@@ -119,7 +128,8 @@ reviewing and trusting new hook definitions in `/hooks`; see [the hook contract]
 Light Touch's CONTRIBUTING.md documents the shared cleanup commands, retention and agent lifecycle.
 
 The path-filtered `Gate runner contract` GitHub Actions job runs the runner's fake-build regression on a hosted Mac.
-It needs no emulator, private firmware or SDK; it doesn't replace `tests/gate.sh --all` or the app's boot gates.
+It also builds a tiny signed Mach-O fixture to check incremental dylib behavior, cross-compilation and compiler-cache configuration.
+It needs no emulator, private firmware or legacy SDK; it doesn't replace `tests/gate.sh --all` or the app's boot gates.
 
 ## Guest values
 

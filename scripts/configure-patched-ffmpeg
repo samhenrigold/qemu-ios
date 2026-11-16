@@ -16,6 +16,13 @@ FFMPEG_PREFIX=${FFMPEG_PREFIX:-$HOME/Developer/qemu-ios/build-native14/prefix}
 pc=$PWD/ffmpeg-pkgconfig
 mkdir -p "$pc"
 ln -sf "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" "$FFMPEG_PREFIX/lib/pkgconfig/libavutil.pc" "$pc/"
+# Explicit launchers also cover compilers Meson resolves to absolute paths. A user-supplied --cc/--cxx later in
+# argv still wins; old build trees need reconfiguration before ccninja can cache an absolute compiler.
+if [ "${LTM_CCACHE:-1}" != 0 ] && command -v ccache >/dev/null; then
+    case "${CC:-$(xcrun -f clang)}" in ccache\ *|*/ccache\ *) ;; *) set -- "--cc=ccache ${CC:-$(xcrun -f clang)}" "$@" ;; esac
+    case "${CXX:-$(xcrun -f clang++)}" in ccache\ *|*/ccache\ *) ;; *) set -- "--cxx=ccache ${CXX:-$(xcrun -f clang++)}" "$@" ;; esac
+    export CCACHE_BASEDIR="${CCACHE_BASEDIR-}"
+fi
 ssl=/opt/homebrew/opt/openssl@3
 PKG_CONFIG_PATH=$pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH} exec "$(dirname "$0")/../configure" \
     --target-list=arm-softmmu --disable-sdl --disable-sdl-image --disable-capstone \

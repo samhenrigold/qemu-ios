@@ -1,4 +1,4 @@
 #!/bin/sh
-# ninja through ccache, sharing one cache across every ~/Developer worktree.
+# ninja through ccache, sharing storage across worktrees without forcing source-path rewriting.
 # The configured compiler is bare `cc`, so Homebrew's masquerade dir on PATH is enough.
-PATH=/opt/homebrew/opt/ccache/libexec:$PATH CCACHE_BASEDIR=$HOME/Developer exec ninja "$@"
+PATH=/opt/homebrew/opt/ccache/libexec:$PATH CCACHE_BASEDIR=${CCACHE_BASEDIR-} exec ninja "$@"

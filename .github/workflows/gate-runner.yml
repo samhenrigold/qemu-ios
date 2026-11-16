@@ -6,12 +6,16 @@ on:
       - '.github/workflows/gate-runner.yml'
       - 'tests/gate.sh'
       - 'tests/*/*-test.sh'
+      - 'contrib/macos-app/make-dylib-macos.sh'
+      - 'scripts/configure-patched-ffmpeg'
   push:
     branches: [main]
     paths:
       - '.github/workflows/gate-runner.yml'
       - 'tests/gate.sh'
       - 'tests/*/*-test.sh'
+      - 'contrib/macos-app/make-dylib-macos.sh'
+      - 'scripts/configure-patched-ffmpeg'
 
 permissions:
   contents: read
@@ -28,6 +32,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install ccache ninja jq
+      - name: Check incremental signed dylib builds
+        env:
+          LTM_SCRATCH_ROOT: ${{ runner.temp }}/qemu-build-contract
+        run: |
+          bash tests/slice/macos-dylib-test.sh
+          bash tests/slice/configure-cache-test.sh
       - name: Check gate dispatch, build freshness and tier selection
         env:
           LTM_SCRATCH_ROOT: ${{ runner.temp }}/qemu-gate-contract

@@ -13,6 +13,24 @@ LIBNAME="libqemu-arm.dylib"
 OUT="$BUILD/$LIBNAME"
 
 cd "$BUILD"
+BUILD="$PWD"
+OUT="$BUILD/$LIBNAME"
+TMP="$(mktemp -d "$BUILD/.macos-dylib.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+# Preserve mtimes when generated commands and exports are unchanged: Ninja can then do a true no-op build.
+publish() { cmp -s "$TMP/$1" "$1" || mv "$TMP/$1" "$1"; }
+ninja_path() {
+    local value="$1"
+    value="${value//\$/\$\$}"; value="${value// /\$ }"; value="${value//:/\$:}"
+    printf '%s' "$value"
+}
+ninja_command() {
+    local value
+    printf -v value '%q ' "$@"
+    printf '%s' "${value//\$/\$\$}"
+}
+# Main objects and generated headers must be current before compiling the app-facing translation units.
+ninja qemu-system-arm >/dev/null
 
 # Compile the app-facing pieces with the same include set the emulator uses.
 # glib/pixman come from Homebrew, exactly as the meson build found them.
@@ -26,23 +44,48 @@ case "$HOST_CPU" in
     x86_64) TCG_HOST=i386 ;;
     *) echo "unsupported host CPU: $HOST_CPU" >&2; exit 1 ;;
 esac
+# Meson may name an absolute compiler, which a PATH masquerade cannot intercept.
+if [ "${LTM_CCACHE:-1}" != 0 ] && command -v ccache >/dev/null && [ "$(basename "${CC_ARGV[0]}")" != ccache ]; then
+    CC_ARGV=(ccache "${CC_ARGV[@]}")
+fi
+# Preserve __FILE__ and macro-prefix-map behavior exactly; share storage without rewriting source arguments.
+export CCACHE_BASEDIR=""
+ENV_ARGS=(env)
+for variable in CCACHE_BASEDIR CCC_OVERRIDE_OPTIONS DEVELOPER_DIR SDKROOT MACOSX_DEPLOYMENT_TARGET CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH; do
+    if [[ ${!variable+x} ]]; then ENV_ARGS+=("$variable=${!variable}"); fi
+done
+# Include the selected compiler and SDK identity in Ninja's command hash as well as the real command-line flags.
+TOOLCHAIN="$( { "${CC_ARGV[@]}" --version; xcrun --sdk macosx --show-sdk-build-version; } | shasum -a 256 | cut -d' ' -f1)"
+# Clang's CCC_OVERRIDE_OPTIONS changes code generation outside its argv. Give that environment its own ccache
+# namespace too, so an incremental rebuild cannot fetch an object compiled under different hidden flags.
+CACHE_ENV="$(printf '%s\0' "${ENV_ARGS[@]}" "$TOOLCHAIN" | shasum -a 256 | cut -d' ' -f1)"
+ENV_ARGS+=("LTM_DYLIB_TOOLCHAIN=$TOOLCHAIN" "CCACHE_NAMESPACE=${CCACHE_NAMESPACE:-}qemu-dylib-$CACHE_ENV")
+# A separate log/deps directory prevents Ninja's subgraph compaction from discarding the main build's history.
+cat > "$TMP/macos-dylib.ninja" <<'NINJA'
+builddir = .macos-dylib
+rule macos_cc
+  command = $cmd
+  depfile = $out.d
+  deps = gcc
+rule macos_link
+  command = $cmd
+NINJA
 for f in "$SRC/contrib/ios-app/qemu-ios-entry.c" \
          "$SRC/contrib/ios-app/qemu-ios-ui.c" \
          "$SRC/contrib/macos-app/qemu-macos-extras.c"; do
-o="$(basename "${f%.c}").o"
-"${CC_ARGV[@]}" -c "$f" -o "$o" \
-    -I. -I.. -Iqapi -Itrace -Iui \
-    -I"$SRC/contrib/ios-app" -I"$SRC/contrib/macos-app" \
-    $DEP_CFLAGS \
-    -iquote . -iquote "$SRC" -iquote "$SRC/include" \
-    -iquote "$SRC/host/include/$HOST_CPU" -iquote "$SRC/host/include/generic" \
-    -iquote "$SRC/tcg/$TCG_HOST" \
-    -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -std=gnu11 -O2 \
-    -mmacosx-version-min=12.0
+    o="$(basename "${f%.c}").o"
+    printf 'build %s: macos_cc %s\n  cmd = ' "$o" "$(ninja_path "$f")" >> "$TMP/macos-dylib.ninja"
+    # pkg-config emits shell words, as in the executable's build. The explicit source/header paths stay quoted.
+    ninja_command "${ENV_ARGS[@]}" "${CC_ARGV[@]}" -c "$f" -o "$o" -MMD -MF "$o.d" -MT "$o" \
+        -I. -I.. -Iqapi -Itrace -Iui -I"$SRC/contrib/ios-app" -I"$SRC/contrib/macos-app" \
+        $DEP_CFLAGS -iquote . -iquote "$SRC" -iquote "$SRC/include" \
+        -iquote "$SRC/host/include/$HOST_CPU" -iquote "$SRC/host/include/generic" -iquote "$SRC/tcg/$TCG_HOST" \
+        -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -std=gnu11 -O2 \
+        -mmacosx-version-min=12.0 >> "$TMP/macos-dylib.ninja"
+    echo >> "$TMP/macos-dylib.ninja"
 done
 
 # Take ninja's own link line so this cannot drift from the real build.
-ninja qemu-system-arm >/dev/null
 eval "LINK=($(ninja -t commands qemu-system-arm-unsigned | tail -1))"
 ARGS=()
 skip=0
@@ -58,11 +101,12 @@ for a in "${LINK[@]}"; do
 done
 ARGS+=(-dynamiclib -o "$OUT" -install_name "@rpath/$LIBNAME"
       "-Wl,-exported_symbols_list,$BUILD/macos-exports.syms" -Wl,-undefined,dynamic_lookup)
-printf '%q ' "${ARGS[@]}" > macos-link-dylib.sh
-echo >> macos-link-dylib.sh
+printf '%q ' "${ARGS[@]}" > "$TMP/macos-link-dylib.sh"
+echo >> "$TMP/macos-link-dylib.sh"
+publish macos-link-dylib.sh
 
 # Only what the app calls; everything else stays private.
-cat > macos-exports.syms <<'SYMS'
+cat > "$TMP/macos-exports.syms" <<'SYMS'
 _qemu_ios_main
 _qemu_ios_device_info
 _qemu_ios_device_info_at
@@ -124,7 +168,15 @@ _qemu_ios_snapshot_status
 _qemu_ios_snapshot_resume
 SYMS
 
-bash macos-link-dylib.sh
-codesign -f -s - "$OUT"
-echo "built $OUT"
+publish macos-exports.syms
+{
+    printf 'build %s: macos_link qemu-ios-entry.o qemu-ios-ui.o qemu-macos-extras.o | qemu-system-arm-unsigned macos-exports.syms macos-link-dylib.sh\n  cmd = ' "$LIBNAME"
+    ninja_command "${ENV_ARGS[@]}" bash macos-link-dylib.sh
+    printf ' && '
+    ninja_command codesign -f -s - "$OUT"
+    printf '\ndefault %s\n' "$LIBNAME"
+} >> "$TMP/macos-dylib.ninja"
+publish macos-dylib.ninja
+ninja -f macos-dylib.ninja
+echo "ready $OUT"
 nm -gU "$OUT" | head -20
